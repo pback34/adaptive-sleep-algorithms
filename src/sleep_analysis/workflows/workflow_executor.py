@@ -47,6 +47,7 @@ class WorkflowExecutor:
                 - import: List of signal import specifications
                 - steps: List of processing step specifications
                 - export: Export configuration (optional)
+                - visualization: Visualization configuration (optional)
                 
         Raises:
             ValueError: If the workflow configuration is invalid or execution fails.
@@ -59,6 +60,10 @@ class WorkflowExecutor:
         if "steps" in workflow_config:
             for step in workflow_config["steps"]:
                 self.execute_step(step)
+        
+        # Handle visualization section if present
+        if "visualization" in workflow_config:
+            self._process_visualization_section(workflow_config["visualization"])
                 
         # Handle export section if present
         if "export" in workflow_config:
@@ -340,3 +345,34 @@ class WorkflowExecutor:
             output_dir=export_config["output_dir"],
             include_combined=export_config.get("include_combined", False)
         )
+    
+    def _process_visualization_section(self, vis_specs: List[Dict[str, Any]]):
+        """
+        Process the visualization section of a workflow.
+        
+        Args:
+            vis_specs: List of visualization specifications
+        """
+        for spec in vis_specs:
+            # Determine the backend to use
+            backend = spec.get('backend', 'bokeh').lower()
+            
+            try:
+                # Import the appropriate visualizer class
+                if backend == 'bokeh':
+                    from ..visualization import BokehVisualizer
+                    visualizer = BokehVisualizer()
+                elif backend == 'plotly':
+                    from ..visualization import PlotlyVisualizer
+                    visualizer = PlotlyVisualizer()
+                else:
+                    raise ValueError(f"Unsupported visualization backend: {backend}")
+                    
+                # Process the visualization
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f"Using {backend} backend for visualization: {spec.get('title', 'Untitled')}")
+                visualizer.process_visualization_config(spec, self.container)
+                
+            except Exception as e:
+                self._handle_error(e)

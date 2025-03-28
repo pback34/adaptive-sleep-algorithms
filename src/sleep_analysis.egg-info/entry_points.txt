@@ -1,0 +1,2 @@
+[console_scripts]
+sleep-analysis = sleep_analysis.cli.run_workflow:run_workflow

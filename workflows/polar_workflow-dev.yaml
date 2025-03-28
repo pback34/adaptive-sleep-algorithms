@@ -92,29 +92,17 @@ import:
 
 # Process steps to compute magnitude signals and align everything
 steps:
-  # Generate magnitude signal from H10 accelerometer
+  # Generate magnitude signals from all accelerometer signals
   - type: signal
-    input: "accel_0"  # Polar H10 accelerometer
+    input: "accel"  # Base name for all accelerometer signals
     operation: "compute_magnitude"
-    output: "accel_0_magnitude"
+    output: "accel_magnitude"
     
-  # Generate magnitude signal from Sense accelerometer
+  # Generate angle signals from all accelerometer signals
   - type: signal
-    input: "accel_1"  # Polar Sense accelerometer
-    operation: "compute_magnitude"
-    output: "accel_1_magnitude"
-    
-  # Generate angle signals from H10 accelerometer
-  - type: signal
-    input: "accel_0"  # Polar H10 accelerometer
+    input: "accel"  # Base name for all accelerometer signals
     operation: "compute_angle"
-    output: "accel_0_angle"
-    
-  # Generate angle signals from Sense accelerometer
-  - type: signal
-    input: "accel_1"  # Polar Sense accelerometer
-    operation: "compute_angle"
-    output: "accel_1_angle"
+    output: "accel_angle"
     
   # Align signals to the same time grid
   - type: collection
@@ -132,3 +120,60 @@ export:
   output_dir: "results/polar_data"
   include_combined: true
   index_config: ["signal_type", "sensor_model", "body_position", "name"]
+
+# Visualization section - creates plots of selected signals
+visualization:
+  # Create a time series plot of heart rate signals from both devices
+  - type: time_series
+    signals: ["hr"]  # All heart rate signals
+    layout: vertical
+    title: "Heart Rate Comparison: All Devices"
+    output: "results/visualizations/heart_rate_comparison.html"
+    backend: plotly
+    parameters:
+      # width: 3000
+      # height: 800
+      x_label: "Time"
+      y_label: "Heart Rate (bpm)"
+      strict: false  # Skip missing signals with warning
+      colorscale: "Plotly"  # Use Plotly's default qualitative colorscale
+
+  # Plot accelerometer magnitude signals
+  - type: time_series
+    signals: ["accel_magnitude"]  # All accelerometer magnitude signals
+    title: "Accelerometer Magnitude Signals"
+    output: "results/visualizations/accel_magnitude.html"
+    backend: bokeh
+    parameters:
+      # width: 1200
+      # height: 800
+      line_color: "blue"
+      x_label: "Time"
+      y_label: "Magnitude (mg)"
+      strict: false
+
+  # Create a grid layout with multiple signal types
+  - type: time_series
+    signals: ["hr", "accel_magnitude", "accel_angle"]  # First of each type
+    layout: grid
+    title: "Multivariate Signal Dashboard"
+    output: "results/visualizations/multivariate_dashboard.html"
+    backend: plotly
+    parameters:
+      # width: 3000 
+      # height: 600
+      link_x_axes: true  # Synchronize x-axes for time alignment
+      strict: false
+      
+  # Create a comprehensive plot with all signals in separate subplots
+  - type: time_series
+    signals: ["hr", "accel_magnitude", "accel_angle"]  # All signals of these types
+    layout: vertical
+    title: "All Signals Overview with Linked X-Axes"
+    output: "results/visualizations/all_signals_overview.html"
+    backend: plotly
+    parameters:
+      link_x_axes: true  # Ensure x-axes are linked across all subplots
+      # width: 1200
+      # height: 1800  # Taller to accommodate all subplots
+      strict: false

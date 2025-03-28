@@ -118,9 +118,31 @@ def run_workflow():
         logger.debug(f"Loaded workflow configuration from {args.workflow}")
         
         # Override output directory if specified
-        if args.output_dir and "export" in workflow_config:
+        if args.output_dir:
             logger.debug(f"Overriding output directory to {args.output_dir}")
-            workflow_config["export"]["output_dir"] = args.output_dir
+            
+            # Override export output directory
+            if "export" in workflow_config:
+                workflow_config["export"]["output_dir"] = args.output_dir
+            
+            # Override visualization output paths
+            if "visualization" in workflow_config:
+                for vis_config in workflow_config["visualization"]:
+                    if "output" in vis_config:
+                        original_path = vis_config["output"]
+                        filename = os.path.basename(original_path)
+                        
+                        # Extract subdirectories (if any) after the first level
+                        dirname = os.path.dirname(original_path)
+                        if dirname:
+                            parts = dirname.split(os.sep, 1)
+                            if len(parts) > 1:
+                                # Preserve subdirectories after the first level
+                                vis_config["output"] = os.path.join(args.output_dir, parts[1], filename)
+                            else:
+                                vis_config["output"] = os.path.join(args.output_dir, filename)
+                        else:
+                            vis_config["output"] = os.path.join(args.output_dir, filename)
         
         # Check if data directory exists
         if not os.path.isdir(args.data_dir):
