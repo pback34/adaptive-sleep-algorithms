@@ -1,0 +1,8 @@
+
+## Primary Purpose of the Alignment Feature
+When data is imported from various sources with different timestamps, and then we combine the various signals into a common dataframe, we end up with different timestamps for each signal. This causes unnecessary interleaved rows of data and NaNs for the signals that don't share the same index (which is often). The clock precision might be in milliseconds for each signal, even though the sample rate might be 1 hz, 50hz, or 100hz (for example), which means the actual time resolution needed is only in 10s of milliseconds. We want to be able to create a common index shared by all signals so that there is never a unique index for a signal that results in missing data for th other signals. There are likely several ways to accomplish. The one we have attempted and failed as a "resample" and "align" procedure. We either detect the highest frequency signal in the signal collection, or we set our desired "max" sample rate. In both cases, the sample rate of the signals that are slower than the target max sampling rate are untouched - they are just aligned with the common timestamp index as closely as possible and will have 'NaN' values in the indexes where they don't have samples. In the situation where a target sample rate is set that is lower than some of the signals - the signals that are higher than that sample rate will be downsampled using standard downsampling techniques. In all cases, the signals will be mapped to the new time index set at this single sample rate, so that they are aligned as close as possible. 
+
+
+## Questions
+1. Is this a reasonable approach? If so what do we need to do to fix it?
+2. What are alternate strategies that could be designed that are even simpler than this? 

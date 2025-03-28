@@ -1,0 +1,134 @@
+# Polar Workflow Example with relative paths and file patterns
+# This workflow demonstrates importing heart rate and accelerometer data 
+# from Polar H10 and Sense sensors, and exporting to CSV
+#
+# To run:
+# python -m sleep_analysis.cli.run_workflow --workflow workflows/polar_workflow.yaml --data-dir data
+
+import:
+  # Heart Rate data from Polar H10 - using MergingImporter
+  - signal_type: "heart_rate"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_H10_*_HR.txt"
+      timestamp_col: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+      column_mapping:
+        timestamp: "Phone timestamp"
+        hr: "HR [bpm]"
+        hrv: "HRV [ms]"
+        hrv: "HRV [ms]"
+    sensor_type: "EKG"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    name: "H10_HR"
+    base_name: "hr"
+
+
+  # Accelerometer data from Polar H10 - using MergingImporter
+  - signal_type: "accelerometer"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_H10_*_ACC.txt"
+      timestamp_col: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+      column_mapping:
+        timestamp: "Phone timestamp"
+        x: "X [mg]"
+        y: "Y [mg]"
+        z: "Z [mg]"
+    sensor_type: "ACCEL"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    name: "H10_ACC"
+    base_name: "accel"
+    
+
+  # Heart Rate data from Polar Sense - using MergingImporter
+  - signal_type: "heart_rate"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_Sense_*_HR.txt"
+      timestamp_col: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+      column_mapping:
+        timestamp: "Phone timestamp"
+        hr: "HR [bpm]"
+    sensor_type: "EKG"
+    sensor_model: "PolarSense"
+    body_position: "left_wrist"
+    name: "Sense_HR"
+    base_name: "hr"
+    
+
+
+  # Accelerometer data from Polar Sense - using MergingImporter
+  - signal_type: "accelerometer"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_Sense_*_ACC.txt"
+      timestamp_col: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+      column_mapping:
+        timestamp: "Phone timestamp"
+        x: "X [mg]"
+        y: "Y [mg]"
+        z: "Z [mg]"
+    sensor_type: "ACCEL"
+    sensor_model: "PolarSense"
+    body_position: "left_wrist"
+    name: "Sense_ACC"
+    base_name: "accel"
+    
+
+
+# Process steps to compute magnitude signals and align everything
+steps:
+  # Generate magnitude signal from H10 accelerometer
+  - type: signal
+    input: "accel_0"  # Polar H10 accelerometer
+    operation: "compute_magnitude"
+    output: "accel_0_magnitude"
+    
+  # Generate magnitude signal from Sense accelerometer
+  - type: signal
+    input: "accel_1"  # Polar Sense accelerometer
+    operation: "compute_magnitude"
+    output: "accel_1_magnitude"
+    
+  # Generate angle signals from H10 accelerometer
+  - type: signal
+    input: "accel_0"  # Polar H10 accelerometer
+    operation: "compute_angle"
+    output: "accel_0_angle"
+    
+  # Generate angle signals from Sense accelerometer
+  - type: signal
+    input: "accel_1"  # Polar Sense accelerometer
+    operation: "compute_angle"
+    output: "accel_1_angle"
+    
+  # Align signals to the same time grid
+  - type: collection
+    operation: "align_signals"
+    parameters:
+      target_sample_rate: 50.0  # Hz - force all signals to a clean factor of 1000
+      method: "nearest"
+      preserve_original: true
+      inplace: true
+      resample_strategy: "nearest"  # Options: "downsample", "upsample", "nearest"
+
+# Export section - defines the output formats and location
+export:
+  formats: ["csv"]
+  output_dir: "results/polar_data"
+  include_combined: true
+  index_config: ["signal_type", "sensor_model", "body_position", "name"]

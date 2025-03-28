@@ -1,0 +1,68 @@
+flowchart TD
+    subgraph Core ["Core Module"]
+        direction TB
+        signal_data[SignalData]
+        signal_collection[SignalCollection]
+        metadata[Metadata Classes]
+    end
+
+    subgraph Signal_Types ["Signal Types"]
+        direction TB
+        enums[Enum Definitions]
+    end
+
+    subgraph Signals ["Signal Classes"]
+        direction TB
+        time_series[TimeSeriesSignal]
+        ppg[PPGSignal]
+        acc[AccelerometerSignal]
+        hr[HeartRateSignal]
+        magnitude[MagnitudeSignal]
+        angle[AngleSignal]
+    end
+
+    subgraph Importers ["Importer Classes"]
+        direction TB
+        importer_base[SignalImporter]
+        csv_importer[CSVImporterBase]
+        polar[PolarCSVImporter]
+        merging[MergingImporter]
+    end
+
+    subgraph Export ["Export Module"]
+        direction TB
+        export_module[ExportModule]
+    end
+
+    subgraph Workflows ["Workflow Engine"]
+        direction TB
+        workflow_executor[WorkflowExecutor]
+    end
+
+    subgraph CLI ["Command Line"]
+        direction TB
+        run_workflow[run_workflow.py]
+    end
+
+    subgraph Utils ["Utilities"]
+        direction TB
+        logging[Logging]
+        data_utils[Data Utils]
+    end
+
+    %% Main data flow in the system
+    CLI --> Workflows
+    Workflows --> Importers
+    Workflows --> Core
+    Workflows --> Export
+    Importers --> Core
+    Core --> Signals
+    Core --> Export
+    Signals --> Core
+    Signal_Types -.-> Core
+    Signal_Types -.-> Signals
+    Signal_Types -.-> Importers
+    Utils -.-> Core
+    Utils -.-> Importers
+    Utils -.-> Workflows
+    Utils -.-> Export

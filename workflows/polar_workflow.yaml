@@ -1,0 +1,142 @@
+# Polar Workflow Example with relative paths and file patterns
+# This workflow demonstrates importing heart rate and accelerometer data 
+# from Polar H10 and Sense sensors, and exporting to CSV
+#
+# To run:
+# python -m sleep_analysis.cli.run_workflow --workflow workflows/polar_workflow.yaml --data-dir data
+
+import:
+  # Heart Rate data from Polar H10 - using MergingImporter
+  - signal_type: "heart_rate"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_H10_*_HR.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "EKG"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    base_name: "hr_h10_merged"
+    
+  # Heart Rate data from Polar H10 - original implementation
+  - signal_type: "heart_rate"
+    importer: "PolarCSVImporter"
+    source: "."
+    file_pattern: "Polar_H10_*_HR.txt"
+    config:
+      column_mapping:
+        timestamp: "Phone timestamp"
+        hr: "HR [bpm]"
+      time_format: "%Y-%m-%dT%H:%M:%S.%f"
+      filename_pattern: "Polar_(?P<sensor_model>H10|Sense)_(?P<device_id>\\w+)_(?P<date>\\d{8})_(?P<time>\\d{6})_(?P<data_type>HR|ACC).txt"
+      delimiter: ";"
+    sensor_type: "EKG"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    base_name: "hr_h10"
+
+  # Accelerometer data from Polar H10 - using MergingImporter
+  - signal_type: "accelerometer"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_H10_*_ACC.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "ACCEL"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    base_name: "accel_h10_merged"
+    
+  # Accelerometer data from Polar H10 - original implementation
+  - signal_type: "accelerometer"
+    importer: "PolarCSVImporter"
+    source: "."
+    file_pattern: "Polar_H10_*_ACC.txt"
+    config:
+      column_mapping:
+        timestamp: "Phone timestamp"
+        x: "X [mg]"
+        y: "Y [mg]"
+        z: "Z [mg]"
+      time_format: "%Y-%m-%dT%H:%M:%S.%f"
+      filename_pattern: "Polar_(?P<sensor_model>H10|Sense)_(?P<device_id>\\w+)_(?P<date>\\d{8})_(?P<time>\\d{6})_(?P<data_type>HR|ACC).txt"
+      delimiter: ";"
+    sensor_type: "ACCEL"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    base_name: "accel_h10"
+
+  # Heart Rate data from Polar Sense - using MergingImporter
+  - signal_type: "heart_rate"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_Sense_*_HR.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "EKG"
+    sensor_model: "PolarSense"
+    body_position: "chest"
+    base_name: "hr_sense_merged"
+    
+  # Heart Rate data from Polar Sense - original implementation
+  - signal_type: "heart_rate"
+    importer: "PolarCSVImporter"
+    source: "."
+    file_pattern: "Polar_Sense_*_HR.txt"
+    config:
+      column_mapping:
+        timestamp: "Phone timestamp"
+        hr: "HR [bpm]"
+      time_format: "%Y-%m-%dT%H:%M:%S.%f"
+      filename_pattern: "Polar_(?P<sensor_model>H10|Sense)_(?P<device_id>\\w+)_(?P<date>\\d{8})_(?P<time>\\d{6})_(?P<data_type>HR|ACC).txt"
+      delimiter: ";"
+    sensor_type: "EKG"
+    sensor_model: "PolarSense"
+    body_position: "chest"
+    base_name: "hr_sense"
+
+  # Accelerometer data from Polar Sense - using MergingImporter
+  - signal_type: "accelerometer"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_Sense_*_ACC.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "ACCEL"
+    sensor_model: "PolarSense"
+    body_position: "chest"
+    base_name: "accel_sense_merged"
+    
+  # Accelerometer data from Polar Sense - original implementation
+  - signal_type: "accelerometer"
+    importer: "PolarCSVImporter"
+    source: "."
+    file_pattern: "Polar_Sense_*_ACC.txt"
+    config:
+      column_mapping:
+        timestamp: "Phone timestamp"
+        x: "X [mg]"
+        y: "Y [mg]"
+        z: "Z [mg]"
+      time_format: "%Y-%m-%dT%H:%M:%S.%f"
+      filename_pattern: "Polar_(?P<sensor_model>H10|Sense)_(?P<device_id>\\w+)_(?P<date>\\d{8})_(?P<time>\\d{6})_(?P<data_type>HR|ACC).txt"
+      delimiter: ";"
+    sensor_type: "ACCEL"
+    sensor_model: "PolarSense"
+    body_position: "chest"
+    base_name: "accel_sense"
+
+# Export section - defines the output formats and location
+export:
+  formats: ["csv"]
+  output_dir: "results/polar_data"
+  include_combined: true
+  index_config: ["signal_type", "sensor_model", "body_position"]

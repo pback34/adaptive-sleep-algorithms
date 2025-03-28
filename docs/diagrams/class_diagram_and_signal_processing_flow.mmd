@@ -1,0 +1,129 @@
+classDiagram
+    %% Core Abstract Classes
+    class SignalData {
+        <<abstract>>
+        +metadata: SignalMetadata
+        +_data: Any
+        +get_data() Any
+        +apply_operation(operation_name, inplace, **parameters) SignalData
+        +registry: Dict~str, Tuple~
+    }
+    
+    class TimeSeriesSignal {
+        <<abstract>>
+        +get_sampling_rate() float
+        +snap_to_grid(target_period, ref_time) DataFrame
+        +resample_to_rate(new_rate, target_period, ref_time) DataFrame
+        +resample(**parameters) DataFrame
+    }
+    
+    %% Signal Classes
+    class PPGSignal {
+        +signal_type = SignalType.PPG
+        +required_columns = ['value']
+    }
+    
+    class AccelerometerSignal {
+        +signal_type = SignalType.ACCELEROMETER
+        +required_columns = ['x', 'y', 'z']
+        +compute_magnitude() MagnitudeSignal
+        +compute_angle() AngleSignal
+    }
+    
+    class HeartRateSignal {
+        +signal_type = SignalType.HEART_RATE
+        +required_columns = ['hr']
+        +get_hrv_stats() Dict
+    }
+    
+    class MagnitudeSignal {
+        +signal_type = SignalType.ACCELEROMETER
+        +required_columns = ['magnitude']
+    }
+    
+    class AngleSignal {
+        +signal_type = SignalType.ACCELEROMETER
+        +required_columns = ['pitch', 'roll']
+    }
+    
+    %% Collection Class
+    class SignalCollection {
+        +signals: Dict~str, SignalData~
+        +metadata: CollectionMetadata
+        +add_signal(key, signal)
+        +get_signal(key) SignalData
+        +get_signals(input_spec, signal_type, criteria, base_name) List~SignalData~
+        +align_signals(target_sample_rate, method) SignalCollection
+        +get_combined_dataframe() DataFrame
+    }
+    
+    %% Importer Classes
+    class SignalImporter {
+        <<abstract>>
+        +import_signal(source, signal_type) SignalData
+        +import_signals(source, signal_type) List~SignalData~
+    }
+    
+    class CSVImporterBase {
+        <<abstract>>
+        +_parse_csv(source) DataFrame
+        +_validate_columns(data, signal_type)
+        +_extract_metadata(data, source, signal_type) Dict
+    }
+    
+    class PolarCSVImporter {
+        +config: Dict
+        +_parse_csv(source) DataFrame
+        +_extract_metadata(data, source, signal_type) Dict
+    }
+    
+    class MergingImporter {
+        +config: Dict
+        +file_pattern: str
+        +time_column: str
+        +sort_by: str
+        +import_signal(directory, signal_type) SignalData
+    }
+    
+    %% Export Class
+    class ExportModule {
+        +collection: SignalCollection
+        +SUPPORTED_FORMATS: List~str~
+        +export(formats, output_dir, include_combined)
+        +_export_excel(output_dir, include_combined)
+        +_export_csv(output_dir, include_combined)
+    }
+    
+    %% Workflow Executor
+    class WorkflowExecutor {
+        +container: SignalCollection
+        +strict_validation: bool
+        +data_dir: str
+        +execute_workflow(workflow_config)
+        +execute_step(step)
+        +_process_import_section(import_specs)
+        +_process_export_section(export_config)
+    }
+    
+    %% Class Relationships
+    SignalData <|-- TimeSeriesSignal
+    TimeSeriesSignal <|-- PPGSignal
+    TimeSeriesSignal <|-- AccelerometerSignal
+    TimeSeriesSignal <|-- HeartRateSignal
+    TimeSeriesSignal <|-- MagnitudeSignal
+    TimeSeriesSignal <|-- AngleSignal
+    
+    SignalImporter <|-- CSVImporterBase
+    CSVImporterBase <|-- PolarCSVImporter
+    SignalImporter <|-- MergingImporter
+    
+    SignalCollection o-- "*" SignalData : contains
+    ExportModule --> SignalCollection : exports
+    WorkflowExecutor --> SignalCollection : orchestrates
+    
+    %% Processing Flow
+    AccelerometerSignal ..> MagnitudeSignal : creates
+    AccelerometerSignal ..> AngleSignal : creates
+    SignalImporter ..> SignalData : produces
+    WorkflowExecutor ..> SignalImporter : uses
+    WorkflowExecutor ..> ExportModule : uses
