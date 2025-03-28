@@ -11,7 +11,9 @@ A flexible, extensible framework for processing sleep-related signals, designed 
 - **Extensible Design**: Easy to add new signal types and processing operations
 - **Import Flexibility**: Convert signals from various sources to a standardized format
 
-## Development Setup
+## Installation
+
+### Development Installation
 
 ```bash
 # Clone the repository
@@ -22,11 +24,80 @@ cd sleep_analysis
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install development dependencies
+# Install in development mode with development dependencies
 pip install -e ".[dev]"
 
 # Run tests
 pytest
+```
+
+### Regular Installation
+
+```bash
+# From PyPI (when available)
+pip install sleep-analysis
+
+# From local directory
+pip install .
+```
+
+## Usage
+
+### Command Line Interface
+
+The package provides a command-line tool to run workflow files:
+
+```bash
+# Run using the installed entry point
+sleep-analysis --workflow workflows/polar_workflow.yaml --data-dir data
+
+# Run using the Python module
+python -m sleep_analysis --workflow workflows/polar_workflow.yaml --data-dir data
+
+# Run using the specific CLI module
+python -m sleep_analysis.cli.run_workflow --workflow workflows/polar_workflow.yaml --data-dir data
+```
+
+### Options
+
+```
+-w, --workflow      Path to the workflow YAML file (required)
+-d, --data-dir      Base directory containing the data files (required)
+-o, --output-dir    Directory for output files (default: ./output)
+-l, --log-level     Set logging level (DEBUG, INFO, WARN, ERROR)
+-v                  Set logging level to DEBUG (shorthand)
+```
+
+### Creating Workflow Files
+
+Workflow files are YAML documents with three main sections:
+1. `import` - Data import specifications
+2. `steps` - Processing operations to apply
+3. `export` - Output format and location
+
+Example:
+```yaml
+import:
+  - signal_type: "heart_rate"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_H10_*_HR.txt"
+      timestamp_col: "Phone timestamp"
+    base_name: "hr_h10_merged"
+
+steps:
+  - type: signal
+    input: "hr_h10_merged_0"
+    operation: "filter_lowpass"
+    parameters:
+      cutoff_frequency: 0.5
+    output: "hr_h10_filtered"
+
+export:
+  formats: ["csv"]
+  output_dir: "results/polar_data"
+  include_combined: true
 ```
 
 ## Project Structure
