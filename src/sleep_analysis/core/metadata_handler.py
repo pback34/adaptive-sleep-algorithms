@@ -1,0 +1,118 @@
+"""
+Metadata handler for standardized metadata management.
+
+This module provides a centralized handler for managing signal metadata
+in a consistent way across standalone signals and collections.
+"""
+
+from typing import Dict, Any, Optional, List
+import uuid
+from ..core.metadata import SignalMetadata, OperationInfo
+
+class MetadataHandler:
+    """
+    Centralized handler for managing metadata for all signals.
+    
+    This class provides methods to initialize, update, and modify metadata
+    in a consistent way, ensuring that all signals follow the same patterns
+    regardless of whether they are standalone or part of a collection.
+    """
+    
+    def __init__(self, default_values: Optional[Dict[str, Any]] = None):
+        """
+        Initialize the metadata handler with optional default values.
+        
+        Args:
+            default_values: Dictionary of default values for metadata fields
+        """
+        self.default_values = default_values or {}
+        self.required_fields = ["signal_id"]  # Signal ID is always required
+    
+    def initialize_metadata(self, **kwargs) -> SignalMetadata:
+        """
+        Create metadata with defaults and specified overrides.
+        
+        This method creates a new SignalMetadata instance with default values,
+        then applies any provided overrides from kwargs.
+        
+        Args:
+            **kwargs: Metadata field values to override defaults
+            
+        Returns:
+            Initialized SignalMetadata instance
+            
+        Raises:
+            ValueError: If a required field is missing
+        """
+        # Start with default values
+        metadata_dict = dict(self.default_values)
+        
+        # Generate a signal_id if not provided
+        if "signal_id" not in metadata_dict and "signal_id" not in kwargs:
+            metadata_dict["signal_id"] = str(uuid.uuid4())
+            
+        # Apply overrides from kwargs
+        metadata_dict.update(kwargs)
+        
+        # Filter out any keys that are not valid for SignalMetadata
+        from dataclasses import fields
+        valid_fields = {f.name for f in fields(SignalMetadata)}
+        filtered_dict = {k: v for k, v in metadata_dict.items() if k in valid_fields}
+        
+        # Create the metadata instance
+        metadata = SignalMetadata(**filtered_dict)
+        
+        # Ensure required fields are set
+        for field in self.required_fields:
+            if not getattr(metadata, field, None):
+                raise ValueError(f"Required metadata field '{field}' is missing")
+                
+        return metadata
+    
+    def update_metadata(self, metadata: SignalMetadata, **kwargs) -> None:
+        """
+        Update existing metadata with new values.
+        
+        Args:
+            metadata: The metadata instance to update
+            **kwargs: New field values to apply
+        """
+        for key, value in kwargs.items():
+            if hasattr(metadata, key):
+                setattr(metadata, key, value)
+    
+    def set_name(self, metadata: SignalMetadata, name: Optional[str] = None, key: Optional[str] = None) -> None:
+        """
+        Set the 'name' field using a fallback strategy.
+        
+        Args:
+            metadata: The metadata instance to update
+            name: Explicit name to set (highest priority)
+            key: Collection key to use if name not provided
+        """
+        # If metadata already has a name, preserve it unless explicit name is provided
+        if metadata.name is not None and name is None:
+            return
+            
+        if name:
+            metadata.name = name
+        elif key:
+            metadata.name = key
+        elif not metadata.name:  # Only set if not already set
+            # Fallback to using signal_id prefix
+            metadata.name = f"signal_{metadata.signal_id[:8]}"
+    
+    def record_operation(self, metadata: SignalMetadata, operation_name: str, parameters: Dict[str, Any]) -> None:
+        """
+        Record an operation in the metadata's operation history.
+        
+        Args:
+            metadata: The metadata instance to update
+            operation_name: Name of the operation performed
+            parameters: Parameters used for the operation
+        """
+        if metadata.operations is None:
+            metadata.operations = []
+            
+        operation_info = OperationInfo(operation_name, parameters)
+        metadata.operations.append(operation_info)

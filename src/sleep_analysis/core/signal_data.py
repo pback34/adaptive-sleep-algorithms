@@ -15,6 +15,7 @@ import pandas as pd
 from .metadata import SignalMetadata, OperationInfo
 from ..signal_types import SignalType
 from .. import __version__
+from .metadata_handler import MetadataHandler
 
 T = TypeVar('T', bound='SignalData')
 
@@ -45,13 +46,14 @@ class SignalData(ABC):
     # Signal type to be defined by subclasses
     signal_type: SignalType = None
     
-    def __init__(self, data: Any, metadata: Optional[Dict[str, Any]] = None):
+    def __init__(self, data: Any, metadata: Optional[Dict[str, Any]] = None, handler: Optional[MetadataHandler] = None):
         """
         Initialize a SignalData instance.
         
         Args:
             data: The signal data (implementation-specific)
             metadata: Optional metadata dictionary
+            handler: Optional metadata handler, will create one if not provided
         
         Raises:
             ValueError: If signal_type is not defined by the subclass
@@ -70,28 +72,35 @@ class SignalData(ABC):
                 missing = [col for col in self.required_columns if col not in data.columns]
                 if missing:
                     raise ValueError(f"Missing required columns: {missing}")
+        
+        # Create or use the metadata handler
+        self.handler = handler or MetadataHandler()
+        
+        # Initialize metadata using the handler
+        metadata_kwargs = metadata or {}
+        # Add signal_type to metadata if not explicitly provided
+        if 'signal_type' not in metadata_kwargs:
+            metadata_kwargs['signal_type'] = self.signal_type
             
-        # Initialize metadata
-        metadata = metadata or {}
-        self.metadata = SignalMetadata(
-            signal_id=metadata.get("signal_id", str(uuid.uuid4())),
-            name=metadata.get("name"),
-            signal_type=self.signal_type,
-            sample_rate=metadata.get("sample_rate"),
-            units=metadata.get("units"),
-            start_time=metadata.get("start_time"),
-            end_time=metadata.get("end_time"),
-            derived_from=metadata.get("derived_from", []),
-            operations=metadata.get("operations", []),
-            temporary=metadata.get("temporary", False),
-            sensor_type=metadata.get("sensor_type"),
-            sensor_model=metadata.get("sensor_model"),
-            body_position=metadata.get("body_position"),
-            sensor_info=metadata.get("sensor_info", {}),
-            source_files=metadata.get("source_files", []),
-            merged=metadata.get("merged", False),
-            framework_version=__version__
-        )
+        # Add framework version
+        metadata_kwargs['framework_version'] = __version__
+        
+        # Initialize default empty collections if not provided
+        for field in ['derived_from', 'operations', 'source_files']:
+            if field not in metadata_kwargs:
+                metadata_kwargs[field] = []
+                
+        # Initialize default dictionaries if not provided
+        if 'sensor_info' not in metadata_kwargs:
+            metadata_kwargs['sensor_info'] = {}
+            
+        # Initialize default booleans if not provided
+        for field in ['temporary', 'merged']:
+            if field not in metadata_kwargs:
+                metadata_kwargs[field] = False
+                
+        # Use the handler to create the metadata
+        self.metadata = self.handler.initialize_metadata(**metadata_kwargs)
         
         # Store the data
         self._data = data

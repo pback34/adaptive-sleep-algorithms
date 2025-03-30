@@ -53,7 +53,8 @@ def test_full_workflow(temp_csv_file, temp_output_dir):
     # Step 2: Import signal
     importer = PolarCSVImporter({
         "column_mapping": {"timestamp": "timestamp", "value": "ppg_value"},
-        "filename_pattern": r".*\.csv"
+        "filename_pattern": r".*\.csv",
+        "preserve_timestamp_column": True
     })
     ppg_signal = importer.import_signal(temp_csv_file, "PPG")
     collection.add_signal("ppg_raw", ppg_signal)

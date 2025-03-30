@@ -89,8 +89,8 @@ class MergingImporter(SignalImporter):
         files = glob.glob(pattern_path)
         
         if not files:
-            self.logger.error(f"No files found matching pattern: {pattern_path}")
-            raise FileNotFoundError(f"No files found matching pattern: {pattern_path}")
+            self.logger.warning(f"No files found matching pattern: {pattern_path}")
+            return None  # Return None instead of raising an exception
             
         self.logger.debug(f"Found {len(files)} files matching pattern")
         
@@ -230,16 +230,23 @@ class MergingImporter(SignalImporter):
         Import and merge signals from multiple files.
         
         For MergingImporter, this returns a single merged signal in a list.
+        If no matching files are found, returns an empty list.
         
         Args:
             directory: Path to the directory containing fragmented files.
             signal_type: Type of signal (e.g., "ppg").
         
         Returns:
-            List containing a single merged SignalData instance.
+            List containing a single merged SignalData instance, or empty list if no files found.
         """
         self.logger.info(f"Importing merged {signal_type} signals from {directory}")
         signal = self.import_signal(directory, signal_type)
+        
+        # If import_signal returned None (no files found), return empty list
+        if signal is None:
+            self.logger.warning(f"No {signal_type} signals found in {directory}, skipping")
+            return []
+            
         return [signal]
     
     def _sort_by_embedded_timestamp(self, files: List[str]) -> List[str]:

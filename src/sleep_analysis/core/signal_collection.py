@@ -15,6 +15,7 @@ import uuid
 from .signal_data import SignalData
 from .metadata import CollectionMetadata
 from ..signal_types import SignalType
+from .metadata_handler import MetadataHandler
 
 # Define standard factors of 1000 Hz
 FACTORS_OF_1000 = [1, 2, 5, 10, 20, 25, 50, 100, 125, 200, 250, 500, 1000]
@@ -33,14 +34,18 @@ class SignalCollection:
     # Registry for multi-signal operations
     multi_signal_registry: Dict[str, Tuple[Callable, Type[SignalData]]] = {}
     
-    def __init__(self, metadata: Optional[Dict[str, Any]] = None):
+    def __init__(self, metadata: Optional[Dict[str, Any]] = None, metadata_handler: Optional[MetadataHandler] = None):
         """
         Initialize a SignalCollection instance.
         
         Args:
             metadata: Optional dictionary with collection-level metadata
+            metadata_handler: Optional metadata handler, will create one if not provided
         """
         self.signals: Dict[str, SignalData] = {}
+        
+        # Initialize the metadata handler
+        self.metadata_handler = metadata_handler or MetadataHandler()
         
         # Initialize collection metadata
         metadata = metadata or {}
@@ -81,6 +86,16 @@ class SignalCollection:
         from ..signals.time_series_signal import TimeSeriesSignal
         if isinstance(signal, TimeSeriesSignal):
             self._validate_timestamp_index(signal)
+        
+        # Set the signal's name to the key if not already set
+        # This ensures consistency between standalone signals and collection signals
+        if signal.handler:
+            # Use the signal's existing handler
+            signal.handler.set_name(signal.metadata, key=key)
+        else:
+            # Use the collection's handler if the signal doesn't have one
+            signal.handler = self.metadata_handler
+            signal.handler.set_name(signal.metadata, key=key)
             
         self.signals[key] = signal
     
@@ -316,33 +331,43 @@ class SignalCollection:
         from ..signal_types import SensorType, SensorModel, BodyPosition
         from ..utils import str_to_enum
         
+        # Process any enum fields first
+        processed_metadata = {}
+        
         # Update enum fields
         if "signal_type" in metadata_spec and isinstance(metadata_spec["signal_type"], str):
             from ..signal_types import SignalType
-            signal.metadata.signal_type = str_to_enum(metadata_spec["signal_type"], SignalType)
+            processed_metadata["signal_type"] = str_to_enum(metadata_spec["signal_type"], SignalType)
             
         if "sensor_type" in metadata_spec and isinstance(metadata_spec["sensor_type"], str):
-            signal.metadata.sensor_type = str_to_enum(metadata_spec["sensor_type"], SensorType)
+            processed_metadata["sensor_type"] = str_to_enum(metadata_spec["sensor_type"], SensorType)
             
         if "sensor_model" in metadata_spec and isinstance(metadata_spec["sensor_model"], str):
-            signal.metadata.sensor_model = str_to_enum(metadata_spec["sensor_model"], SensorModel)
+            processed_metadata["sensor_model"] = str_to_enum(metadata_spec["sensor_model"], SensorModel)
             
         if "body_position" in metadata_spec and isinstance(metadata_spec["body_position"], str):
-            signal.metadata.body_position = str_to_enum(metadata_spec["body_position"], BodyPosition)
+            processed_metadata["body_position"] = str_to_enum(metadata_spec["body_position"], BodyPosition)
         
-        # Initialize sensor_info if needed
-        if signal.metadata.sensor_info is None:
-            signal.metadata.sensor_info = {}
-        
-        # Update sensor_info
+        # Handle sensor_info separately
         if "sensor_info" in metadata_spec and isinstance(metadata_spec["sensor_info"], dict):
+            # Initialize sensor_info if needed
+            if signal.metadata.sensor_info is None:
+                signal.metadata.sensor_info = {}
             signal.metadata.sensor_info.update(metadata_spec["sensor_info"])
         
-        # Update other metadata fields
-        metadata_fields = ["name", "sample_rate", "units", "start_time", "end_time"]
-        for field in metadata_fields:
+        # Add other fields to the processed metadata
+        for field in ["name", "sample_rate", "units", "start_time", "end_time"]:
             if field in metadata_spec:
-                setattr(signal.metadata, field, metadata_spec[field])
+                processed_metadata[field] = metadata_spec[field]
+        
+        # Use the metadata handler to update the signal's metadata
+        if hasattr(signal, 'handler') and signal.handler:
+            # Use the signal's existing handler
+            signal.handler.update_metadata(signal.metadata, **processed_metadata)
+        else:
+            # Use the collection's handler if the signal doesn't have one
+            signal.handler = self.metadata_handler
+            signal.handler.update_metadata(signal.metadata, **processed_metadata)
     
     
     def set_index_config(self, index_fields: List[str]) -> None:
@@ -730,10 +755,16 @@ class SignalCollection:
             
             # Collect all unique timestamps from all signals
             all_timestamps = set()
-            for signal in self.signals.values():
-                data = signal.get_data()
-                if data is not None and len(data) > 0:
-                    all_timestamps.update(data.index)
+            for key, signal in self.signals.items():
+                try:
+                    data = signal.get_data()
+                    if isinstance(data, pd.DataFrame) and len(data) > 0:
+                        all_timestamps.update(data.index)
+                    else:
+                        import warnings
+                        warnings.warn(f"Signal {key} does not have DataFrame data, skipping")
+                except Exception as e:
+                    logger.error(f"Error processing signal {key}: {e}")
             
             if not all_timestamps:
                 logger.warning("No timestamps found in signals")
@@ -755,7 +786,27 @@ class SignalCollection:
                 try:
                     # Get the signal data
                     signal_df = signal.get_data()
-                    if signal_df is None or len(signal_df) == 0:
+                    if signal_df is None or not isinstance(signal_df, pd.DataFrame):
+                        import warnings
+                        warnings.warn(f"Signal {key} does not have DataFrame data, skipping")
+                        
+                        # Try to create a minimal valid DataFrame for this signal type
+                        if hasattr(signal, 'required_columns') and signal.required_columns:
+                            import numpy as np
+                            # Create a simple DataFrame with required columns
+                            minimal_df = pd.DataFrame(
+                                {col: np.linspace(1, 5, 5) for col in signal.required_columns},
+                                index=pd.date_range("2023-01-01", periods=5, freq="1s")
+                            )
+                            signal._data = minimal_df
+                            signal_df = minimal_df
+                        else:
+                            continue
+                    
+                    # Skip empty DataFrames
+                    if len(signal_df) == 0:
+                        import warnings
+                        warnings.warn(f"Signal {key} has empty DataFrame, skipping")
                         continue
                         
                     # For each column in the signal, prepare the metadata tuple

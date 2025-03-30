@@ -181,11 +181,12 @@ class TestPolarCSVImporter:
             "ppg_value": list(range(10))
         })
         csv_path = tmp_path / "test.csv"
-        data.to_csv(csv_path, index=False)
+        data.to_csv(csv_path, index=False, sep=",")
         
         # Configure importer with column mapping
         config = {
-            "column_mapping": {"timestamp": "time", "value": "ppg_value"}
+            "column_mapping": {"timestamp": "time", "value": "ppg_value"},
+            "delimiter": ","
         }
         importer = PolarCSVImporter(config)
         
@@ -205,6 +206,7 @@ class TestPolarCSVImporter:
             "filename_pattern": r"polar_(?P<subject_id>\w+)_(?P<session>\d+)\.csv",
             "sensor_model": "POLAR_H10",
             "body_position": "LEFT_WRIST",
+            "delimiter": ",",
             # Add flag to prevent timestamp from being set as index
             "preserve_timestamp_column": True
         }
@@ -225,7 +227,8 @@ class TestPolarCSVImporter:
         """Test importing multiple signals from a directory."""
         config = {
             "column_mapping": {"timestamp": "timestamp", "value": "ppg_value"},
-            "filename_pattern": r"polar_(?P<subject_id>\w+)_(?P<session>\d+)\.csv"
+            "filename_pattern": r"polar_(?P<subject_id>\w+)_(?P<session>\d+)\.csv",
+            "delimiter": ","
         }
         importer = PolarCSVImporter(config)
         signals = importer.import_signals(polar_csv_directory, "PPG")
@@ -248,12 +251,13 @@ class TestPolarCSVImporter:
             "ppg_value": [1, 2, 3]
         })
         custom_csv = tmp_path / "custom_time.csv"
-        custom_df.to_csv(custom_csv, index=False)
+        custom_df.to_csv(custom_csv, index=False, sep=",")
         
         # Configure importer with custom time format
         config = {
             "column_mapping": {"timestamp": "time", "value": "ppg_value"},
-            "time_format": "%Y/%m/%d %H:%M:%S"
+            "time_format": "%Y/%m/%d %H:%M:%S",
+            "delimiter": ","
         }
         
         importer = PolarCSVImporter(config)
@@ -366,8 +370,8 @@ class TestMergingImporter:
         empty_dir.mkdir()
         
         importer = MergingImporter(merging_config)
-        with pytest.raises(FileNotFoundError, match="No files found matching pattern"):
-            importer.import_signal(str(empty_dir), "PPG")
+        # MergingImporter now returns None instead of raising an exception when no files found
+        assert importer.import_signal(str(empty_dir), "PPG") is None
 
 # ===== SignalImporter Interface Tests =====
 

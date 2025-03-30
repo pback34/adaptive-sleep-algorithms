@@ -63,11 +63,11 @@ class PolarCSVImporter(CSVImporterBase):
                 }
                 
         if "time_format" not in self.config:
-            self.logger.debug("Using default time format: %Y-%m-%dT%H:%M:%S.%f")
-            self.config["time_format"] = "%Y-%m-%dT%H:%M:%S.%f"
+            self.logger.debug("Using default time format: %Y-%m-%d %H:%M:%S")
+            self.config["time_format"] = "%Y-%m-%d %H:%M:%S"
         if "delimiter" not in self.config:
-            self.logger.debug("Using default delimiter: ; (Polar format)")
-            self.config["delimiter"] = ";"
+            self.logger.debug("Using default delimiter: , (CSV format)")
+            self.config["delimiter"] = ","
         if "header" not in self.config:
             self.logger.debug("Using default header row: 0")
             self.config["header"] = 0
@@ -90,10 +90,11 @@ class PolarCSVImporter(CSVImporterBase):
         
         try:
             # Read the CSV file with configured parameters
-            self.logger.debug(f"Reading CSV with delimiter={self.config.get('delimiter', ';')}, header={self.config.get('header', 0)}")
+            delimiter = self.config.get('delimiter', ',')
+            self.logger.debug(f"Reading CSV with delimiter='{delimiter}', header={self.config.get('header', 0)}")
             df = pd.read_csv(
                 source,
-                delimiter=self.config.get("delimiter", ";"),
+                delimiter=delimiter,
                 header=self.config.get("header", 0)
             )
             self.logger.debug(f"CSV loaded with {len(df)} rows and {len(df.columns)} columns")
@@ -122,10 +123,16 @@ class PolarCSVImporter(CSVImporterBase):
                 # Rename columns based on mapping
                 df = df.rename(columns=rename_dict)
                 
-                # Only keep the columns that were mapped (drop others)
-                mapped_cols = list(rename_dict.values())
-                self.logger.debug(f"Keeping only mapped columns: {mapped_cols}")
-                df = df[mapped_cols]
+                # Only keep the columns that were mapped if we have mappings
+                if rename_dict:
+                    mapped_cols = list(rename_dict.values())
+                    self.logger.debug(f"Keeping only mapped columns: {mapped_cols}")
+                    
+                    # Make sure we have all required mapped columns before filtering
+                    if all(col in df.columns for col in mapped_cols):
+                        df = df[mapped_cols]
+                    else:
+                        self.logger.warning(f"Cannot filter to mapped columns - missing some columns. Available: {list(df.columns)}")
                 
                 self.logger.debug(f"Columns after mapping ({len(df.columns)} total): {list(df.columns)}")
             
@@ -138,11 +145,18 @@ class PolarCSVImporter(CSVImporterBase):
                 time_format = self.config.get("time_format")
                 
                 # Convert the timestamp series to standard format
-                df[timestamp_col] = convert_timestamp_format(
-                    df[timestamp_col],
-                    source_format=time_format,
-                    target_format=target_format
-                )
+                try:
+                    # First try with specified format
+                    df[timestamp_col] = convert_timestamp_format(
+                        df[timestamp_col],
+                        source_format=time_format,
+                        target_format=target_format
+                    )
+                except ValueError as e:
+                    # If that fails, try without a specific format (let pandas infer it)
+                    self.logger.warning(f"Failed to parse timestamps with format {time_format}: {e}")
+                    self.logger.warning("Attempting to parse timestamps without a specific format")
+                    df[timestamp_col] = pd.to_datetime(df[timestamp_col]).dt.strftime(target_format)
                 
                 # Then use standardize_timestamp to handle the DataFrame structure
                 df = standardize_timestamp(
@@ -251,15 +265,31 @@ class PolarCSVImporter(CSVImporterBase):
             self.logger.debug(f"Found {len(csv_files)} CSV/TXT files in directory: {csv_files}")
             
             # Filter files by signal_type and sort for chronological merging
+            # Determine files to include based on signal type and pattern
             related_files = []
-            for filename in csv_files:
-                if signal_type.upper() == "HEART_RATE" and "_HR." in filename:
-                    related_files.append(os.path.join(source, filename))
-                elif signal_type.upper() == "ACCELEROMETER" and "_ACC." in filename:
-                    related_files.append(os.path.join(source, filename))
-                elif signal_type.upper() == "PPG":
-                    # For PPG signals, include all CSV files (for test compatibility)
-                    related_files.append(os.path.join(source, filename))
+                
+            # First check if we have a file_pattern in config
+            file_pattern = self.config.get('file_pattern')
+            if file_pattern:
+                import re
+                pattern = re.compile(file_pattern)
+                for filename in csv_files:
+                    if pattern.match(filename):
+                        related_files.append(os.path.join(source, filename))
+                    
+                if not related_files:
+                    self.logger.warning(f"No files matched pattern {file_pattern} in {source}")
+                
+            # If no file_pattern or no files matched, fall back to signal type-based selection
+            if not related_files:
+                for filename in csv_files:
+                    if signal_type.upper() == "HEART_RATE" and "_HR." in filename:
+                        related_files.append(os.path.join(source, filename))
+                    elif signal_type.upper() == "ACCELEROMETER" and "_ACC." in filename:
+                        related_files.append(os.path.join(source, filename))
+                    elif signal_type.upper() == "PPG":
+                        # For PPG signals, include all CSV files (for test compatibility)
+                        related_files.append(os.path.join(source, filename))
             
             if not related_files:
                 self.logger.warning(f"No matching files found for {signal_type} in {source}")
@@ -340,8 +370,8 @@ class PolarCSVImporter(CSVImporterBase):
                         warnings.warn(f"Error parsing {file_path}: {e}")
                 
                 if not dfs:
-                    self.logger.warning(f"No valid dataframes to merge for {signal_type}")
-                    return []
+                    self.logger.warning(f"No valid dataframes found to merge for {signal_type}")
+                    return []  # Return empty list instead of raising an error
                 
                 # Merge dataframes chronologically
                 if isinstance(dfs[0].index, pd.DatetimeIndex):

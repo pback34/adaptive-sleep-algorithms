@@ -47,7 +47,7 @@ class CSVImporterBase(SignalImporter):
             FileNotFoundError: If the CSV file does not exist.
             ValueError: If the CSV file is malformed.
         """
-        pass
+        raise NotImplementedError("Subclasses must implement _parse_csv")
     
     def import_signal(self, source: str, signal_type: str) -> SignalData:
         """
@@ -192,7 +192,26 @@ class CSVImporterBase(SignalImporter):
         signal_class = self._get_signal_class(signal_type)
         required_columns = signal_class.required_columns
         self.logger.debug(f"Required columns for {signal_type}: {required_columns}")
+        
+        # Check if we need to apply any column mapping from config
+        if hasattr(self, 'config') and 'column_mapping' in self.config:
+            column_mapping = self.config.get('column_mapping', {})
+            self.logger.debug(f"Applying column mapping before validation: {column_mapping}")
             
+            # Map source column names to standard names
+            rename_dict = {}
+            for std_col, src_col in column_mapping.items():
+                if src_col in data.columns:
+                    rename_dict[src_col] = std_col
+            
+            if rename_dict:
+                self.logger.debug(f"Renaming columns: {rename_dict}")
+                data = data.rename(columns=rename_dict)
+                self.logger.debug(f"Columns after mapping: {list(data.columns)}")
+            else:
+                self.logger.warning(f"No column mapping could be applied. Available columns: {list(data.columns)}")
+                self.logger.warning(f"Expected source columns: {[src for std, src in column_mapping.items()]}")
+        
         # Validate that all required data columns are present
         missing_columns = [col for col in required_columns if col not in data.columns]
         if missing_columns:
@@ -228,5 +247,5 @@ class CSVImporterBase(SignalImporter):
             "signal_type": SignalType[signal_type.upper()],
             "sample_rate": "100Hz",  # Default value
             "units": "bpm" if signal_type.upper() == "PPG" else "m/s^2",  # Signal-specific default
-            "source": source,  # Store the source path for traceability
+            "source_files": [source],  # Store the source path for traceability in source_files
         }

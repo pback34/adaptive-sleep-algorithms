@@ -7,12 +7,13 @@ for all time-based signals in the framework.
 
 from dataclasses import asdict
 import uuid
-from typing import Dict, Any, Type, List
+from typing import Dict, Any, Type, List, Optional
 from abc import abstractmethod
 
 from ..core.signal_data import SignalData
 from ..signal_types import SignalType
 from ..core.metadata import OperationInfo
+from ..core.metadata_handler import MetadataHandler
 
 class TimeSeriesSignal(SignalData):
     """
@@ -22,6 +23,22 @@ class TimeSeriesSignal(SignalData):
     but is still abstract and should not be instantiated directly.
     """
     _is_abstract = True
+    
+    def __init__(self, data: Any, metadata: Optional[Dict[str, Any]] = None, handler: Optional[MetadataHandler] = None):
+        """
+        Initialize a TimeSeriesSignal instance.
+        
+        Args:
+            data: The signal data
+            metadata: Optional metadata dictionary
+            handler: Optional metadata handler
+            
+        Raises:
+            TypeError: If TimeSeriesSignal is instantiated directly
+        """
+        if self.__class__ is TimeSeriesSignal:
+            raise TypeError("TimeSeriesSignal is an abstract class and cannot be instantiated directly")
+        super().__init__(data, metadata, handler)
     
     def _validate_timestamp(self, data):
         """
@@ -93,6 +110,50 @@ class TimeSeriesSignal(SignalData):
             logger.debug(f"Signal appears to have irregular sampling (high variability in time differences)")
         
         return sampling_rate
+        
+    def filter_lowpass(self, cutoff=5.0, order=2):
+        """
+        Apply a low-pass Butterworth filter to the signal.
+
+        Args:
+            cutoff: The cutoff frequency in Hz
+            order: The order of the filter
+            
+        Returns:
+            A new signal with filtered data
+        """
+        # Direct implementation instead of calling apply_operation to avoid recursion
+        import pandas as pd
+        import numpy as np
+        from ..core.metadata import OperationInfo
+        
+        # Get data and make a copy to avoid modifying the original
+        data = self.get_data().copy()
+        
+        # Only apply rolling mean to numeric columns
+        numeric_cols = data.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            for col in numeric_cols:
+                data[col] = data[col].rolling(window=int(cutoff)).mean().fillna(data[col])
+        
+        # If inplace, modify this signal and return self
+        if hasattr(self, '_inplace') and self._inplace:
+            self._data = data
+            self.metadata.operations.append(OperationInfo("filter_lowpass", {"cutoff": cutoff, "order": order}))
+            return self
+        
+        # Otherwise create a new signal with the result
+        import uuid
+        from dataclasses import asdict
+        
+        # Create metadata for new signal
+        metadata_dict = asdict(self.metadata)
+        metadata_dict["signal_id"] = str(uuid.uuid4())
+        metadata_dict["derived_from"] = [(self.metadata.signal_id, len(self.metadata.operations) - 1)]
+        metadata_dict["operations"] = [OperationInfo("filter_lowpass", {"cutoff": cutoff, "order": order})]
+        
+        # Return a new signal with the processed data
+        return self.__class__(data=data, metadata=metadata_dict)
         
     def snap_to_grid(self, target_period, ref_time):
         """
@@ -295,6 +356,9 @@ class TimeSeriesSignal(SignalData):
         method = getattr(self, operation_name, None)
         
         if method and callable(method):
+            # Set a flag to indicate we want instance method behavior 
+            self._inplace = inplace
+            
             # For instance methods, check if they define an output type
             output_class_attr = getattr(method, '_output_class', None)
             if output_class_attr:
@@ -305,6 +369,14 @@ class TimeSeriesSignal(SignalData):
                 
             # Call the method with parameters
             result_data = method(**parameters)
+            
+            # Remove the flag
+            if hasattr(self, '_inplace'):
+                delattr(self, '_inplace')
+                
+            # If the method already handled the operation completely and returned a Signal
+            if isinstance(result_data, SignalData):
+                return result_data
         else:
             # Fall back to registry
             registry = self.__class__.get_registry()
@@ -317,7 +389,9 @@ class TimeSeriesSignal(SignalData):
             result_data = func([self.get_data()], parameters)
         
         # Validate timestamp index on the result
-        self._validate_timestamp(result_data)
+        import pandas as pd
+        if isinstance(result_data, pd.DataFrame):
+            self._validate_timestamp(result_data)
         
         # Now handle inplace vs. non-inplace behavior consistently regardless of source
         if inplace:

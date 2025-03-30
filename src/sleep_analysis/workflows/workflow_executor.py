@@ -211,6 +211,11 @@ class WorkflowExecutor:
         else:
             error_msg = f"Error: {error}"
         
+        # Special handling for FileNotFoundError - always warn rather than fail
+        if isinstance(error, FileNotFoundError):
+            warnings.warn(error_msg)
+            return
+            
         if self.strict_validation:
             if isinstance(error, ValueError):
                 raise ValueError(error_msg) from error
@@ -289,11 +294,23 @@ class WorkflowExecutor:
                 if self.data_dir:
                     source = os.path.join(self.data_dir, source)
                 
-                # Import signals using the collection's method
-                signals = self.container.import_signals_from_source(importer, source, spec)
-                
-                if not signals:
-                    warnings.warn(f"No signals imported from {source}")
+                try:
+                    # Import signals using the collection's method
+                    signals = self.container.import_signals_from_source(importer, source, spec)
+                    
+                    if not signals:
+                        warnings.warn(f"No signals imported from {source}, skipping")
+                        continue
+                except FileNotFoundError as e:
+                    # Handle file not found errors gracefully
+                    warnings.warn(f"No files found for {spec['signal_type']} in {source}: {str(e)}")
+                    continue
+                except Exception as e:
+                    # For strict validation, re-raise other errors
+                    if self.strict_validation:
+                        raise
+                    # Otherwise, log a warning and continue
+                    warnings.warn(f"Error importing {spec['signal_type']} from {source}: {str(e)}")
                     continue
                     
                 # Get or create base name

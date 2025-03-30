@@ -134,10 +134,10 @@ def test_export_excel(sample_signal_collection, temp_output_dir):
         assert ('Accelerometer Signal', 'z') in combined_df.columns
         temp_value_cols = [col for col in combined_df.columns if "temp_0" in str(col)]
     else:
-        assert "value" in combined_df.columns  # From PPG signal
-        assert "x" in combined_df.columns  # From accelerometer signal
-        assert "y" in combined_df.columns  # From accelerometer signal
-        assert "z" in combined_df.columns  # From accelerometer signal
+        assert "ppg_0" in combined_df.columns  # From PPG signal
+        assert "accelerometer_0_x" in combined_df.columns  # From accelerometer signal
+        assert "accelerometer_0_y" in combined_df.columns  # From accelerometer signal
+        assert "accelerometer_0_z" in combined_df.columns  # From accelerometer signal
         temp_value_cols = [col for col in combined_df.columns if "temp_0" in col]
     # Check for the correct number of non-NaN rows
     assert len(combined_df.dropna()) == 5  # 5 data points
@@ -204,7 +204,7 @@ def test_export_csv(sample_signal_collection, temp_output_dir):
     assert len(combined_df) == 5  # 5 data points
     # Verify some column data is present, regardless of structure
     cols_str = str(combined_df.columns)
-    assert 'PPG' in cols_str or 'value' in cols_str
+    assert 'PPG' in cols_str or 'ppg_0' in cols_str
     
     # Verify metadata
     with open(os.path.join(temp_output_dir, "metadata.json"), 'r') as f:
@@ -237,10 +237,10 @@ def test_export_pickle(sample_signal_collection, temp_output_dir):
     # Check the combined dataframe structure - we're more interested in the presence 
     # of the right data and absence of temporary signals than the exact MultiIndex structure
     cols_str = str(data["combined"].columns)
-    assert "value" in cols_str  # PPG signal value
-    assert "x" in cols_str      # Accelerometer X
-    assert "y" in cols_str      # Accelerometer Y
-    assert "z" in cols_str      # Accelerometer Z
+    assert "ppg_0" in cols_str  # PPG signal value
+    assert "accelerometer_0_x" in cols_str  # Accelerometer X
+    assert "accelerometer_0_y" in cols_str  # Accelerometer Y
+    assert "accelerometer_0_z" in cols_str  # Accelerometer Z
     assert "temp_0" not in cols_str  # Temporary signal should not be included
 
 def test_export_hdf5(sample_signal_collection, temp_output_dir):
@@ -278,10 +278,10 @@ def test_export_hdf5(sample_signal_collection, temp_output_dir):
         combined_df = store["/combined"]
         # Check the presence of expected columns and absence of temporary signal
         cols_str = str(combined_df.columns)
-        assert "value" in cols_str
-        assert "x" in cols_str
-        assert "y" in cols_str
-        assert "z" in cols_str
+        assert "ppg_0" in cols_str
+        assert "accelerometer_0_x" in cols_str
+        assert "accelerometer_0_y" in cols_str
+        assert "accelerometer_0_z" in cols_str
         assert "temp_0" not in cols_str
     
     # Check metadata using h5py

@@ -81,7 +81,8 @@ def test_apply_operation_inplace(sample_metadata, sample_dataframe):
     result = signal.apply_operation("filter_lowpass", inplace=True)
     assert result is signal
     # Data should be modified by the filter operation
-    assert not signal.get_data().equals(original_data)
+    import pandas as pd
+    assert not pd.DataFrame.equals(signal.get_data(), original_data)
     # Check that operation was recorded in metadata
     assert len(signal.metadata.operations) == 1
     assert signal.metadata.operations[0].operation_name == "filter_lowpass"
@@ -95,9 +96,10 @@ def test_apply_operation_non_inplace(sample_metadata, sample_dataframe):
     new_signal = signal.apply_operation("filter_lowpass")
     assert isinstance(new_signal, PPGSignal)
     # The original signal's data should be unchanged
-    assert signal.get_data().equals(original_data)
+    import pandas as pd
+    assert pd.DataFrame.equals(signal.get_data(), original_data)
     # The new signal's data should be different (filtered)
-    assert not new_signal.get_data().equals(original_data)
+    assert not pd.DataFrame.equals(new_signal.get_data(), original_data)
     # Check metadata was properly updated
     assert len(new_signal.metadata.operations) == 1
     assert new_signal.metadata.operations[0].operation_name == "filter_lowpass"

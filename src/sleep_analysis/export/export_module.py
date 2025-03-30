@@ -197,7 +197,8 @@ class ExportModule:
         
         if include_combined:
             combined_file = os.path.join(output_dir, "combined.xlsx")
-            combined_df = self.collection.get_combined_dataframe()
+            # Filter out temporary signals from the combined dataframe
+            combined_df = self._get_filtered_combined_dataframe()
             if not combined_df.empty:
                 combined_df = self._format_timestamp(combined_df)
                 # Ensure no NaN rows are included and index is properly handled
@@ -264,7 +265,7 @@ class ExportModule:
             combined_file = os.path.join(output_dir, "combined.csv")
             logger.info(f"Generating combined dataframe for export to {combined_file}")
             
-            combined_df = self.collection.get_combined_dataframe()
+            combined_df = self._get_filtered_combined_dataframe()
             
             if not combined_df.empty:
                 logger.info(f"Combined dataframe has {len(combined_df)} rows and {len(combined_df.columns)} columns")
@@ -307,7 +308,7 @@ class ExportModule:
         
         # Add combined dataframe if requested
         if include_combined:
-            export_data["combined"] = self.collection.get_combined_dataframe()
+            export_data["combined"] = self._get_filtered_combined_dataframe()
         
         # Save to pickle file
         with open(pickle_file, 'wb') as f:
@@ -341,7 +342,7 @@ class ExportModule:
             
             # Store combined dataframe if requested
             if include_combined:
-                combined_df = self.collection.get_combined_dataframe()
+                combined_df = self._get_filtered_combined_dataframe()
                 if not combined_df.empty:
                     store["combined"] = combined_df
         
@@ -353,3 +354,36 @@ class ExportModule:
             # Use dumps with default=str to handle any remaining non-serializable objects
             metadata_json = json.dumps(metadata, default=str)
             f.create_dataset("metadata", data=metadata_json)
+            
+    def _get_filtered_combined_dataframe(self) -> pd.DataFrame:
+        """
+        Get a combined dataframe with temporary signals filtered out.
+        
+        Returns:
+            A DataFrame with all non-temporary signals combined.
+        """
+        # Get all signals from the collection
+        combined_df = self.collection.get_combined_dataframe()
+        
+        if combined_df.empty:
+            return combined_df
+            
+        # Filter out columns from temporary signals
+        filtered_columns = []
+        
+        for key, signal in self.collection.signals.items():
+            if hasattr(signal.metadata, 'temporary') and signal.metadata.temporary:
+                # Skip columns from this signal - they could be in the combined dataframe
+                # Check for exact matches or key-prefixed columns (like 'temp_0')
+                signal_cols = [col for col in combined_df.columns 
+                              if str(col) == key or 
+                                 (isinstance(col, str) and col.startswith(f"{key}_")) or
+                                 (hasattr(col, '__iter__') and any(str(part) == key for part in col))]
+                filtered_columns.extend(signal_cols)
+        
+        # Keep only non-temporary signal columns
+        if filtered_columns:
+            filtered_df = combined_df.drop(columns=filtered_columns)
+            return filtered_df
+        
+        return combined_df
