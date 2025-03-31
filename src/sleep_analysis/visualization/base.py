@@ -11,6 +11,7 @@ import pandas as pd
 
 from ..core.signal_collection import SignalCollection
 from ..core.signal_data import SignalData
+from ..signal_types import SignalType
 
 class VisualizerBase(ABC):
     """
@@ -201,9 +202,29 @@ class VisualizerBase(ABC):
         pass
     
     @abstractmethod
+    def add_categorical_regions(self, figure: Any, start_times: Any, end_times: Any, 
+                                categories: Any, category_map: Dict[str, str], 
+                                **kwargs) -> List[Any]:
+        """
+        Add colored regions representing categorical data over time intervals.
+        
+        Args:
+            figure: The figure to add the regions to
+            start_times: Series/array of start times for each interval
+            end_times: Series/array of end times for each interval
+            categories: Series/array of category labels for each interval
+            category_map: Dictionary mapping category labels to colors
+            **kwargs: Optional styling parameters (e.g., opacity, y_range)
+            
+        Returns:
+            List of region objects that were added
+        """
+        pass
+        
+    @abstractmethod
     def add_region(self, figure: Any, x_start: Any, x_end: Any, **kwargs) -> Any:
         """
-        Add a highlighted region to a figure.
+        Add a highlighted region (typically for annotations) to a figure.
         
         Args:
             figure: The figure to add the region to
@@ -259,15 +280,36 @@ class VisualizerBase(ABC):
         # Set appropriate x-axis type for datetime index
         if isinstance(data.index, pd.DatetimeIndex):
             kwargs['x_axis_type'] = 'datetime'
-        
-        # Downsample data if needed for better visualization performance
-        max_points = kwargs.get('max_points', 10000)
-        if len(data) > max_points:
-            import numpy as np
-            # Calculate step size for even sampling
-            step = max(1, len(data) // max_points)
-            data = data.iloc[::step]
-        
+            
+        # Check if the primary data column is categorical
+        is_categorical = False
+        primary_col = data.columns[0] # Assume first column is primary
+        if pd.api.types.is_categorical_dtype(data[primary_col]) or \
+           pd.api.types.is_object_dtype(data[primary_col]) or \
+           (hasattr(signal, 'signal_type') and signal.signal_type == SignalType.EEG_SLEEP_STAGE):
+            is_categorical = True
+            
+        # Apply downsampling if specified in kwargs (only for numerical)
+        if not is_categorical and 'downsample' in kwargs:
+            downsample_param = kwargs['downsample']
+            if isinstance(downsample_param, int) and downsample_param > 0:
+                # Interpret as max_points
+                max_points = downsample_param
+                if len(data) > max_points:
+                    import numpy as np
+                    step = max(1, len(data) // max_points)
+                    data = data.iloc[::step]
+            elif isinstance(downsample_param, float) and 0 < downsample_param < 1:
+                 # Interpret as fraction (not implemented yet, could use resample)
+                 pass # Placeholder for fractional downsampling
+            elif isinstance(downsample_param, str):
+                 # Interpret as time frequency (e.g., '1S', '1T')
+                 try:
+                     data = data.resample(downsample_param).mean() # Or first(), median() etc.
+                 except Exception as e:
+                     import logging
+                     logging.getLogger(__name__).warning(f"Could not apply time-based downsampling '{downsample_param}': {e}")
+
         # Get color palette if available
         palette = kwargs.get('palette', self.default_params.get('palette', None))
             
@@ -296,22 +338,54 @@ class VisualizerBase(ABC):
                     # For Plotly named palettes or any other case
                     plot_kwargs['color_index'] = i
             
-            self.add_line_plot(figure, data.index, data[col], **plot_kwargs)
-        
+            # Plot numerical data as lines
+            if not is_categorical:
+                self.add_line_plot(figure, data.index, data[col], **plot_kwargs)
+            else:
+                # Plot categorical data as a stepped line
+                # 1. Define mapping from category to number
+                #    Sort categories for consistent mapping
+                unique_categories = sorted(data[col].unique())
+                category_to_num = {cat: i for i, cat in enumerate(unique_categories)}
+                num_to_category = {i: cat for cat, i in category_to_num.items()}
+                
+                # 2. Convert data to numerical representation
+                numerical_data = data[col].map(category_to_num)
+                
+                # 3. Add plot kwargs specific to categorical line plot
+                cat_plot_kwargs = plot_kwargs.copy()
+                cat_plot_kwargs['line_shape'] = 'hv' # Use stepped line
+                cat_plot_kwargs['y_axis_mapping'] = num_to_category # Pass mapping for axis setup
+                
+                # 4. Plot the numerical data
+                self.add_line_plot(figure, data.index, numerical_data, **cat_plot_kwargs)
+                
+                # 5. Adjust y-axis label for categorical data
+                self.set_axis_labels(figure, y_label='Stage') # Set y-label to 'Stage'
+                # Backend implementation will use the mapping to set ticks/labels
+
         # Add metadata as labels
-        title = kwargs.get('title', signal.metadata.name or 'Time Series Plot')
+        title = kwargs.get('title', signal.metadata.name or ('Sleep Stage Plot' if is_categorical else 'Time Series Plot'))
         self.set_title(figure, title)
         
         x_label = kwargs.get('x_label', 'Time')
-        y_label = kwargs.get('y_label')
         
-        if not y_label and signal.metadata.units:
-            try:
-                y_label = f"{signal.metadata.name or 'Value'} ({signal.metadata.units.name})"
-            except AttributeError:
-                y_label = f"{signal.metadata.name or 'Value'} ({signal.metadata.units})"
-        
-        self.set_axis_labels(figure, x_label, y_label)
+        # Set y-label only if not categorical (handled above for categorical)
+        if not is_categorical:
+            y_label = kwargs.get('y_label')
+            if not y_label and hasattr(signal.metadata, 'units') and signal.metadata.units:
+                try:
+                    unit_name = signal.metadata.units.name if hasattr(signal.metadata.units, 'name') else str(signal.metadata.units)
+                    y_label = f"{signal.metadata.name or 'Value'} ({unit_name})"
+                except AttributeError: # Handle cases where units might not be an enum
+                    y_label = f"{signal.metadata.name or 'Value'} ({signal.metadata.units})"
+            elif not y_label:
+                 y_label = signal.metadata.name or 'Value'
+                 
+            self.set_axis_labels(figure, x_label=x_label, y_label=y_label)
+        else:
+            # For categorical, only set x-label (y-label set above)
+             self.set_axis_labels(figure, x_label=x_label)
         
         return figure
     
@@ -540,7 +614,25 @@ class VisualizerBase(ABC):
                     signal_kwargs = {**kwargs, 'title': title}
                 else:
                     signal_kwargs = kwargs
-                
+
+                # Check if this signal is categorical and might need a default y-range
+                is_categorical_signal = False
+                primary_col = signal.get_data().columns[0]
+                signal_data = signal.get_data()
+                if pd.api.types.is_categorical_dtype(signal_data[primary_col]) or \
+                   pd.api.types.is_object_dtype(signal_data[primary_col]) or \
+                   (hasattr(signal, 'signal_type') and signal.signal_type == SignalType.EEG_SLEEP_STAGE):
+                    is_categorical_signal = True
+
+                # If categorical and no y-limits are set, provide a default for Bokeh
+                # This helps when it's the only plot or determines linked axis range
+                if is_categorical_signal and 'y_min' not in signal_kwargs and 'y_max' not in signal_kwargs:
+                     # Set a default range like (-0.5, 0.5) or (0, 1)
+                     # Let's use (0, 1) as it matches the default in add_categorical_regions
+                     signal_kwargs.setdefault('y_min', 0)
+                     signal_kwargs.setdefault('y_max', 1)
+                     logger.debug(f"Setting default y-range (0, 1) for categorical signal '{signal_key}'")
+
                 figure = self.visualize_signal(signal, **signal_kwargs)
                 figures.append(figure)
             except Exception as e:

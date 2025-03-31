@@ -16,14 +16,7 @@ class AngleSignal(TimeSeriesSignal):
     while roll represents the left/right tilt.
     """
     _is_abstract = False
-    signal_type = SignalType.ACCELEROMETER
+    signal_type = SignalType.ANGLE # Use the dedicated ANGLE type
     required_columns = ['pitch', 'roll']
-    
-    def get_sampling_rate(self) -> float:
-        """
-        Get the sampling rate of the angle signal.
-        
-        Returns:
-            The sampling rate in Hz.
-        """
-        return super().get_sampling_rate() or 50.0  # Default to 50Hz if calculation fails
+
+    # Removed get_sampling_rate override - will use TimeSeriesSignal implementation

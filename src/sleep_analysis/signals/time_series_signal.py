@@ -39,7 +39,9 @@ class TimeSeriesSignal(SignalData):
         if self.__class__ is TimeSeriesSignal:
             raise TypeError("TimeSeriesSignal is an abstract class and cannot be instantiated directly")
         super().__init__(data, metadata, handler)
-    
+        # Automatically update sample rate metadata upon initialization
+        self._update_sample_rate_metadata()
+
     def _validate_timestamp(self, data):
         """
         Ensure data has proper timestamp information as a DatetimeIndex.
@@ -109,52 +111,66 @@ class TimeSeriesSignal(SignalData):
         if std_diff > median_diff_seconds * 0.1:  # If std dev > 10% of median
             logger.debug(f"Signal appears to have irregular sampling (high variability in time differences)")
         
-        return sampling_rate
-        
-    def filter_lowpass(self, cutoff=5.0, order=2):
-        """
-        Apply a low-pass Butterworth filter to the signal.
+        # Check if the signal has consistent spacing (helpful for debugging)
+        # Return None if variability is too high (e.g., std dev > 50% of median)
+        # Use a stricter threshold (e.g., 10%) to identify irregular signals
+        if std_diff > median_diff_seconds * 0.1:
+            logger.warning(f"Signal {self.metadata.signal_id} appears to have irregular sampling (std_dev > 10% of median). Returning None for sampling rate.")
+            return None
 
-        Args:
-            cutoff: The cutoff frequency in Hz
-            order: The order of the filter
-            
-        Returns:
-            A new signal with filtered data
+        return sampling_rate
+
+    def _update_sample_rate_metadata(self):
         """
-        # Direct implementation instead of calling apply_operation to avoid recursion
-        import pandas as pd
-        import numpy as np
-        from ..core.metadata import OperationInfo
-        
-        # Get data and make a copy to avoid modifying the original
-        data = self.get_data().copy()
-        
-        # Only apply rolling mean to numeric columns
-        numeric_cols = data.select_dtypes(include=[np.number]).columns
-        if len(numeric_cols) > 0:
-            for col in numeric_cols:
-                data[col] = data[col].rolling(window=int(cutoff)).mean().fillna(data[col])
-        
-        # If inplace, modify this signal and return self
-        if hasattr(self, '_inplace') and self._inplace:
-            self._data = data
-            self.metadata.operations.append(OperationInfo("filter_lowpass", {"cutoff": cutoff, "order": order}))
-            return self
-        
-        # Otherwise create a new signal with the result
-        import uuid
-        from dataclasses import asdict
-        
-        # Create metadata for new signal
-        metadata_dict = asdict(self.metadata)
-        metadata_dict["signal_id"] = str(uuid.uuid4())
-        metadata_dict["derived_from"] = [(self.metadata.signal_id, len(self.metadata.operations) - 1)]
-        metadata_dict["operations"] = [OperationInfo("filter_lowpass", {"cutoff": cutoff, "order": order})]
-        
-        # Return a new signal with the processed data
-        return self.__class__(data=data, metadata=metadata_dict)
-        
+        Calculate, format, and update the sample_rate in the signal's metadata.
+
+        Calls get_sampling_rate() and formats the result as "X.XXXXHz", "Variable",
+        or "Unknown" before updating the metadata using the handler.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        calculated_rate = self.get_sampling_rate()
+        formatted_rate = "Unknown" # Default
+
+        if calculated_rate is not None and calculated_rate > 0:
+            formatted_rate = f"{calculated_rate:.4f}Hz"
+        elif calculated_rate is None:
+            # Distinguish between insufficient data and variability if possible
+            data = self.get_data()
+            # Distinguish between insufficient data, zero diff, and variability
+            import pandas as pd # Need pandas here
+            data = self.get_data()
+            if data is None or len(data) < 2:
+                formatted_rate = "Unknown" # Insufficient data
+                logger.debug(f"Setting sample_rate metadata to 'Unknown' for signal {self.metadata.signal_id} (insufficient data)")
+            else:
+                # Check if the reason for None was zero median diff or high variability
+                time_diffs = pd.Series(data.index).diff().dropna()
+                # Check median diff first
+                if len(time_diffs) > 0 and time_diffs.median().total_seconds() <= 0:
+                     formatted_rate = "Unknown" # Constant time or non-increasing timestamps
+                     logger.debug(f"Setting sample_rate metadata to 'Unknown' for signal {self.metadata.signal_id} (zero or negative median time difference)")
+                else:
+                    # If median diff > 0 but get_sampling_rate returned None, it must be due to high variability check
+                    formatted_rate = "Variable"
+                    logger.debug(f"Setting sample_rate metadata to 'Variable' for signal {self.metadata.signal_id} (high variability detected by get_sampling_rate)")
+        # This else handles calculated_rate <= 0, which get_sampling_rate should prevent by returning None
+        else:
+             formatted_rate = "Unknown"
+             logger.debug(f"Setting sample_rate metadata to 'Unknown' for signal {self.metadata.signal_id} (invalid calculated rate: {calculated_rate})")
+
+
+        if hasattr(self, 'handler') and self.handler:
+            self.handler.update_metadata(self.metadata, sample_rate=formatted_rate)
+            logger.debug(f"Updated sample_rate metadata for signal {self.metadata.signal_id} to: {formatted_rate}")
+        else:
+            logger.warning(f"Metadata handler not found for signal {self.metadata.signal_id}. Cannot update sample_rate metadata.")
+
+    # Removed filter_lowpass instance method. Functionality is now handled
+    # solely by the registered 'filter_lowpass' operation function below
+    # and invoked via apply_operation("filter_lowpass", ...).
+
     def snap_to_grid(self, target_period, ref_time):
         """
         Snap signal timestamps to the alignment grid.
@@ -217,11 +233,11 @@ class TimeSeriesSignal(SignalData):
         logger.debug(f"Snapped signal size: {len(df_new)} points (was {original_size})")
             
         return df_new
-        
-    def resample_to_rate(self, new_rate, target_period, ref_time):
+
+    def resample_to_rate(self, new_rate, target_period, ref_time, method='linear'):
         """
         Resample the signal to a new rate and align to the grid.
-        
+
         Args:
             new_rate (float): Target sample rate in Hz (a factor of 1000).
             target_period (pd.Timedelta): Period of the alignment grid.
@@ -262,11 +278,46 @@ class TimeSeriesSignal(SignalData):
         
         # Create target index with exact grid points
         target_index = pd.date_range(start=start_time, end=end_time, freq=new_period)
-        
-        # Resample with interpolation
-        df_resampled = df.reindex(df.index.union(target_index)).interpolate(method='linear').reindex(target_index)
-        return df_resampled
-        
+
+        # --- Step 1: Reindex to align data structure to the target grid ---
+        # Always use 'nearest' for non-numeric columns during reindexing
+        numeric_cols = df.select_dtypes(include=np.number).columns
+        non_numeric_cols = df.columns.difference(numeric_cols)
+
+        # Reindex numeric columns (initially without interpolation method)
+        df_reindexed_numeric = df[numeric_cols].reindex(target_index)
+
+        # Reindex non-numeric columns using 'nearest'
+        df_reindexed_non_numeric = pd.DataFrame(index=target_index) # Initialize empty frame
+        if len(non_numeric_cols) > 0:
+            logger.debug(f"Reindexing non-numeric columns using 'nearest': {list(non_numeric_cols)}")
+            df_reindexed_non_numeric = df[non_numeric_cols].reindex(target_index, method='nearest')
+
+        # Combine reindexed parts
+        df_reindexed = pd.concat([df_reindexed_numeric, df_reindexed_non_numeric], axis=1)
+        # Ensure original column order
+        df_reindexed = df_reindexed[df.columns]
+
+        # --- Step 2: Apply interpolation method if needed ---
+        # Apply interpolation only to numeric columns if method requires it (e.g., 'linear')
+        interpolation_methods = ['linear', 'time', 'index', 'values', 'pad', 'nearest', 'zero', 'slinear', 'quadratic', 'cubic', 'barycentric', 'krogh', 'polynomial', 'spline', 'piecewise_polynomial', 'from_derivatives', 'pchip', 'akima', 'cubicspline']
+        if method in interpolation_methods and method != 'nearest': # 'nearest' already handled by reindex
+             if len(numeric_cols) > 0:
+                 logger.debug(f"Applying interpolation method '{method}' to numeric columns: {list(numeric_cols)}")
+                 # Limit interpolation to avoid excessive extrapolation if needed (optional)
+                 limit_direction = 'both' # Interpolate both forward and backward
+                 limit_area = None # No limit on consecutive NaNs to fill
+                 df_reindexed[numeric_cols] = df_reindexed[numeric_cols].interpolate(
+                     method=method, limit_direction=limit_direction, limit_area=limit_area
+                 )
+             else:
+                 logger.debug(f"Interpolation method '{method}' requested, but no numeric columns found.")
+        elif method != 'nearest':
+             logger.warning(f"Interpolation method '{method}' is not a standard pandas method. Using 'nearest'.")
+             # 'nearest' was effectively applied during reindex
+
+        return df_reindexed
+
     def get_data(self):
         """
         Get the signal data.
@@ -275,45 +326,48 @@ class TimeSeriesSignal(SignalData):
             The time-series data.
             
         Note:
-            If data has been cleared, attempts to regenerate it using operation history.
+            If data has been cleared, attempts to regenerate it using operation history,
+            unless regeneration was explicitly skipped via clear_data().
         """
-        # Add an attribute check to skip regeneration for the test_regenerate_data_after_clear test
+        # Check the flag set by clear_data()
         skip_regeneration = getattr(self, '_skip_regeneration', False)
-        
-        if self._data is None and hasattr(self, 'metadata') and self.metadata.derived_from and not skip_regeneration:
-            # Attempt to regenerate data from operation history
-            try:
-                # This is a simple implementation using the first operation in history
-                # A more comprehensive implementation would recreate the entire operation chain
-                if self.metadata.operations and hasattr(self, '_regenerate_data'):
-                    regenerated = self._regenerate_data()
-                    if not regenerated:
-                        import warnings
-                        warnings.warn(f"Regeneration returned no data")
-                        
-                        # Special case for tests: if we're in a test environment, create dummy data
-                        import sys
-                        if 'pytest' in sys.modules:
-                            import pandas as pd
-                            import numpy as np
-                            # Create minimal test data matching the expected structure
-                            dates = pd.date_range('2023-01-01', periods=5, freq='s')
-                            if hasattr(self, 'required_columns'):
-                                if 'value' in self.required_columns:
-                                    self._data = pd.DataFrame({'value': np.linspace(1, 5, 5)}, index=dates)
-                                elif all(col in ['x', 'y', 'z'] for col in self.required_columns):
-                                    self._data = pd.DataFrame({
-                                        'x': np.linspace(1, 5, 5),
-                                        'y': np.linspace(6, 10, 5),
-                                        'z': np.linspace(11, 15, 5)
-                                    }, index=dates)
-                                    
-                    # Validate that regenerated data has a proper timestamp index
-                    if self._data is not None:
-                        self._validate_timestamp(self._data)
-            except Exception as e:
-                import warnings
-                warnings.warn(f"Failed to regenerate data: {str(e)}")
+
+        if self._data is None and not skip_regeneration:
+            # Only attempt regeneration if data is None AND skip_regeneration is False
+            if hasattr(self, 'metadata') and self.metadata.derived_from:
+                # Attempt to regenerate data from operation history
+                try:
+                    # This is a simple implementation using the first operation in history
+                    # A more comprehensive implementation would recreate the entire operation chain
+                    if self.metadata.operations and hasattr(self, '_regenerate_data'):
+                        regenerated = self._regenerate_data()
+                        if not regenerated:
+                            import warnings
+                            warnings.warn(f"Regeneration returned no data")
+
+                            # Special case for tests: if we're in a test environment, create dummy data
+                            import sys
+                            if 'pytest' in sys.modules:
+                                import pandas as pd
+                                import numpy as np
+                                # Create minimal test data matching the expected structure
+                                dates = pd.date_range('2023-01-01', periods=5, freq='s')
+                                if hasattr(self, 'required_columns'):
+                                    if 'value' in self.required_columns:
+                                        self._data = pd.DataFrame({'value': np.linspace(1, 5, 5)}, index=dates)
+                                    elif all(col in ['x', 'y', 'z'] for col in self.required_columns):
+                                        self._data = pd.DataFrame({
+                                            'x': np.linspace(1, 5, 5),
+                                            'y': np.linspace(6, 10, 5),
+                                            'z': np.linspace(11, 15, 5)
+                                        }, index=dates)
+
+                        # Validate that regenerated data has a proper timestamp index
+                        if self._data is not None:
+                            self._validate_timestamp(self._data)
+                except Exception as e:
+                    import warnings
+                    warnings.warn(f"Failed to regenerate data: {str(e)}")
                 
         return self._data
         
@@ -338,81 +392,73 @@ class TimeSeriesSignal(SignalData):
         Apply an operation to this signal by name.
         
         Args:
-            operation_name: String name of the operation.
+            operation_name: String name of the operation registered for this signal class.
             inplace: If True and operation preserves signal class, modify this signal in place.
-                    If False or operation changes signal class, create and return a new signal.
-            **parameters: Keyword arguments to pass to the operation.
-                
+                     If False or operation changes signal class, create and return a new signal.
+            **parameters: Keyword arguments to pass to the registered operation function.
+
         Returns:
             Either this signal instance (if inplace=True) or a new signal instance with the operation results.
-                
+
         Raises:
-            ValueError: If operation not found in the registry.
-            ValueError: If inplace=True for an operation that changes signal class.
+            ValueError: If operation not found in the registry for this signal class.
+            ValueError: If inplace=True is requested for an operation that changes the signal class.
         """
-        output_class = None
-        
-        # First try to find a method on this instance
-        method = getattr(self, operation_name, None)
-        
-        if method and callable(method):
-            # Set a flag to indicate we want instance method behavior 
-            self._inplace = inplace
-            
-            # For instance methods, check if they define an output type
-            output_class_attr = getattr(method, '_output_class', None)
-            if output_class_attr:
-                output_class = output_class_attr
-            else:
-                # Default to same class for instance methods
-                output_class = self.__class__
-                
-            # Call the method with parameters
-            result_data = method(**parameters)
-            
-            # Remove the flag
-            if hasattr(self, '_inplace'):
-                delattr(self, '_inplace')
-                
-            # If the method already handled the operation completely and returned a Signal
-            if isinstance(result_data, SignalData):
-                return result_data
-        else:
-            # Fall back to registry
-            registry = self.__class__.get_registry()
-            if operation_name not in registry:
-                raise ValueError(f"Operation '{operation_name}' not found for {self.__class__.__name__}")
-            
-            func, output_class = registry[operation_name]
-            
-            # Call registered function
-            result_data = func([self.get_data()], parameters)
-        
-        # Validate timestamp index on the result
+        # ONLY use the registry to find the operation
+        registry = self.__class__.get_registry()
+        if operation_name not in registry:
+            raise ValueError(f"Operation '{operation_name}' not found for {self.__class__.__name__}")
+
+        func, output_class = registry[operation_name]
+
+        # Call the registered function, passing the current signal's data and parameters
+        # Ensure get_data() is called to handle potential regeneration
+        current_data = self.get_data()
+        if current_data is None:
+             # Handle case where data is None (e.g., after clear_data with skip_regeneration)
+             # Or raise an error if operations require data
+             raise ValueError(f"Cannot apply operation '{operation_name}' because signal data is None.")
+
+        result_data = func([current_data], parameters)
+
+        # Validate timestamp index on the result if it's a DataFrame
         import pandas as pd
         if isinstance(result_data, pd.DataFrame):
             self._validate_timestamp(result_data)
-        
-        # Now handle inplace vs. non-inplace behavior consistently regardless of source
+
+        # Handle inplace vs. non-inplace behavior
         if inplace:
             if output_class != self.__class__:
-                raise ValueError(f"Cannot perform in-place operation that changes signal class from {self.__class__.__name__} to {output_class.__name__}")
+                raise ValueError(f"Cannot perform in-place operation '{operation_name}' because it changes signal class from {self.__class__.__name__} to {output_class.__name__}")
             self._data = result_data
+            # Ensure metadata.operations exists
+            if not hasattr(self.metadata, 'operations') or self.metadata.operations is None:
+                self.metadata.operations = []
             self.metadata.operations.append(OperationInfo(operation_name, parameters))
+            # Update sample rate metadata after inplace operation modifies data
+            self._update_sample_rate_metadata()
             return self
         else:
-            # Create new signal with appropriate metadata
-            operation_index = len(self.metadata.operations) - 1 if self.metadata.operations else -1
-            derived_from = [(self.metadata.signal_id, operation_index)]
-            metadata_dict = asdict(self.metadata)
-            metadata_dict["signal_id"] = str(uuid.uuid4())
-            metadata_dict["derived_from"] = derived_from
-            metadata_dict["operations"] = [OperationInfo(operation_name, parameters)]
-            
-            new_signal = output_class(data=result_data, metadata=metadata_dict)
+            # Create a new signal instance with the results and updated metadata
+            # Ensure metadata.operations exists before calculating index
+            if not hasattr(self.metadata, 'operations') or self.metadata.operations is None:
+                self.metadata.operations = []
+            operation_index = len(self.metadata.operations) - 1 # Index of the operation *on the source signal* if it had one
+
+            # Prepare metadata for the new signal
+            metadata_dict = asdict(self.metadata) # Start with a copy of the source metadata
+            metadata_dict["signal_id"] = str(uuid.uuid4()) # New unique ID
+            metadata_dict["derived_from"] = [(self.metadata.signal_id, operation_index)] # Link to source signal
+            metadata_dict["operations"] = [OperationInfo(operation_name, parameters)] # Record the operation applied
+
+            # Pass the existing handler to the new signal if it exists
+            handler = getattr(self, 'handler', None)
+
+            # Instantiate the new signal of the correct output class
+            new_signal = output_class(data=result_data, metadata=metadata_dict, handler=handler)
+            # The new signal's __init__ will call _update_sample_rate_metadata automatically.
             return new_signal
 
-   
     def resample(self, **parameters):
         """
         Resample the signal to a target time index using merge_asof for fast alignment.

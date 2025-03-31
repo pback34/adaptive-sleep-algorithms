@@ -269,18 +269,23 @@ class ExportModule:
             
             if not combined_df.empty:
                 logger.info(f"Combined dataframe has {len(combined_df)} rows and {len(combined_df.columns)} columns")
-                
-                # Format the dataframe for output (convert index to column but preserve datetime objects)
-                combined_formatted = self._format_timestamp(combined_df)
-                
-                # For combined CSV, let pandas handle timestamp formatting natively
-                logger.debug(f"Combined export timestamp column dtype: {combined_formatted.iloc[:, 0].dtype}")
-                sample_time = combined_formatted.iloc[0, 0] if len(combined_formatted) > 0 else None
-                logger.debug(f"Combined sample timestamp before export: {sample_time}")
-                
-                # Use pandas native date_format to ensure milliseconds are included
-                combined_formatted.to_csv(combined_file, date_format='%Y-%m-%d %H:%M:%S.%f', na_rep='')
-                logger.info(f"Exported combined dataframe with {len(combined_formatted)} rows to {combined_file}")
+
+                # Check if columns are MultiIndex
+                if isinstance(combined_df.columns, pd.MultiIndex):
+                    logger.debug("Exporting combined CSV with MultiIndex columns and DatetimeIndex.")
+                    # Export directly: pandas handles MultiIndex columns and DatetimeIndex correctly
+                    combined_df.to_csv(combined_file, date_format='%Y-%m-%d %H:%M:%S.%f', na_rep='')
+                    logger.info(f"Exported combined dataframe with MultiIndex columns and {len(combined_df)} rows to {combined_file}")
+                else:
+                    logger.debug("Exporting combined CSV with standard columns.")
+                    # Format the timestamp to be a column for standard export
+                    combined_formatted = self._format_timestamp(combined_df)
+                    logger.debug(f"Combined export timestamp column dtype: {combined_formatted.iloc[:, 0].dtype}")
+                    sample_time = combined_formatted.iloc[0, 0] if len(combined_formatted) > 0 else None
+                    logger.debug(f"Combined sample timestamp before export: {sample_time}")
+                    # Use pandas native date_format
+                    combined_formatted.to_csv(combined_file, date_format='%Y-%m-%d %H:%M:%S.%f', na_rep='')
+                    logger.info(f"Exported combined dataframe with standard columns and {len(combined_formatted)} rows to {combined_file}")
             else:
                 logger.warning("No data available for combined export")
                 warnings.warn("No data available for combined export")
@@ -362,28 +367,62 @@ class ExportModule:
         Returns:
             A DataFrame with all non-temporary signals combined.
         """
-        # Get all signals from the collection
-        combined_df = self.collection.get_combined_dataframe()
-        
-        if combined_df.empty:
-            return combined_df
-            
-        # Filter out columns from temporary signals
-        filtered_columns = []
-        
+        import logging
+        from ..core import SignalCollection # Ensure SignalCollection is imported
+        from ..core.metadata_handler import MetadataHandler # Import MetadataHandler
+
+        logger = logging.getLogger(__name__)
+
+        # Determine the handler to use for the temporary collection
+        # Prefer the handler from the original collection if it exists
+        # Otherwise, try getting from the first signal, or create a new default
+        handler_to_use = None
+        if hasattr(self.collection, 'handler') and self.collection.handler:
+            handler_to_use = self.collection.handler
+            logger.debug("Using handler from original collection for temp collection.")
+        elif self.collection.signals:
+            # Try getting handler from the first signal
+            first_signal = next(iter(self.collection.signals.values()), None)
+            if first_signal and hasattr(first_signal, 'handler') and first_signal.handler:
+                handler_to_use = first_signal.handler
+                logger.debug("Using handler from first signal for temp collection.")
+            else:
+                logger.warning("Could not get handler from first signal, creating new default handler.")
+                handler_to_use = MetadataHandler()
+        else:
+            # No signals in collection, create a new default handler
+            logger.debug("Original collection has no signals, creating new default handler for temp collection.")
+            handler_to_use = MetadataHandler()
+
+        # Create a temporary collection containing only non-temporary signals
+        # Initialize with copies of essential attributes from the original collection
+        temp_collection = SignalCollection(metadata=self.collection.metadata.__dict__.copy(),
+                                           metadata_handler=handler_to_use) # Use determined handler
+        # Ensure index config is copied
+        if hasattr(self.collection.metadata, 'index_config'):
+             temp_collection.metadata.index_config = list(self.collection.metadata.index_config)
+        else:
+             temp_collection.metadata.index_config = [] # Default if not set
+
+        non_temporary_signals_count = 0
         for key, signal in self.collection.signals.items():
-            if hasattr(signal.metadata, 'temporary') and signal.metadata.temporary:
-                # Skip columns from this signal - they could be in the combined dataframe
-                # Check for exact matches or key-prefixed columns (like 'temp_0')
-                signal_cols = [col for col in combined_df.columns 
-                              if str(col) == key or 
-                                 (isinstance(col, str) and col.startswith(f"{key}_")) or
-                                 (hasattr(col, '__iter__') and any(str(part) == key for part in col))]
-                filtered_columns.extend(signal_cols)
-        
-        # Keep only non-temporary signal columns
-        if filtered_columns:
-            filtered_df = combined_df.drop(columns=filtered_columns)
-            return filtered_df
-        
+            # Check if 'temporary' attribute exists and is True
+            is_temporary = getattr(signal.metadata, 'temporary', False)
+            if not is_temporary:
+                # Add a reference to the non-temporary signal
+                # Using reference is fine as get_combined_dataframe doesn't modify signals
+                temp_collection.add_signal(key, signal)
+                non_temporary_signals_count += 1
+            else:
+                 logger.debug(f"Excluding temporary signal '{key}' from combined export.")
+
+        if non_temporary_signals_count == 0:
+            logger.warning("No non-temporary signals found for combined export.")
+            return pd.DataFrame() # Return empty DataFrame if no signals to combine
+
+        # Generate the combined dataframe from the temporary collection
+        # This inherently excludes temporary signals because they were never added
+        combined_df = temp_collection.get_combined_dataframe()
+
+        logger.debug(f"Generated combined dataframe for export with {len(combined_df)} rows and {len(combined_df.columns)} columns.")
         return combined_df

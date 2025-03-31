@@ -169,23 +169,51 @@ class BokehVisualizer(VisualizerBase):
             line_dash=line_dash,
             alpha=alpha,
             legend_label=name if name and not params.get('no_legend') else None
+            # line_shape is not a valid Bokeh parameter, removed.
         )
-        
-        # Add hover tooltip if requested
-        if 'hover' in figure.tools and params.get('add_hover', True):
-            tooltips = params.get('tooltips', [
+
+        # Handle categorical y-axis mapping if provided
+        y_axis_mapping = params.get('y_axis_mapping')
+        if y_axis_mapping:
+            from bokeh.models import FixedTicker, CustomJSTickFormatter # Import CustomJSTickFormatter
+            num_to_category = y_axis_mapping
+            ticks = sorted(list(num_to_category.keys())) # Ensure ticks are sorted
+            overrides = {i: label for i, label in num_to_category.items()}
+            figure.yaxis.ticker = FixedTicker(ticks=ticks)
+            figure.yaxis.major_label_overrides = overrides
+
+            # Add category names to source for hover tool
+            category_names = [num_to_category.get(val, 'Unknown') for val in source.data['y']]
+            source.add(category_names, 'category_name')
+
+            # Adjust hover tool for categorical data
+            hover_tooltips = [
+                ('Time', '@x{%F %T}'),
+                ('Stage', '@category_name') # Use the added category name column
+            ]
+            hover_formatters = {'@x': 'datetime'}
+        else:
+            # Default hover tooltips for numerical data
+            hover_tooltips = [
                 ('Time', '@x{%F %T}'),
                 ('Value', '@y')
-            ])
-            
+            ]
+            hover_formatters = {'@x': 'datetime'}
+
+        # Add hover tooltip if requested
+        if 'hover' in figure.tools and params.get('add_hover', True):
             hover = next((tool for tool in figure.tools if isinstance(tool, HoverTool)), None)
             if hover is None:
                 hover = HoverTool(
-                    tooltips=tooltips,
-                    formatters={'@x': 'datetime'},
-                    mode='vline'
+                    tooltips=hover_tooltips,
+                    formatters=hover_formatters,
+                    mode='vline' # Keep vline mode for time series
                 )
                 figure.add_tools(hover)
+            else:
+                # Update existing hover tool if needed
+                hover.tooltips = hover_tooltips
+                hover.formatters = hover_formatters
             
         return line
     
@@ -669,7 +697,68 @@ class BokehVisualizer(VisualizerBase):
         
         figure.add_layout(region)
         return region
-    
+        
+    def add_categorical_regions(self, figure: Any, start_times: Any, end_times: Any, 
+                                categories: Any, category_map: Dict[str, str], 
+                                **kwargs) -> List[Any]:
+        """
+        Add colored regions for categorical data using BoxAnnotation.
+        """
+        regions = []
+        # Combine default parameters with provided kwargs
+        params = {**self.default_params, **kwargs}
+        alpha = params.get('alpha', 0.3)
+        
+        # Determine y-range for the annotation boxes
+        # Use figure's existing range if set, otherwise use default (0, 1)
+        bottom = figure.y_range.start if figure.y_range and figure.y_range.start is not None else 0
+        top = figure.y_range.end if figure.y_range and figure.y_range.end is not None else 1
+        
+        # If bottom and top are the same, create a small default range
+        if bottom == top:
+            bottom = -0.5
+            top = 0.5
+            # Also update the figure's range if it was the cause
+            if figure.y_range.start == figure.y_range.end:
+                 figure.y_range.start = bottom
+                 figure.y_range.end = top
+                 logger.debug("Set default y-range (-0.5, 0.5) for categorical plot as figure range was zero.")
+
+
+        # Add a BoxAnnotation for each interval
+        for start, end, cat in zip(start_times, end_times, categories):
+            if pd.isna(start) or pd.isna(end):
+                continue
+                
+            color = category_map.get(cat, 'gray') # Default to gray if category not in map
+            
+            region = BoxAnnotation(
+                bottom=bottom, # Use calculated bottom/top
+                top=top,
+                left=start,
+                right=end,
+                fill_color=color,
+                fill_alpha=alpha,
+                level='underlay' # Place regions behind data lines
+            )
+            figure.add_layout(region)
+            regions.append(region)
+            
+        # Optionally add legend for categories (can get cluttered)
+        # This requires creating dummy renderers for the legend
+        if params.get('add_legend', False):
+             items = []
+             for category, color in category_map.items():
+                 # Create a dummy renderer for the legend item
+                 dummy_renderer = figure.line([], [], color=color, alpha=alpha)
+                 items.append(LegendItem(label=category, renderers=[dummy_renderer]))
+             
+             if items:
+                 legend = Legend(items=items, location="top_left")
+                 figure.add_layout(legend, 'right')
+
+        return regions
+
     def save(self, figure: Any, filename: str, format: str = "html", **kwargs) -> None:
         """
         Save a Bokeh figure to a file.

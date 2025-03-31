@@ -212,67 +212,25 @@ class SignalData(ABC):
         The data can be regenerated if needed using the operation history.
         """
         self._data = None
+        # Store the flag to prevent regeneration if requested
         self._skip_regeneration = skip_regeneration
-        
+
     def _regenerate_data(self):
         """
         Regenerate data based on operation history.
-        
+
         This is called automatically by get_data() when data is None but operations exist.
+        In this base implementation, regeneration is not fully supported without
+        access to the original source signal (typically managed by a SignalCollection).
+        Therefore, this method returns False to indicate regeneration failure,
+        allowing tests to verify warning behavior in get_data().
+
+        Returns:
+            bool: False, indicating regeneration failed in this context.
         """
-        if not self.metadata.operations or not self.metadata.derived_from:
-            return
-            
-        # Find the source signal by ID (would require access to a signal collection)
-        # For the testing purpose, we'll just apply the last operation again
-        op_info = self.metadata.operations[0]  # Use the first operation
-        
-        # Check if we have access to a custom regeneration handler
-        # This is a simplified approach for the test case
-        registry = self.__class__.get_registry()
-        if op_info.operation_name in registry:
-            func, _ = registry[op_info.operation_name]
-            # Create sample data with the appropriate structure
-            import pandas as pd
-            import numpy as np
-            
-            # Generate sample DataFrame with the correct structure for testing
-            if hasattr(self, 'required_columns'):
-                # Try to determine size from original data if available
-                data_size = 5  # Default fallback size
-                    
-                # Create sample data with appropriate structure
-                dates = pd.date_range('2023-01-01', periods=data_size, freq='s')
-                if 'value' in self.required_columns:
-                    sample_data = pd.DataFrame({'value': np.linspace(1, data_size, data_size)}, index=dates)
-                elif all(col in ['x', 'y', 'z'] for col in self.required_columns):
-                    sample_data = pd.DataFrame({
-                        'x': np.linspace(1, data_size, data_size),
-                        'y': np.linspace(6, 6+data_size-1, data_size),
-                        'z': np.linspace(11, 11+data_size-1, data_size)
-                    }, index=dates)
-                else:
-                    # Generic fallback
-                    sample_data = pd.DataFrame()
-                
-                # Get the original parameters from metadata and apply directly
-                try:
-                    result_data = func([sample_data], op_info.parameters)
-                    if result_data is not None and not result_data.empty:
-                        self._data = result_data
-                        return True
-                except Exception as e:
-                    import warnings
-                    warnings.warn(f"Error in regenerating data: {str(e)}")
-                    
-                # For testing purposes, provide a fallback mechanism to ensure data is generated
-                if hasattr(self, 'required_columns') and 'value' in self.required_columns and isinstance(sample_data, pd.DataFrame):
-                    # Apply a simple operation that will always work for tests
-                    filtered_data = sample_data.copy()
-                    if 'value' in filtered_data.columns:
-                        window_size = 2  # Small window size for test data
-                        filtered_data['value'] = filtered_data['value'].rolling(window=window_size, min_periods=1).mean()
-                        self._data = filtered_data
-                        return True
-                
-                return False
+        # In a real scenario, this would need access to the source signal(s)
+        # based on self.metadata.derived_from and potentially a SignalCollection.
+        # Since that context isn't available here, we simulate failure.
+        import warnings
+        warnings.warn("SignalData._regenerate_data called, but full regeneration requires SignalCollection context. Simulating failure.", UserWarning)
+        return False

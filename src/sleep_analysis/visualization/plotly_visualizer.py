@@ -159,18 +159,36 @@ class PlotlyVisualizer(VisualizerBase):
             ),
             opacity=opacity,
             name=name,
-            showlegend=name is not None
+            showlegend=name is not None,
+            line_shape=params.get('line_shape', 'linear') # Add line_shape parameter
         )
-        
+
         # Add the trace to the figure
         figure.add_trace(trace)
-        
-        # Add hover text if specified
-        if params.get('hover_text'):
-            figure.update_traces(
-                hovertext=params['hover_text'],
-                hoverinfo='text'
-            )
+
+        # Handle categorical y-axis mapping if provided
+        y_axis_mapping = params.get('y_axis_mapping')
+        if y_axis_mapping:
+            num_to_category = y_axis_mapping
+            tickvals = sorted(list(num_to_category.keys())) # Ensure ticks are sorted
+            ticktext = [num_to_category[i] for i in tickvals]
+            figure.update_yaxes(tickvals=tickvals, ticktext=ticktext)
+
+            # Adjust hover template for categorical data
+            # Create hover text mapping numbers back to categories
+            category_names = [num_to_category.get(val, 'Unknown') for val in y_data]
+            hover_template = '<b>Time</b>: %{x}<br><b>Stage</b>: %{customdata}<extra></extra>'
+            figure.update_traces(customdata=category_names, hovertemplate=hover_template)
+        elif params.get('hover_text'):
+             # Default hover text for numerical data
+             figure.update_traces(
+                 hovertext=params['hover_text'],
+                 hoverinfo='text'
+             )
+        else:
+             # Default hover template for numerical data if no specific text provided
+             hover_template = '<b>Time</b>: %{x}<br><b>Value</b>: %{y}<extra></extra>'
+             figure.update_traces(hovertemplate=hover_template)
         
         return trace
     
@@ -367,6 +385,64 @@ class PlotlyVisualizer(VisualizerBase):
                         continue
                     setattr(getattr(fig.layout, yaxis_key), axis_prop, 
                             getattr(source_fig.layout.yaxis, axis_prop))
+                            
+            # Copy shapes (for categorical regions, annotations, etc.)
+            if hasattr(source_fig.layout, 'shapes') and source_fig.layout.shapes:
+                 # Need to update shape references to the new subplot axes
+                 current_shapes = list(fig.layout.shapes) if fig.layout.shapes else []
+                 for shape in source_fig.layout.shapes:
+                     # Explicitly copy attributes instead of using dict(shape)
+                     shape_dict = {
+                         'type': shape.type,
+                         'xref': f'x{i+1}', # Update xref immediately
+                         'yref': f'y{i+1}' if shape.yref != 'paper' else 'paper', # Update yref immediately
+                         'x0': shape.x0,
+                         'y0': shape.y0,
+                         'x1': shape.x1,
+                         'y1': shape.y1,
+                         'fillcolor': shape.fillcolor,
+                         'opacity': shape.opacity,
+                         'layer': shape.layer,
+                         'line_width': shape.line.width if shape.line else 0,
+                         'line_color': shape.line.color if shape.line else None,
+                         'line_dash': shape.line.dash if shape.line else None,
+                         # Copy other relevant attributes if needed
+                     }
+                     current_shapes.append(go.layout.Shape(shape_dict))
+                 fig.layout.shapes = tuple(current_shapes)
+
+            # Copy annotations (if any)
+            if hasattr(source_fig.layout, 'annotations') and source_fig.layout.annotations:
+                 current_annotations = list(fig.layout.annotations) if fig.layout.annotations else []
+                 for ann in source_fig.layout.annotations:
+                     # Explicitly copy attributes instead of using dict(ann)
+                     ann_dict = {
+                         'xref': f'x{i+1}', # Update xref
+                         'yref': f'y{i+1}', # Update yref
+                         'x': ann.x,
+                         'y': ann.y,
+                         'ax': ann.ax,
+                         'ay': ann.ay,
+                         'xanchor': ann.xanchor,
+                         'yanchor': ann.yanchor,
+                         'text': ann.text,
+                         'showarrow': ann.showarrow,
+                         'arrowhead': ann.arrowhead,
+                         'arrowsize': ann.arrowsize,
+                         'arrowwidth': ann.arrowwidth,
+                         'arrowcolor': ann.arrowcolor,
+                         'font': ann.font.to_plotly_json() if ann.font else None, # Copy font dict safely
+                         'align': ann.align,
+                         'valign': ann.valign,
+                         'bgcolor': ann.bgcolor,
+                         'bordercolor': ann.bordercolor,
+                         'borderwidth': ann.borderwidth,
+                         'borderpad': ann.borderpad,
+                         'opacity': ann.opacity,
+                         # Copy other relevant attributes if needed
+                     }
+                     current_annotations.append(go.layout.Annotation(ann_dict))
+                 fig.layout.annotations = tuple(current_annotations)
         
         # Update layout
         layout_updates = {
@@ -725,7 +801,67 @@ class PlotlyVisualizer(VisualizerBase):
             )
         
         return region
-    
+        
+    def add_categorical_regions(self, figure: Any, start_times: Any, end_times: Any, 
+                                categories: Any, category_map: Dict[str, str], 
+                                **kwargs) -> List[Any]:
+        """
+        Add colored regions for categorical data using shapes.
+        """
+        regions = []
+        # Combine default parameters with provided kwargs
+        params = {**self.default_params, **kwargs}
+        alpha = params.get('alpha', 0.3)
+        y_range = params.get('y_range', (0, 1)) # Default y-range for regions
+        
+        shapes = []
+        annotations = []
+        legend_items = {} # To track items for potential manual legend
+
+        # Add a shape for each interval
+        for start, end, cat in zip(start_times, end_times, categories):
+             if pd.isna(start) or pd.isna(end):
+                 continue
+                 
+             color = category_map.get(cat, 'gray') # Default to gray
+             
+             shape = dict(
+                 type='rect',
+                 xref='x',
+                 yref='paper', # Span full y-axis
+                 x0=start,
+                 y0=y_range[0],
+                 x1=end,
+                 y1=y_range[1],
+                 fillcolor=color,
+                 opacity=alpha,
+                 layer='below',
+                 line_width=0
+             )
+             shapes.append(shape)
+             
+             # Store info for legend if needed
+             if cat not in legend_items:
+                 legend_items[cat] = color
+
+        # Add all shapes at once
+        figure.update_layout(shapes=shapes)
+        
+        # Optionally add legend (Plotly doesn't directly support legends for shapes)
+        # We can add dummy traces or annotations as a workaround
+        if params.get('add_legend', False):
+            for category, color in legend_items.items():
+                 # Add dummy scatter trace for legend
+                 figure.add_trace(go.Scatter(
+                     x=[None], y=[None], # No actual data
+                     mode='markers',
+                     marker=dict(color=color, size=10),
+                     name=category,
+                     showlegend=True
+                 ))
+
+        return shapes # Return the list of shape dicts
+
     def save(self, figure: Any, filename: str, format: str = "html", **kwargs) -> None:
         """
         Save a Plotly figure to a file.

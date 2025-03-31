@@ -19,19 +19,9 @@ class HeartRateSignal(TimeSeriesSignal):
     signal_type = SignalType.HEART_RATE
     required_columns = ['hr']
     optional_columns = ['hrv']  # HRV is optional as not all HR signals include it
-    
-    def get_sampling_rate(self) -> float:
-        """
-        Get the sampling rate of the heart rate signal.
-        
-        This uses the standard implementation from TimeSeriesSignal, allowing
-        the system to detect the actual sampling rate from the data itself.
-        
-        Returns:
-            The sampling rate in Hz determined from the data.
-        """
-        return super().get_sampling_rate() or 1.0  # Default to 1Hz if calculation fails
-        
+
+    # Removed get_sampling_rate override - will use TimeSeriesSignal implementation
+
     def get_hrv_stats(self):
         """
         Calculate basic statistics from the HRV data if available.

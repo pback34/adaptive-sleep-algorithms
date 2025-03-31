@@ -87,7 +87,22 @@ import:
     body_position: "left_wrist"
     name: "Sense_ACC"
     base_name: "accel"
-    
+
+
+  # EEG Sleep Stage data from Enchanted Wave - using MergingImporter
+  - signal_type: "eeg_sleep_stage"
+    importer: "MergingImporter" # Use MergingImporter to handle potential multiple files
+    source: "."
+    config:
+      # Configuration for the underlying importer (EnchantedWaveImporter)
+      importer_name: "EnchantedWaveImporter"
+      file_pattern: "*.Session.csv" # Pattern to find Enchanted Wave files
+      # EnchantedWaveImporter uses default column mapping, no need to specify here unless overriding
+    sensor_type: "EEG"
+    sensor_model: "EnchantedWave"
+    body_position: "head"
+    name: "EnchantedWave_SleepStage"
+    base_name: "sleep_stage"
 
 
 # Process steps to compute magnitude signals and align everything
@@ -151,12 +166,13 @@ visualization:
       x_label: "Time"
       y_label: "Magnitude (mg)"
       strict: false
+      downsample: '1S' # Resample to 1-second frequency for visualization
 
-  # Create a grid layout with multiple signal types
+  # Create a grid layout with multiple signal types including sleep stage
   - type: time_series
-    signals: ["hr", "accel_magnitude", "accel_angle"]  # First of each type
+    signals: ["hr", "accel_magnitude", "accel_angle", "sleep_stage"] # Added sleep_stage
     layout: grid
-    title: "Multivariate Signal Dashboard"
+    title: "Multivariate Signal Dashboard (with Sleep Stage)"
     output: "results/visualizations/multivariate_dashboard.html"
     backend: plotly
     parameters:
@@ -165,15 +181,34 @@ visualization:
       link_x_axes: true  # Synchronize x-axes for time alignment
       strict: false
       
-  # Create a comprehensive plot with all signals in separate subplots
+  # Create a comprehensive plot with all signals (including sleep stage) in separate subplots
   - type: time_series
-    signals: ["hr", "accel_magnitude", "accel_angle"]  # All signals of these types
+    signals: ["hr", "accel_magnitude", "accel_angle", "sleep_stage"] # Added sleep_stage
     layout: vertical
-    title: "All Signals Overview with Linked X-Axes"
+    title: "All Signals Overview (with Sleep Stage) - Linked X-Axes"
     output: "results/visualizations/all_signals_overview.html"
     backend: plotly
     parameters:
       link_x_axes: true  # Ensure x-axes are linked across all subplots
+      downsample: 20000 # Limit each subplot to max 20,000 points for performance
       # width: 1200
       # height: 1800  # Taller to accommodate all subplots
       strict: false
+
+  # New plot: Sleep Stages with HR and Accelerometer Magnitude
+  - type: time_series
+    signals: ["hr_0", "accel_magnitude", "sleep_stage_0"] # Use specific indexed signals (accel_magnitude might not have index if only one source)
+    layout: vertical
+    title: "Sleep Stages with Heart Rate and Activity (Example)"
+    output: "results/visualizations/sleep_stage_dashboard.html"
+    backend: bokeh # Or bokeh
+    parameters:
+      link_x_axes: true
+      strict: false # Be lenient if index 0 doesn't exist for all
+      # Optional: Define custom colors for sleep stages if needed
+      # category_map: 
+      #   Awake: 'rgb(150, 150, 150)'
+      #   N1: 'rgb(173, 216, 230)'
+      #   N2: 'rgb(0, 0, 255)'
+      #   N3: 'rgb(0, 0, 139)'
+      #   REM: 'rgb(128, 0, 128)'

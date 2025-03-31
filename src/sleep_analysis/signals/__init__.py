@@ -7,5 +7,9 @@ from .accelerometer_signal import AccelerometerSignal
 from .heart_rate_signal import HeartRateSignal
 from .magnitude_signal import MagnitudeSignal
 from .angle_signal import AngleSignal
+from .eeg_sleep_stage_signal import EEGSleepStageSignal
 
-__all__ = ['SignalData', 'TimeSeriesSignal', 'PPGSignal', 'AccelerometerSignal', 'HeartRateSignal', 'MagnitudeSignal', 'AngleSignal']
+__all__ = [
+    'SignalData', 'TimeSeriesSignal', 'PPGSignal', 'AccelerometerSignal',
+    'HeartRateSignal', 'MagnitudeSignal', 'AngleSignal', 'EEGSleepStageSignal'
+]

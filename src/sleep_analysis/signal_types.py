@@ -11,6 +11,9 @@ class SignalType(Enum):
     PPG = "PPG"
     ACCELEROMETER = "Accelerometer"
     HEART_RATE = "Heart Rate"
+    EEG_SLEEP_STAGE = "EEG Sleep Stage"
+    MAGNITUDE = "Magnitude"
+    ANGLE = "Angle"
     FEATURES = "Features"
     # Additional signal types can be added as needed
 
@@ -26,6 +29,7 @@ class SensorModel(Enum):
     """Enum for different sensor models."""
     POLAR_H10 = "PolarH10"
     POLAR_SENSE = "PolarSense"
+    ENCHANTED_WAVE = "EnchantedWave"
     # Additional sensor models can be added as needed
 
 class BodyPosition(Enum):

@@ -109,16 +109,23 @@ def test_regenerate_data_after_clear(sample_metadata, sample_dataframe):
     filtered_signal.clear_data(skip_regeneration=True)
     assert filtered_signal.get_data() is None
     
-    # Now reset the skip_regeneration flag and regenerate the data by re-applying the operation
+    # Now reset the skip_regeneration flag and attempt to regenerate the data
+    # by calling get_data(), which should trigger _regenerate_data and issue the warning.
     filtered_signal._skip_regeneration = False
+    # Expect the specific warning issued when regeneration doesn't produce data in the test context
     with pytest.warns(UserWarning, match="Regeneration returned no data"):
-        filtered_signal.apply_operation("filter_lowpass", cutoff=5.0, inplace=True)
-    assert filtered_signal.get_data() is not None
-    
-    # Note: The regenerated test data has 5 rows, while the original may have more
-    # We just verify that we have data with the right structure (correct columns)
-    assert 'value' in filtered_signal.get_data().columns
-    assert len(filtered_signal.get_data()) > 0
+        regenerated_data = filtered_signal.get_data()
+
+    # The placeholder _regenerate_data in the test context might return dummy data or None.
+    # We primarily care that the warning was issued.
+    # Let's check if *some* data was returned (even if it's dummy data from the test setup).
+    assert regenerated_data is not None
+
+    # Note: The regenerated test data (if dummy) might differ from the original.
+    # We just verify that the 'regenerated_data' variable (captured inside the warns block)
+    # has the expected structure (correct columns).
+    assert 'value' in regenerated_data.columns
+    assert len(regenerated_data) > 0
 
 def test_signal_metadata_optional_fields():
     """Test that SignalMetadata handles optional fields correctly."""

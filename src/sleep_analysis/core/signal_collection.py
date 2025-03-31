@@ -6,6 +6,7 @@ for all signals in the framework and provides methods for adding, retrieving,
 and managing signals.
 """
 
+import math # Added import
 from typing import Dict, List, Any, Optional, Type, Tuple, Callable, Union
 from .metadata import SignalMetadata
 import warnings
@@ -17,11 +18,10 @@ from .metadata import CollectionMetadata
 from ..signal_types import SignalType
 from .metadata_handler import MetadataHandler
 
-# Define standard factors of 1000 Hz
-FACTORS_OF_1000 = [1, 2, 5, 10, 20, 25, 50, 100, 125, 200, 250, 500, 1000]
 
-# Define standard factors of 1000 Hz
-FACTORS_OF_1000 = [1, 2, 5, 10, 20, 25, 50, 100, 125, 200, 250, 500, 1000]
+# Define standard rates: factors of 1000 Hz plus rates corresponding to multi-second periods
+# Periods >= 1s: 1s (1Hz), 2s (0.5Hz), 4s (0.25Hz), 5s (0.2Hz), 10s (0.1Hz)
+STANDARD_RATES = sorted(list(set([0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10, 20, 25, 50, 100, 125, 200, 250, 500, 1000])))
 
 class SignalCollection:
     """
@@ -386,9 +386,7 @@ class SignalCollection:
             raise ValueError(f"Invalid index fields: {set(index_fields) - valid_fields}")
         self.metadata.index_config = index_fields
     
-    # Method removed since it's no longer needed - multi-index creation is now
-    # integrated directly into the get_combined_dataframe method
-    
+   
     def _validate_timestamp_index(self, signal: SignalData) -> None:
         """
         Validate that a signal has a proper timestamp index.
@@ -420,33 +418,48 @@ class SignalCollection:
         Returns:
             float: The target sample rate in Hz.
         """
+        from ..signals.time_series_signal import TimeSeriesSignal # Ensure import
+
         if user_specified is not None:
             return user_specified
-            
-        max_rate = max((s.get_sampling_rate() or 0) for s in self.signals.values())
-        
-        # If no valid rates, default to 100 Hz
+
+        # Calculate max rate using the float value from get_sampling_rate()
+        valid_rates = [
+            s.get_sampling_rate() for s in self.signals.values()
+            if isinstance(s, TimeSeriesSignal) and s.get_sampling_rate() is not None and s.get_sampling_rate() > 0
+        ]
+
+        if not valid_rates:
+             # If no valid rates, default to 100 Hz
+             return 100.0
+
+        max_rate = max(valid_rates)
+
+        # If max_rate is still 0 or less (shouldn't happen with filter), default to 100 Hz
         if max_rate <= 0:
             return 100.0
             
-        # Return the largest factor of 1000 Hz ≤ the maximum rate
-        return max(f for f in FACTORS_OF_1000 if f <= max_rate)
-    
-    def get_nearest_factor(self, rate):
+        # Return the largest standard rate ≤ the maximum rate
+        valid_rates = [r for r in STANDARD_RATES if r <= max_rate]
+        return max(valid_rates) if valid_rates else min(STANDARD_RATES) # Fallback to lowest standard rate
+
+    def get_nearest_standard_rate(self, rate):
         """
-        Find the nearest factor of 1000 Hz to a given sample rate.
+        Find the nearest standard rate to a given sample rate.
         
         Args:
             rate (float): The signal's sample rate in Hz.
         
         Returns:
-            int: The closest factor from FACTORS_OF_1000.
+            float: The closest rate from STANDARD_RATES.
         """
         if rate is None or rate <= 0:
-            return 100.0  # Default value
-            
-        return min(FACTORS_OF_1000, key=lambda f: abs(f - rate))
-    
+            # Find a reasonable default, perhaps the median standard rate?
+            return sorted(STANDARD_RATES)[len(STANDARD_RATES) // 2] # e.g., 20 Hz
+
+        # Find the rate in STANDARD_RATES that minimizes the absolute difference
+        return min(STANDARD_RATES, key=lambda r: abs(r - rate))
+
     def get_reference_time(self, target_period):
         """
         Compute the reference timestamp for the grid.
@@ -572,11 +585,16 @@ class SignalCollection:
                 
                 # Handle signals with valid rates
                 if signal_rate and signal_rate > 0:
-                    if signal_rate in FACTORS_OF_1000:
-                        # Rate is a factor of 1000 Hz; snap to grid directly
-                        logger.info(f"Signal {key} has standard rate {signal_rate} Hz (factor of 1000). Snapping to grid.")
+                    # Check if rate is close to one of the standard rates
+                    is_standard_rate = any(math.isclose(signal_rate, std_rate, rel_tol=1e-5) for std_rate in STANDARD_RATES)
+
+                    if is_standard_rate:
+                        # Rate is standard; snap to grid directly
+                        # Find the exact standard rate it matches
+                        matched_rate = min(STANDARD_RATES, key=lambda r: abs(signal_rate - r))
+                        logger.info(f"Signal {key} has standard rate {signal_rate:.4f} Hz (closest to {matched_rate} Hz). Snapping to grid.")
                         data = signal.snap_to_grid(target_period, ref_time)
-                        
+
                         if inplace:
                             logger.debug(f"Snapping {key} to grid in-place")
                             signal._data = data
@@ -599,23 +617,28 @@ class SignalCollection:
                     else:
                         # Odd rate; determine appropriate factor of 1000 Hz
                         if resample_strategy == 'downsample':
-                            new_rate = max(f for f in FACTORS_OF_1000 if f <= signal_rate)
-                            logger.info(f"Downsampling signal with rate {signal_rate:.2f} Hz to {new_rate} Hz")
+                            # Find the highest standard rate <= signal_rate
+                            valid_rates = [r for r in STANDARD_RATES if r <= signal_rate]
+                            new_rate = max(valid_rates) if valid_rates else min(STANDARD_RATES)
+                            logger.info(f"Downsampling signal with rate {signal_rate:.4f} Hz to {new_rate} Hz")
                         elif resample_strategy == 'upsample':
-                            new_rate = min(f for f in FACTORS_OF_1000 if f >= signal_rate)
-                            logger.info(f"Upsampling signal with rate {signal_rate:.2f} Hz to {new_rate} Hz")
+                            # Find the lowest standard rate >= signal_rate
+                            valid_rates = [r for r in STANDARD_RATES if r >= signal_rate]
+                            new_rate = min(valid_rates) if valid_rates else max(STANDARD_RATES)
+                            logger.info(f"Upsampling signal with rate {signal_rate:.4f} Hz to {new_rate} Hz")
                         elif resample_strategy == 'nearest':
-                            new_rate = self.get_nearest_factor(signal_rate)
-                            logger.info(f"Resampling signal with rate {signal_rate:.2f} Hz to nearest factor {new_rate} Hz")
+                            new_rate = self.get_nearest_standard_rate(signal_rate)
+                            logger.info(f"Resampling signal with rate {signal_rate:.4f} Hz to nearest standard rate {new_rate} Hz")
                         else:
-                            raise ValueError(f"Signal '{key}' has rate {signal_rate} Hz which is not a factor of 1000 Hz. "
-                                           f"Set resample_strategy to handle odd rates.")
-                        
-                        # Resample and align
-                        data = signal.resample_to_rate(new_rate, target_period, ref_time)
-                        
+                            # If resample_strategy is None or invalid, raise error
+                            raise ValueError(f"Signal '{key}' has rate {signal_rate:.4f} Hz which is not standard. "
+                                           f"Set resample_strategy ('nearest', 'downsample', 'upsample') to handle non-standard rates.")
+
+                        # Resample and align, passing the chosen strategy as the method
+                        data = signal.resample_to_rate(new_rate, target_period, ref_time, method=resample_strategy)
+
                         if inplace:
-                            logger.debug(f"Applying resampling in-place for {key}")
+                            logger.debug(f"Applying resampling in-place for {key} using method '{resample_strategy}'")
                             signal._data = data
                             # Record the operation in metadata
                             from ..core.metadata import OperationInfo
@@ -630,31 +653,53 @@ class SignalCollection:
                             new_signal.metadata.operations.append(OperationInfo("resample_to_rate", {"new_rate": new_rate}))
                             self.add_signal(new_key, new_signal)
                 else:
-                    # For signals with unknown rates, apply the standard resampling
-                    # Use merge_asof for efficient alignment with proper tolerance
-                    parameters = {
-                        "target_index": target_index, 
-                        "method": method,
-                        "preserve_original": preserve_original
-                    }
+                    # Handle signals with unknown or invalid rates by resampling to the target rate
+                    logger.info(f"Signal {key} has unknown/invalid rate. Resampling to target rate {target_rate:.4f} Hz using method '{method}'.")
                     
+                    # Call resample_to_rate directly
+                    result_data = signal.resample_to_rate(target_rate, target_period, ref_time, method=method)
+                    
+                    operation_params = {"new_rate": target_rate, "method": method}
+                    from ..core.metadata import OperationInfo # Keep import local
+
                     if inplace:
-                        logger.debug(f"Applying alignment in-place for {key}")
-                        signal.apply_operation("resample", inplace=True, **parameters)
-                        # Record the operation in metadata
-                        from ..core.metadata import OperationInfo
-                        signal.metadata.operations.append(OperationInfo("align", {"target_signal": "common_index"}))
+                        logger.debug(f"Applying resampling in-place for {key}")
+                        signal._data = result_data
+                        # Ensure metadata.operations exists
+                        if not hasattr(signal.metadata, 'operations') or signal.metadata.operations is None:
+                            signal.metadata.operations = []
+                        signal.metadata.operations.append(OperationInfo("resample_to_rate", operation_params))
+                        # Update sample rate metadata after inplace operation modifies data
+                        signal._update_sample_rate_metadata()
                     else:
-                        logger.debug(f"Applying alignment for {key} and storing as {key}_aligned")
-                        aligned_signal = signal.apply_operation("resample", **parameters)
-                        # Record the operation in metadata
-                        from ..core.metadata import OperationInfo
-                        aligned_signal.metadata.operations.append(OperationInfo("align", {"target_signal": "common_index"}))
+                        logger.debug(f"Resampling {key} and storing as {key}_aligned")
                         new_key = f"{key}_aligned"
-                        self.add_signal(new_key, aligned_signal)
-                
+                        
+                        # Prepare metadata for the new signal
+                        from dataclasses import asdict # Keep import local
+                        import uuid # Keep import local
+                        
+                        # Ensure metadata.operations exists before calculating index
+                        if not hasattr(signal.metadata, 'operations') or signal.metadata.operations is None:
+                            signal.metadata.operations = []
+                        # Find index of operation on source signal (will be -1 if no prior ops)
+                        operation_index = len(signal.metadata.operations) -1 
+
+                        metadata_dict = asdict(signal.metadata) # Start with a copy
+                        metadata_dict["signal_id"] = str(uuid.uuid4()) # New unique ID
+                        metadata_dict["derived_from"] = [(signal.metadata.signal_id, operation_index)] # Link to source
+                        metadata_dict["operations"] = [OperationInfo("resample_to_rate", operation_params)] # Record this op
+
+                        # Pass the existing handler if it exists
+                        handler = getattr(signal, 'handler', None)
+
+                        # Instantiate the new signal of the same class
+                        new_signal = signal.__class__(data=result_data, metadata=metadata_dict, handler=handler)
+                        # The new signal's __init__ will call _update_sample_rate_metadata automatically.
+                        self.add_signal(new_key, new_signal)
+
                 logger.info(f"Completed processing {key} in {time.time() - signal_start_time:.2f} seconds")
-        
+
         # Store parameters for combined dataframe
         self.target_rate = target_rate
         self.ref_time = ref_time

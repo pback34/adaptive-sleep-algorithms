@@ -116,6 +116,8 @@ class TestCSVImporterBase:
         assert signal.metadata.signal_type == SignalType.PPG
         # Verify data has proper DatetimeIndex
         assert isinstance(signal.get_data().index, pd.DatetimeIndex)
+        # Verify sample rate metadata was set (assuming 1Hz from sample_csv fixture)
+        assert signal.metadata.sample_rate == "1.0000Hz"
     
     def test_validate_columns(self, tmp_path):
         """Test column validation in CSVImporterBase."""
@@ -150,6 +152,8 @@ class TestCSVImporterBase:
         assert isinstance(signal.get_data().index, pd.DatetimeIndex)
         assert len(signal.get_data()) == 10
         assert 'value' in signal.get_data().columns
+        # Verify sample rate metadata (assuming 1Hz from test data)
+        assert signal.metadata.sample_rate == "1.0000Hz"
 
 class TestPolarCSVImporter:
     """Test suite for the PolarCSVImporter class."""
@@ -216,7 +220,11 @@ class TestPolarCSVImporter:
         # Verify signal data
         assert isinstance(signal, PPGSignal)
         assert signal.metadata.signal_type == SignalType.PPG
-        
+        assert isinstance(signal.get_data().index, pd.DatetimeIndex) # Ensure timestamp index
+
+        # Verify sample rate metadata (assuming 1Hz from polar_csv fixture)
+        assert signal.metadata.sample_rate == "1.0000Hz"
+
         # Verify extracted metadata
         assert "subject_id" in signal.metadata.sensor_info
         assert signal.metadata.sensor_info["subject_id"] == "subject123"
@@ -233,15 +241,18 @@ class TestPolarCSVImporter:
         importer = PolarCSVImporter(config)
         signals = importer.import_signals(polar_csv_directory, "PPG")
         
-        # Should import 3 signals from the directory
+        # Should import 3 signals from the directory (in test context)
         assert len(signals) == 3
         assert all(isinstance(signal, PPGSignal) for signal in signals)
-        
-        # Each signal should have metadata from its filename
-        for signal in signals:
+
+        # Each signal should have metadata from its filename and calculated sample rate
+        for i, signal in enumerate(signals):
             assert "subject_id" in signal.metadata.sensor_info
             assert signal.metadata.sensor_info["subject_id"] == "subject123"
             assert "session" in signal.metadata.sensor_info
+            assert signal.metadata.sensor_info["session"] == f"{i+1:02d}"
+            # Verify sample rate metadata (assuming 1Hz from fixture data)
+            assert signal.metadata.sample_rate == "1.0000Hz"
             
     def test_import_with_custom_time_format(self, tmp_path):
         """Test importing with a custom time format."""
@@ -268,6 +279,8 @@ class TestPolarCSVImporter:
         assert len(signal.get_data()) == 3
         # First timestamp should be 2023-01-01 08:00:00
         assert signal.get_data().index[0].strftime("%Y-%m-%d %H:%M:%S") == "2023-01-01 08:00:00"
+        # Verify sample rate metadata (assuming 1Hz from test data)
+        assert signal.metadata.sample_rate == "1.0000Hz"
         
     def test_error_handling_invalid_csv(self, tmp_path):
         """Test error handling with invalid CSV files."""
@@ -343,7 +356,9 @@ class TestMergingImporter:
         assert isinstance(signal, PPGSignal)
         assert len(signal.get_data()) == 30  # 3 files × 10 rows each
         assert signal.metadata.merged is True
-        
+        # Verify sample rate metadata (merging with gaps results in variable rate)
+        assert signal.metadata.sample_rate == "Variable"
+
     def test_sort_by_timestamp(self, fragmented_data_dir, merging_config):
         """Test sorting files by timestamp in the data."""
         # Modify config to sort by timestamp
@@ -357,7 +372,9 @@ class TestMergingImporter:
         data = signal.get_data()
         timestamps = data.index
         assert timestamps.is_monotonic_increasing
-        
+        # Verify sample rate metadata (merging with gaps results in variable rate)
+        assert signal.metadata.sample_rate == "Variable"
+
     def test_import_nonexistent_directory(self, merging_config):
         """Test importing from a nonexistent directory."""
         importer = MergingImporter(merging_config)

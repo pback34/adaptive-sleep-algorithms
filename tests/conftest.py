@@ -11,7 +11,7 @@ def sample_metadata():
     return {
         "signal_id": "test_signal_001",
         "name": "Test Signal",
-        "sample_rate": "100Hz",
+        # "sample_rate": "100Hz", # Removed - now calculated automatically
         "units": Unit.BPM,
         "start_time": datetime(2023, 1, 1, 0, 0, 0),
         "end_time": datetime(2023, 1, 1, 1, 0, 0),

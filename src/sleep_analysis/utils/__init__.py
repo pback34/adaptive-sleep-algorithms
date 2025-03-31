@@ -3,7 +3,7 @@
 from .logging import setup_logging, get_logger
 import pandas as pd
 import logging
-from typing import Dict, Type, Any
+from typing import Dict, Type, Any, Optional # Added Optional
 from enum import Enum
 
 def map_columns(df: pd.DataFrame, column_mapping: Dict[str, str]) -> pd.DataFrame:
@@ -227,11 +227,13 @@ def convert_timestamp_format(series: pd.Series, source_format: str = None, targe
     except Exception as e:
         raise ValueError(f"Failed to convert timestamps: {e}")
 
-def standardize_timestamp(df: pd.DataFrame, timestamp_col: str, unit: str = None, 
-                         format: str = None, output_format: str = None, set_index: bool = True) -> pd.DataFrame:
+def standardize_timestamp(df: pd.DataFrame, timestamp_col: str, unit: str = None,
+                         format: str = None, output_format: str = None, set_index: bool = True,
+                         tz_convert: Optional[str] = 'UTC', tz_strip: bool = True) -> pd.DataFrame:
     """
-    Standardize the timestamp column in a DataFrame and set it as the index.
-    
+    Standardize the timestamp column in a DataFrame, optionally set it as the index,
+    and ensure consistent timezone handling (default: convert to UTC and make naive).
+
     Args:
         df: Input DataFrame.
         timestamp_col: Name of the timestamp column.
@@ -262,16 +264,43 @@ def standardize_timestamp(df: pd.DataFrame, timestamp_col: str, unit: str = None
         elif format:
             result_df[timestamp_col] = pd.to_datetime(result_df[timestamp_col], format=format)
         else:
-            result_df[timestamp_col] = pd.to_datetime(result_df[timestamp_col])
-        
-        # Then apply output formatting if specified
+            # Attempt robust parsing
+            result_df[timestamp_col] = pd.to_datetime(result_df[timestamp_col], errors='coerce')
+
+        # Handle Timezones Consistently
+        if tz_convert:
+            try:
+                # Check if already timezone-aware
+                if result_df[timestamp_col].dt.tz is not None:
+                    logger.debug(f"Converting timezone-aware timestamp to {tz_convert}")
+                    result_df[timestamp_col] = result_df[timestamp_col].dt.tz_convert(tz_convert)
+                else:
+                    # Assume UTC if naive and conversion is requested (common case)
+                    # More sophisticated origin timezone detection might be needed in other scenarios
+                    logger.debug(f"Localizing timezone-naive timestamp to {tz_convert}")
+                    result_df[timestamp_col] = result_df[timestamp_col].dt.tz_localize(tz_convert, ambiguous='infer', nonexistent='raise')
+            except Exception as tz_err:
+                 logger.warning(f"Could not convert timestamp timezone to {tz_convert}: {tz_err}. Proceeding without conversion.")
+
+
+        if tz_strip:
+            logger.debug("Stripping timezone information to make timestamp naive.")
+            result_df[timestamp_col] = result_df[timestamp_col].dt.tz_localize(None)
+
+
+        # Then apply output formatting if specified (AFTER timezone handling)
         if output_format:
-            logger.debug(f"Applying output format: {output_format}")
+            logger.debug(f"Applying output format string: {output_format}")
             # Format to string with desired precision, then back to datetime
-            result_df[timestamp_col] = result_df[timestamp_col].dt.strftime(output_format)
-            result_df[timestamp_col] = pd.to_datetime(result_df[timestamp_col], format=output_format)
-            
-        logger.debug(f"Successfully converted '{timestamp_col}' to datetime")
+            # This step inherently makes the timestamp naive if it wasn't already stripped
+            try:
+                result_df[timestamp_col] = result_df[timestamp_col].dt.strftime(output_format)
+                result_df[timestamp_col] = pd.to_datetime(result_df[timestamp_col], format=output_format)
+            except Exception as format_err:
+                 logger.warning(f"Could not apply output format '{output_format}': {format_err}. Using default datetime format.")
+
+
+        logger.debug(f"Successfully processed '{timestamp_col}' to datetime")
     except Exception as e:
         logger.error(f"Failed to parse timestamp column '{timestamp_col}': {e}")
         # Show sample data to help debugging

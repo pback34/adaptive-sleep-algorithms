@@ -3,7 +3,7 @@
 import pytest
 import uuid
 import pandas as pd
-from sleep_analysis.core.signal_collection import SignalCollection, FACTORS_OF_1000
+from sleep_analysis.core.signal_collection import SignalCollection, STANDARD_RATES
 from sleep_analysis.signals.ppg_signal import PPGSignal
 from sleep_analysis.signals.accelerometer_signal import AccelerometerSignal
 from sleep_analysis.signals.heart_rate_signal import HeartRateSignal
@@ -363,14 +363,16 @@ def test_resample_and_align_signals(signal_collection):
     
     # Test 4: Test new helper methods related to alignment
     # Test get_target_sample_rate
-    assert signal_collection.get_target_sample_rate() in FACTORS_OF_1000
+    assert signal_collection.get_target_sample_rate() in STANDARD_RATES
     assert signal_collection.get_target_sample_rate(200) == 200
     
-    # Test get_nearest_factor
-    assert signal_collection.get_nearest_factor(95) == 100
-    assert signal_collection.get_nearest_factor(112) == 100
-    assert signal_collection.get_nearest_factor(137) == 125
-    assert signal_collection.get_nearest_factor(None) == 100.0
+    # Test get_nearest_standard_rate
+    assert signal_collection.get_nearest_standard_rate(95) == 100
+    assert signal_collection.get_nearest_standard_rate(112) == 100 # 100 is closer than 125
+    assert signal_collection.get_nearest_standard_rate(137) == 125 # 125 is closer than 100 or 200
+    # Find a reasonable default for None, e.g., the median standard rate
+    median_rate = sorted(STANDARD_RATES)[len(STANDARD_RATES) // 2]
+    assert signal_collection.get_nearest_standard_rate(None) == median_rate
     
     # Test compute_optimal_index
     optimal_index = signal_collection.compute_optimal_index()

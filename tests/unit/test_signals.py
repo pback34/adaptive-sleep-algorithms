@@ -45,32 +45,20 @@ def test_registry_inheritance():
     ppg_registry = PPGSignal.get_registry()
     assert "normalize" in ppg_registry
     assert ppg_registry["normalize"][1] == PPGSignal
-    
-    # Check that filter_lowpass is an instance method, not in registry
-    # Create DataFrame with required columns for PPG signal
-    dates = pd.date_range('2023-01-01', periods=10, freq='s')
-    data = pd.DataFrame({'value': range(10)}, index=dates)
-    data.index.name = 'timestamp'
-    ppg_signal = PPGSignal(data=data, metadata={"signal_id": "test"})
-    assert hasattr(ppg_signal, "filter_lowpass")
-    assert callable(getattr(ppg_signal, "filter_lowpass"))
-    
+
+    # Check that 'filter_lowpass' is registered for PPGSignal (overriding TimeSeriesSignal)
+    assert "filter_lowpass" in ppg_registry
+    assert ppg_registry["filter_lowpass"][1] == PPGSignal # Should point to PPGSignal
+
     # Check that AccelerometerSignal inherits from TimeSeriesSignal but not from PPGSignal
     acc_registry = AccelerometerSignal.get_registry()
     assert "normalize" not in acc_registry  # PPGSignal-specific operation not inherited
-    
-    # Check that AccelerometerSignal has filter_lowpass as an instance method
-    # Create DataFrame with required columns for AccelerometerSignal
-    acc_dates = pd.date_range('2023-01-01', periods=10, freq='s')
-    acc_data = pd.DataFrame({
-        'x': [0] * 10,
-        'y': [0] * 10,
-        'z': [0] * 10
-    }, index=acc_dates)
-    acc_data.index.name = 'timestamp'
-    acc_signal = AccelerometerSignal(data=acc_data, metadata={"signal_id": "test"})
-    assert hasattr(acc_signal, "filter_lowpass")
-    assert callable(getattr(acc_signal, "filter_lowpass"))
+
+    # Check that AccelerometerSignal inherits 'filter_lowpass' from TimeSeriesSignal
+    assert "filter_lowpass" in acc_registry
+    # The registry lookup should resolve to TimeSeriesSignal's function, but the
+    # output class should be adapted to AccelerometerSignal by get_registry()
+    assert acc_registry["filter_lowpass"][1] == AccelerometerSignal
 
 def test_apply_operation_inplace(sample_metadata, sample_dataframe):
     """Test applying an operation in-place."""
@@ -143,3 +131,126 @@ def test_apply_operation_traceability(sample_metadata, sample_dataframe):
     newer_signal = new_signal.apply_operation("normalize")
     assert newer_signal.metadata.derived_from[0][0] == new_signal.metadata.signal_id
     assert newer_signal.metadata.derived_from[0][1] == 0  # Points to first operation
+
+
+# ===== Sample Rate Tests =====
+
+def create_test_signal(freq_hz=None, num_points=100, irregular=False, constant_time=False, start_time="2023-01-01"):
+    """Helper to create a TimeSeriesSignal for testing sample rate."""
+    import numpy as np
+    if constant_time:
+        index = pd.DatetimeIndex([pd.Timestamp(start_time)] * num_points)
+    elif irregular:
+        # Create irregular timestamps
+        base_index = pd.date_range(start=start_time, periods=num_points, freq="1s")
+        noise = np.random.uniform(-0.4, 0.4, num_points) # Add noise up to +/- 400ms
+        irregular_seconds = base_index.astype(np.int64) / 1e9 + noise
+        index = pd.to_datetime(irregular_seconds, unit='s')
+    elif freq_hz is not None and freq_hz > 0:
+        freq_str = f"{1000/freq_hz:.6f}ms"
+        index = pd.date_range(start=start_time, periods=num_points, freq=freq_str)
+    else: # Default to 1Hz if no freq specified
+        index = pd.date_range(start=start_time, periods=num_points, freq="1s")
+
+    data = pd.DataFrame({"value": range(num_points)}, index=index)
+    data.index.name = 'timestamp'
+    # Use PPGSignal as a concrete TimeSeriesSignal subclass
+    return PPGSignal(data=data, metadata={"signal_id": f"test_signal_{freq_hz or 'irr'}"})
+
+def test_sample_rate_metadata_on_init_regular():
+    """Test sample_rate metadata is set correctly on init for regular data."""
+    signal_100hz = create_test_signal(freq_hz=100)
+    assert signal_100hz.metadata.sample_rate == "100.0000Hz"
+
+    signal_50hz = create_test_signal(freq_hz=50)
+    assert signal_50hz.metadata.sample_rate == "50.0000Hz"
+
+    signal_1hz = create_test_signal(freq_hz=1)
+    assert signal_1hz.metadata.sample_rate == "1.0000Hz"
+
+def test_sample_rate_metadata_on_init_irregular():
+    """Test sample_rate metadata is 'Variable' on init for irregular data."""
+    signal_irregular = create_test_signal(irregular=True)
+    # get_sampling_rate should return None for irregular data
+    assert signal_irregular.get_sampling_rate() is None
+    # _update_sample_rate_metadata should set metadata to "Variable"
+    assert signal_irregular.metadata.sample_rate == "Variable"
+
+def test_sample_rate_metadata_on_init_insufficient_data():
+    """Test sample_rate metadata is 'Unknown' for insufficient data."""
+    signal_1pt = create_test_signal(num_points=1)
+    # get_sampling_rate should return None for insufficient data
+    assert signal_1pt.get_sampling_rate() is None
+    # _update_sample_rate_metadata should set metadata to "Unknown"
+    assert signal_1pt.metadata.sample_rate == "Unknown"
+
+    signal_0pt = create_test_signal(num_points=0)
+    # get_sampling_rate should return None for insufficient data
+    assert signal_0pt.get_sampling_rate() is None
+    # _update_sample_rate_metadata should set metadata to "Unknown"
+    assert signal_0pt.metadata.sample_rate == "Unknown"
+
+def test_sample_rate_metadata_on_init_constant_time():
+    """Test sample_rate metadata is 'Unknown' for constant timestamps."""
+    signal_const = create_test_signal(constant_time=True)
+    # get_sampling_rate should return None for constant time (zero median diff)
+    assert signal_const.get_sampling_rate() is None
+    # _update_sample_rate_metadata should set metadata to "Unknown"
+    assert signal_const.metadata.sample_rate == "Unknown"
+
+def test_sample_rate_metadata_update_after_operation_inplace():
+    """Test sample_rate metadata update after inplace operation."""
+    signal = create_test_signal(freq_hz=100)
+    assert signal.metadata.sample_rate == "100.0000Hz"
+
+    # Apply filter_lowpass inplace (doesn't change rate, but triggers update)
+    signal.apply_operation("filter_lowpass", inplace=True, cutoff=5)
+    # Rate should remain the same
+    assert signal.metadata.sample_rate == "100.0000Hz"
+
+def test_sample_rate_metadata_update_after_operation_new_signal():
+    """Test sample_rate metadata update after non-inplace operation."""
+    signal = create_test_signal(freq_hz=100)
+    assert signal.metadata.sample_rate == "100.0000Hz"
+
+    # Apply filter_lowpass (doesn't change rate, but creates new signal)
+    new_signal = signal.apply_operation("filter_lowpass", inplace=False, cutoff=5)
+    # New signal's metadata should have the correct rate calculated by its __init__
+    assert new_signal.metadata.sample_rate == "100.0000Hz"
+    # Original signal's metadata should be unchanged
+    assert signal.metadata.sample_rate == "100.0000Hz"
+
+# Mock resampling operation for testing rate changes
+@PPGSignal.register("mock_resample", output_class=PPGSignal)
+def mock_resample_op(data_list, parameters):
+    """Mock resampling operation that changes the frequency."""
+    import numpy as np
+    data = data_list[0]
+    new_freq_hz = parameters.get("new_freq", 50)
+    num_points = int(len(data) * new_freq_hz / 100) # Assume original 100Hz for simplicity
+    new_index = pd.date_range(start=data.index[0], periods=num_points, freq=f"{1000/new_freq_hz}ms")
+    # Just create dummy data with the new index
+    new_data = pd.DataFrame({"value": np.linspace(0, 1, num_points)}, index=new_index)
+    return new_data
+
+def test_sample_rate_metadata_update_after_resample_inplace():
+    """Test sample_rate update after inplace operation that changes rate."""
+    signal = create_test_signal(freq_hz=100)
+    assert signal.metadata.sample_rate == "100.0000Hz"
+
+    # Apply mock resampling inplace
+    signal.apply_operation("mock_resample", inplace=True, new_freq=50)
+    # Metadata should be updated to the new rate
+    assert signal.metadata.sample_rate == "50.0000Hz"
+
+def test_sample_rate_metadata_update_after_resample_new_signal():
+    """Test sample_rate update after non-inplace operation that changes rate."""
+    signal = create_test_signal(freq_hz=100)
+    assert signal.metadata.sample_rate == "100.0000Hz"
+
+    # Apply mock resampling to create a new signal
+    new_signal = signal.apply_operation("mock_resample", inplace=False, new_freq=50)
+    # New signal's metadata should reflect the new rate
+    assert new_signal.metadata.sample_rate == "50.0000Hz"
+    # Original signal's metadata remains unchanged
+    assert signal.metadata.sample_rate == "100.0000Hz"

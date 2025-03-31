@@ -165,46 +165,24 @@ def test_export_csv(sample_signal_collection, temp_output_dir):
     assert "y" in accel_df.columns
     assert "z" in accel_df.columns
     assert len(accel_df) == 5  # 5 data points
-    
-    # For multi-index CSVs
+
+    # Verify combined CSV content
     combined_path = os.path.join(temp_output_dir, "combined.csv")
-        
-    # Read with proper header handling to preserve all rows - safely handle files with fewer lines
-    with open(combined_path, 'r') as f:
-        header_lines = []
-        for _ in range(10):
-            try:
-                line = next(f)
-                header_lines.append(line)
-            except StopIteration:
-                break
-        
-    # Count header rows by looking for non-empty lines with commas before data starts
-    header_count = sum(1 for line in header_lines if ',' in line and not any(c.isdigit() for c in line.split(',')[0]))
-    
-    # Read the CSV with appropriate header rows
-    if header_count > 1:
-        # MultiIndex CSV - use all header rows
-        header_rows = list(range(header_count))
-        combined_df = pd.read_csv(combined_path, header=header_rows, index_col=0)
-    else:
-        # Standard CSV
-        combined_df = pd.read_csv(combined_path, index_col=0)
-            
-        # If we have a problem with only 1 row, the issue might be duplicate timestamps
-        # Try reading without treating the index specially to debug
-        if len(combined_df) < 5:
-            # Fallback to reading without index interpretation
-            combined_df = pd.read_csv(combined_path)
-            # Verify we have at least the expected number of rows in raw data
-            assert len(combined_df) >= 5
-            return
-        
-    # Check content length
+    # The export process resets the index, so the first column in the CSV
+    # is the default 0-based index. Read it using index_col=0.
+    combined_df = pd.read_csv(combined_path, index_col=0)
+
+    # Check content length - should match the input signals
     assert len(combined_df) == 5  # 5 data points
+
     # Verify some column data is present, regardless of structure
+    # Check for columns related to ppg_0 and accelerometer_0
+    # The exact column names depend on whether multi-index was used,
+    # so check for substrings.
     cols_str = str(combined_df.columns)
-    assert 'PPG' in cols_str or 'ppg_0' in cols_str
+    assert 'ppg_0' in cols_str or 'PPG Signal' in cols_str # Check for PPG data
+    assert 'accelerometer_0' in cols_str or 'Accelerometer Signal' in cols_str # Check for Accel data
+    assert 'temp_0' not in cols_str # Ensure temporary signal is excluded
     
     # Verify metadata
     with open(os.path.join(temp_output_dir, "metadata.json"), 'r') as f:
