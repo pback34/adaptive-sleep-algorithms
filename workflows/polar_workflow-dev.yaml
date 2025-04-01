@@ -98,6 +98,8 @@ import:
       importer_name: "EnchantedWaveImporter"
       file_pattern: "*.Session.csv" # Pattern to find Enchanted Wave files
       # EnchantedWaveImporter uses default column mapping, no need to specify here unless overriding
+      # Specify the timezone of the source file if it's naive or has incorrect offset
+      origin_timezone: "America/New_York" # Example: Assumes source file is US Eastern Time
     sensor_type: "EEG"
     sensor_model: "EnchantedWave"
     body_position: "head"
@@ -120,14 +122,12 @@ steps:
     output: "accel_angle"
     
   # Align signals to the same time grid
+  # Align signals - calculates alignment parameters (target_rate, ref_time, grid_index)
+  # The actual alignment happens during get_combined_dataframe or export.
   - type: collection
     operation: "align_signals"
     parameters:
-      target_sample_rate: 50.0  # Hz - force all signals to a clean factor of 1000
-      method: "nearest"
-      preserve_original: true
-      inplace: true
-      resample_strategy: "nearest"  # Options: "downsample", "upsample", "nearest"
+      target_sample_rate: 50.0  # Optional: Specify target rate (Hz). If omitted, uses max standard rate <= highest signal rate.
 
 # Export section - defines the output formats and location
 export:

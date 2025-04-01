@@ -396,11 +396,27 @@ class ExportModule:
 
         # Create a temporary collection containing only non-temporary signals
         # Initialize with copies of essential attributes from the original collection
-        temp_collection = SignalCollection(metadata=self.collection.metadata.__dict__.copy(),
+        logger.debug(f"Initializing temporary collection for export with handler: {type(handler_to_use).__name__}")
+        temp_collection = SignalCollection(metadata=asdict(self.collection.metadata), # Use asdict for clean copy
                                            metadata_handler=handler_to_use) # Use determined handler
-        # Ensure index config is copied
-        if hasattr(self.collection.metadata, 'index_config'):
+
+        # Explicitly copy alignment parameters if they exist on the original collection
+        # This ensures the temp collection uses the same grid as calculated previously
+        if hasattr(self.collection, 'target_rate'):
+            temp_collection.target_rate = self.collection.target_rate
+            logger.debug(f"Copied target_rate ({temp_collection.target_rate}) to temp collection.")
+        if hasattr(self.collection, 'ref_time'):
+            temp_collection.ref_time = self.collection.ref_time
+            logger.debug(f"Copied ref_time ({temp_collection.ref_time}) to temp collection.")
+        if hasattr(self.collection, 'grid_index'):
+            temp_collection.grid_index = self.collection.grid_index
+            logger.debug(f"Copied grid_index ({len(temp_collection.grid_index)} points) to temp collection.")
+
+        # Ensure index config is copied (already handled by asdict if part of CollectionMetadata)
+        # Redundant check for safety:
+        if hasattr(self.collection.metadata, 'index_config') and not temp_collection.metadata.index_config:
              temp_collection.metadata.index_config = list(self.collection.metadata.index_config)
+             logger.debug(f"Copied index_config ({temp_collection.metadata.index_config}) to temp collection metadata.")
         else:
              temp_collection.metadata.index_config = [] # Default if not set
 
@@ -422,7 +438,16 @@ class ExportModule:
 
         # Generate the combined dataframe from the temporary collection
         # This inherently excludes temporary signals because they were never added
+        logger.info(f"Calling get_combined_dataframe on temporary collection with {non_temporary_signals_count} signals.")
         combined_df = temp_collection.get_combined_dataframe()
 
-        logger.debug(f"Generated combined dataframe for export with {len(combined_df)} rows and {len(combined_df.columns)} columns.")
+        # Check if the combined dataframe is valid before logging dimensions
+        # get_combined_dataframe should now always return a DataFrame
+        if combined_df.empty:
+            logger.warning("get_combined_dataframe returned an empty DataFrame.")
+            # Proceed with the empty DataFrame, export functions will handle it
+        else:
+            logger.debug(f"Generated combined dataframe for export with {len(combined_df)} rows and {len(combined_df.columns)} columns.")
+
+
         return combined_df

@@ -86,7 +86,8 @@ class EnchantedWaveImporter(CSVImporterBase):
         data_begin_idx = -1
         header_line_idx = -1
         data_lines = []
-        base_timestamp = None
+        base_timestamp_utc = None # Store base timestamp as aware UTC
+        parsed_timezone_offset = None # Store parsed offset string like "-04:00"
 
         # --- Stage 1: Find Markers and Base Timestamp ---
         for i, line in enumerate(file_content):
@@ -96,20 +97,46 @@ class EnchantedWaveImporter(CSVImporterBase):
                 self.logger.debug(f"Found 'Data Begin:' at line {i+1}")
                 try:
                     # Extract timestamp like "Data Begin: 2025-03-17T02:41:52.1866600-04:00;"
-                    time_str = stripped_line.split(":", 1)[1].split(";")[0].strip()
-                    base_timestamp_aware = pd.to_datetime(time_str)
-                    # Convert to UTC and make naive for consistency
-                    if base_timestamp_aware.tz is not None:
-                         base_timestamp = base_timestamp_aware.tz_convert('UTC').tz_localize(None)
-                         self.logger.debug(f"Extracted base timestamp (naive UTC): {base_timestamp}")
+                    # Use regex to capture timestamp and offset separately
+                    match = re.search(r"Data Begin:\s*([\d\-T:]+\.?\d*)(\s*[+\-]\d{2}:\d{2})?;?", stripped_line)
+                    if match:
+                        time_str = match.group(1)
+                        offset_str = match.group(2) # Might be None if no offset found
+                        if offset_str:
+                             parsed_timezone_offset = offset_str.strip()
+                             self.logger.debug(f"Parsed timezone offset from file: {parsed_timezone_offset}")
+                             # Combine time string and offset for parsing
+                             full_time_str = f"{time_str}{parsed_timezone_offset}"
+                             base_timestamp_aware = pd.to_datetime(full_time_str)
+                        else:
+                             # No offset found, parse as naive
+                             self.logger.warning("No timezone offset found in 'Data Begin:' line. Parsing as naive.")
+                             base_timestamp_aware = pd.to_datetime(time_str) # Naive
+
+                        # Convert to UTC for internal consistency
+                        if base_timestamp_aware.tz is not None:
+                             base_timestamp_utc = base_timestamp_aware.tz_convert('UTC')
+                             self.logger.debug(f"Extracted base timestamp (aware UTC): {base_timestamp_utc}")
+                        else:
+                             # If naive, try localizing using config or parsed offset before converting to UTC
+                             origin_tz_for_base = self.config.get("origin_timezone", parsed_timezone_offset)
+                             if origin_tz_for_base:
+                                 try:
+                                     base_timestamp_utc = base_timestamp_aware.tz_localize(origin_tz_for_base).tz_convert('UTC')
+                                     self.logger.debug(f"Localized naive base timestamp to {origin_tz_for_base} and converted to UTC: {base_timestamp_utc}")
+                                 except Exception as loc_err:
+                                     self.logger.warning(f"Failed to localize naive base timestamp using '{origin_tz_for_base}': {loc_err}. Assuming UTC.")
+                                     base_timestamp_utc = base_timestamp_aware.tz_localize('UTC') # Fallback: assume UTC
+                             else:
+                                 self.logger.warning("Base timestamp is naive and no origin timezone specified/parsed. Assuming UTC.")
+                                 base_timestamp_utc = base_timestamp_aware.tz_localize('UTC') # Fallback: assume UTC
+
                     else:
-                         # If already naive, assume it's the intended time (or log warning)
-                         base_timestamp = base_timestamp_aware
-                         self.logger.warning(f"Extracted base timestamp was timezone-naive: {base_timestamp}. Assuming local time.")
+                         self.logger.warning("Could not parse timestamp from 'Data Begin:' line using regex.")
 
                 except Exception as e:
-                    self.logger.warning(f"Failed to extract base timestamp from 'Data Begin:' line: {str(e)}")
-                    base_timestamp = None # Ensure base_timestamp is None on failure
+                    self.logger.warning(f"Failed to extract or process base timestamp from 'Data Begin:' line: {str(e)}")
+                    base_timestamp_utc = None # Ensure base_timestamp is None on failure
                 # Don't assume header position here, break after finding Data Begin
                 break # Exit loop once Data Begin is found
 
@@ -179,19 +206,33 @@ class EnchantedWaveImporter(CSVImporterBase):
         # --- Timestamp Handling ---
         timestamp_col_name = self.config["column_mapping"].get("timestamp", "Time")
         seconds_col_name = self.config["column_mapping"].get("seconds", "Seconds")
+        # Determine origin timezone: config > parsed offset > None
+        origin_timezone = self.config.get("origin_timezone", parsed_timezone_offset)
+        self.logger.debug(f"Using origin_timezone for standardization: {origin_timezone}")
 
         if timestamp_col_name in df.columns:
             self.logger.debug(f"Using '{timestamp_col_name}' column for timestamps.")
             try:
-                # Use the utility function for robust standardization, ensuring naive output
-                df = standardize_timestamp(df.copy(), timestamp_col_name, set_index=True, tz_convert='UTC', tz_strip=True)
+                # Use standardize_timestamp, passing origin_timezone, keep tz-aware UTC
+                df = standardize_timestamp(
+                    df.copy(),
+                    timestamp_col_name,
+                    set_index=True,
+                    origin_timezone=origin_timezone,
+                    target_timezone='UTC', # Ensure internal representation is UTC
+                    tz_strip=False # Keep timezone information
+                )
                 if not isinstance(df.index, pd.DatetimeIndex):
                      raise ValueError("Timestamp standardization did not result in DatetimeIndex")
-                # Check if index is naive after standardization
-                if df.index.tz is not None:
-                     self.logger.warning("Timestamp index is still timezone-aware after standardization. Attempting to strip.")
-                     df.index = df.index.tz_localize(None)
-                self.logger.debug("Timestamp standardization successful using 'Time' column (result is naive).")
+                if df.index.tz is None:
+                     self.logger.warning("Timestamp index is naive after standardization. Expected timezone-aware.")
+                     # Attempt to force UTC localization as a fallback
+                     df.index = df.index.tz_localize('UTC', ambiguous='infer')
+                elif df.index.tz.zone != 'UTC':
+                     self.logger.warning(f"Timestamp index is not UTC ({df.index.tz.zone}) after standardization. Converting.")
+                     df.index = df.index.tz_convert('UTC')
+
+                self.logger.debug(f"Timestamp standardization successful using '{timestamp_col_name}' column (result is aware UTC).")
             except Exception as e:
                 self.logger.warning(f"Failed to standardize timestamp using '{timestamp_col_name}' column: {str(e)}. Trying 'Seconds'.")
                 df.index = None # Reset index if standardization failed
@@ -200,25 +241,23 @@ class EnchantedWaveImporter(CSVImporterBase):
 
         # Fallback to 'Seconds' column if timestamp index is not set
         if not isinstance(df.index, pd.DatetimeIndex):
-            if seconds_col_name in df.columns and base_timestamp is not None:
-                self.logger.debug(f"Using '{seconds_col_name}' column and base timestamp.")
+            if seconds_col_name in df.columns and base_timestamp_utc is not None:
+                self.logger.debug(f"Using '{seconds_col_name}' column and base timestamp (UTC).")
                 try:
                     seconds = pd.to_numeric(df[seconds_col_name], errors='coerce')
-                    # Drop rows where seconds could not be parsed
                     valid_seconds_mask = seconds.notna()
                     df = df[valid_seconds_mask]
                     seconds = seconds[valid_seconds_mask]
 
                     if not df.empty:
-                        # Calculate timestamps relative to base_timestamp (which should be naive UTC)
-                        timestamps = base_timestamp + pd.to_timedelta(seconds, unit='s')
-                        # Ensure the resulting index is DatetimeIndex and naive
-                        df.index = pd.DatetimeIndex(timestamps).tz_localize(None) # Explicitly make naive
+                        # Calculate timestamps relative to base_timestamp_utc (which is aware UTC)
+                        timestamps = base_timestamp_utc + pd.to_timedelta(seconds, unit='s')
+                        # Resulting timestamps will be aware UTC
+                        df.index = pd.DatetimeIndex(timestamps)
                         df.index.name = 'timestamp' # Use standard name
-                        # Drop the original Seconds column if it exists and isn't the target timestamp
                         if seconds_col_name in df.columns and seconds_col_name != 'timestamp':
                             df = df.drop(columns=[seconds_col_name])
-                        self.logger.debug("Timestamp creation successful using 'Seconds' column.")
+                        self.logger.debug("Timestamp creation successful using 'Seconds' column (result is aware UTC).")
                     else:
                         self.logger.warning("No valid 'Seconds' values found after coercion.")
                         df = pd.DataFrame() # Return empty if no valid seconds
@@ -230,13 +269,13 @@ class EnchantedWaveImporter(CSVImporterBase):
                 self.logger.warning(f"Neither '{timestamp_col_name}' nor '{seconds_col_name}' column available or base timestamp missing. Trying synthetic.")
                 df.index = None
 
-        # Final fallback: Synthetic timestamps if still no valid index
+        # Final fallback: Synthetic timestamps (make them UTC aware)
         if not isinstance(df.index, pd.DatetimeIndex):
              if not df.empty:
-                 self.logger.warning("Generating synthetic timestamps (4-second interval).")
-                 # Use a 4-second frequency based on the old importer's logic
-                 df.index = pd.date_range(start='2025-01-01', periods=len(df), freq='4S')
-                 df.index.name = 'Timestamp'
+                 self.logger.warning("Generating synthetic timestamps (4-second interval, UTC).")
+                 # Use a 4-second frequency, make UTC aware
+                 df.index = pd.date_range(start='2025-01-01', periods=len(df), freq='4S', tz='UTC')
+                 df.index.name = 'timestamp' # Use standard name
              else:
                  self.logger.warning("DataFrame is empty, cannot generate synthetic timestamps.")
                  return pd.DataFrame() # Return empty if no data and no timestamps

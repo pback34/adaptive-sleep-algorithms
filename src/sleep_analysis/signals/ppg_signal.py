@@ -5,6 +5,7 @@ This module defines the PPGSignal class for photoplethysmography data.
 """
 
 import pandas as pd
+from typing import Dict, Any # Added import
 from .time_series_signal import TimeSeriesSignal
 from ..signal_types import SignalType
 
@@ -43,7 +44,9 @@ class PPGSignal(TimeSeriesSignal):
     # via apply_operation("filter_lowpass", ...).
 
 
-@PPGSignal.register("normalize")
+# --- Registered Operations ---
+
+@PPGSignal.register("normalize") # Keeping mock normalize as registered for now
 def mock_normalize(data_list, parameters):
     """
     Mock implementation of PPG normalization for testing.
@@ -57,50 +60,47 @@ def mock_normalize(data_list, parameters):
     """
     return data_list[0]
 
-@PPGSignal.register("filter_lowpass")
-def filter_lowpass_ppg(data_list, parameters):
-    """
-    Apply a low-pass filter to the PPG signal using a moving average.
-    
-    Args:
-        data_list: List containing the signal's data (typically a single DataFrame).
-        parameters: Dictionary with parameters including 'cutoff' (default 5.0)
-        
-    Returns:
-        Filtered DataFrame.
-    """
-    import pandas as pd
-    import numpy as np
-    
-    # Make sure we're working with a DataFrame
-    if not data_list or not isinstance(data_list[0], pd.DataFrame):
-        # Create a minimal default DataFrame for testing
-        result = pd.DataFrame({
-            'value': [1, 2, 3, 4, 5]
-        }, index=pd.date_range("2023-01-01", periods=5, freq="1s"))
-        return result
-        
-    cutoff = parameters.get("cutoff", 5.0)
-    data = data_list[0]  # Assuming data_list contains the signal's DataFrame
-    
-    # Create a copy of the DataFrame to avoid modifying the original
-    processed_data = data.copy()
-    
-    # Only apply rolling mean to numeric columns
-    numeric_cols = data.select_dtypes(include=[np.number]).columns
-    if len(numeric_cols) > 0:
-        for col in numeric_cols:
-            processed_data[col] = data[col].rolling(window=int(cutoff)).mean().fillna(data[col])
-    
-    # Ensure we're returning a DataFrame, not a signal object
-    if isinstance(processed_data, pd.DataFrame):
+
+    # --- Instance Methods (Including Overrides) ---
+
+    def filter_lowpass(self, cutoff: float = 5.0, **other_params) -> pd.DataFrame:
+        """
+        Apply a low-pass filter specifically for PPG signals (core logic).
+
+        This method overrides the default TimeSeriesSignal implementation.
+        It performs the calculation and returns the resulting DataFrame.
+        Metadata updates and instance handling are managed by apply_operation.
+
+        Args:
+            cutoff: The window size for the moving average. Defaults to 5.0.
+            **other_params: Additional parameters.
+
+        Returns:
+            A DataFrame containing the filtered PPG data.
+        """
+        import pandas as pd # Local imports
+        import numpy as np
+        import logging
+        logger = logging.getLogger(__name__)
+
+        window_size = int(cutoff)
+        if window_size < 1:
+             raise ValueError("Cutoff (window size) for moving average must be at least 1.")
+
+        data = self.get_data() # Get current data
+        if data is None:
+             raise ValueError("Cannot apply PPG filter_lowpass: signal data is None.")
+
+        logger.debug(f"Applying PPG-specific rolling mean with window size {window_size}")
+        processed_data = data.copy()
+        # PPG typically has 'value' column, but apply to all numeric just in case
+        numeric_cols = data.select_dtypes(include=[np.number]).columns
+
+        if not numeric_cols.empty:
+            for col in numeric_cols:
+                processed_data[col] = data[col].rolling(window=window_size, min_periods=1).mean()
+            logger.debug(f"Applied rolling mean to PPG columns: {list(numeric_cols)}")
+        else:
+            logger.warning("No numeric columns found in PPG signal to apply low-pass filter.")
+
         return processed_data
-    else:
-        # If somehow we got a signal object, extract its data
-        try:
-            return processed_data.get_data()
-        except:
-            # Last resort fallback
-            return pd.DataFrame({
-                'value': [1, 2, 3, 4, 5]
-            }, index=pd.date_range("2023-01-01", periods=5, freq="1s"))

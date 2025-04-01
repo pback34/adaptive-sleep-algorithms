@@ -9,6 +9,11 @@ from dataclasses import asdict
 import uuid
 from typing import Dict, Any, Type, List, Optional
 from abc import abstractmethod
+import pandas as pd # Added import
+
+from dataclasses import asdict # Added import
+import uuid # Added import
+from typing import Dict, Any, Type, List, Optional, Callable # Added Callable import
 
 from ..core.signal_data import SignalData
 from ..signal_types import SignalType
@@ -167,9 +172,141 @@ class TimeSeriesSignal(SignalData):
         else:
             logger.warning(f"Metadata handler not found for signal {self.metadata.signal_id}. Cannot update sample_rate metadata.")
 
-    # Removed filter_lowpass instance method. Functionality is now handled
-    # solely by the registered 'filter_lowpass' operation function below
-    # and invoked via apply_operation("filter_lowpass", ...).
+
+    def apply_operation(self, operation_name: str, inplace: bool = False, **parameters) -> 'SignalData':
+        """
+        Apply an operation to this signal by name, handling methods and registry lookups.
+
+        Checks for an instance method first. If found, executes it.
+        If no method is found, falls back to the class registry.
+        Handles metadata updates and inplace/new instance creation centrally.
+
+        Args:
+            operation_name: String name of the operation.
+            inplace: If True, attempts to modify this signal in place.
+            **parameters: Keyword arguments passed to the operation's core logic.
+
+        Returns:
+            The resulting signal (self if inplace, or a new instance).
+
+        Raises:
+            ValueError: If operation not found, inplace fails, or core logic fails.
+            AttributeError: If a non-callable attribute matches the operation name.
+        """
+        import pandas as pd # Local import
+        import logging # Local import
+        logger = logging.getLogger(__name__)
+
+        logger.info(f"Attempting to apply operation '{operation_name}' to signal {self.metadata.signal_id}")
+
+        core_logic_callable: Optional[Callable] = None
+        output_class: Type['SignalData'] = self.__class__ # Default to current class
+        is_method = False
+
+        # --- 1. Check for Instance Method First ---
+        method = getattr(self, operation_name, None)
+        if method is not None:
+            if callable(method):
+                logger.debug(f"Found callable instance method '{operation_name}'.")
+                core_logic_callable = method
+                is_method = True
+                # Output class remains self.__class__ for methods unless overridden (future enhancement?)
+            else:
+                logger.error(f"Found attribute '{operation_name}', but it is not callable.")
+                raise AttributeError(f"Attribute '{operation_name}' found but is not callable.")
+
+        # --- 2. Fallback to Registry if No Method Found ---
+        if core_logic_callable is None:
+            logger.debug(f"No instance method '{operation_name}' found. Checking registry.")
+            registry = self.__class__.get_registry()
+            if operation_name in registry:
+                func_registered, output_class_registered = registry[operation_name]
+                logger.debug(f"Found operation '{operation_name}' in registry. Output class: {output_class_registered.__name__}.")
+                core_logic_callable = func_registered
+                output_class = output_class_registered # Use registered output class
+                is_method = False
+            else:
+                # --- 3. Operation Not Found ---
+                logger.error(f"Operation '{operation_name}' not found as an instance method or in the registry for {self.__class__.__name__}.")
+                raise ValueError(f"Operation '{operation_name}' not found for {self.__class__.__name__}")
+
+        # --- 4. Execute Core Logic ---
+        current_data = self.get_data()
+        if current_data is None:
+            raise ValueError(f"Cannot apply operation '{operation_name}' because signal data is None.")
+
+        try:
+            logger.debug(f"Executing core logic for operation '{operation_name}'...")
+            if is_method:
+                # Call instance method: expects only parameters
+                result_data = core_logic_callable(**parameters)
+            else:
+                # Call registered function: expects list of dataframes and parameters
+                result_data = core_logic_callable([current_data], parameters)
+
+            if not isinstance(result_data, pd.DataFrame):
+                 raise TypeError(f"Core logic for '{operation_name}' did not return a pandas DataFrame.")
+            # Validate timestamp index on the result
+            self._validate_timestamp(result_data)
+            logger.debug(f"Core logic for '{operation_name}' completed successfully.")
+        except Exception as e:
+            logger.error(f"Error executing core logic for '{operation_name}': {e}", exc_info=True)
+            # Improve error message for method calls
+            call_type = "instance method" if is_method else "registered function"
+            raise ValueError(f"Core logic for {call_type} '{operation_name}' failed: {e}") from e
+
+        # --- 5. Handle Inplace vs. New Instance ---
+        instance_to_update_metadata_on: 'TimeSeriesSignal'
+        return_signal: 'SignalData'
+
+        if inplace:
+            if output_class != self.__class__:
+                raise ValueError(
+                    f"Cannot perform in-place operation '{operation_name}' because it changes signal class "
+                    f"from {self.__class__.__name__} to {output_class.__name__}"
+                )
+            logger.debug(f"Applying operation '{operation_name}' inplace.")
+            self._data = result_data
+            instance_to_update_metadata_on = self
+            return_signal = self
+        else:
+            logger.debug(f"Creating new signal instance for operation '{operation_name}'.")
+            # Prepare metadata for the new signal
+            # Ensure metadata.operations exists before calculating index
+            source_operations = self.metadata.operations if self.metadata.operations is not None else []
+            operation_index = len(source_operations) - 1 # Index of the operation *on the source signal*
+
+            metadata_dict = asdict(self.metadata) # Start with a copy
+            metadata_dict["signal_id"] = str(uuid.uuid4()) # New unique ID
+            metadata_dict["derived_from"] = [(self.metadata.signal_id, operation_index)] # Link to source
+            metadata_dict["operations"] = [OperationInfo(operation_name, parameters)] # Record this operation
+
+            # Pass the existing handler to the new signal if it exists
+            handler = getattr(self, 'handler', None)
+
+            # Instantiate the new signal
+            new_signal = output_class(data=result_data, metadata=metadata_dict, handler=handler)
+            instance_to_update_metadata_on = new_signal # Metadata already set during init
+            return_signal = new_signal
+
+        # --- 4. Record Operation (only needed for inplace) ---
+        if inplace:
+            if self.handler:
+                logger.debug(f"Recording inplace operation '{operation_name}' in metadata.")
+                self.handler.record_operation(instance_to_update_metadata_on.metadata, operation_name, parameters)
+            else:
+                 logger.warning(f"Cannot record inplace operation '{operation_name}': Metadata handler not found.")
+
+
+        # --- 5. Update Sample Rate Metadata ---
+        # The new signal's __init__ calls this, so only explicitly call for inplace
+        if inplace:
+             logger.debug(f"Updating sample rate metadata after inplace operation '{operation_name}'.")
+             instance_to_update_metadata_on._update_sample_rate_metadata()
+        # For new signals, __init__ already called it.
+
+        logger.debug(f"Operation '{operation_name}' processing finished.")
+        return return_signal # Added return statement
 
     def snap_to_grid(self, target_period, ref_time):
         """
@@ -386,204 +523,48 @@ class TimeSeriesSignal(SignalData):
             func._output_class = cls
             return func
         return decorator
-        
-    def apply_operation(self, operation_name: str, inplace: bool = False, **parameters) -> 'SignalData':
+
+    # --- Standard Operations Implemented as Methods ---
+
+    def filter_lowpass(self, cutoff: float = 5.0, **other_params) -> pd.DataFrame:
         """
-        Apply an operation to this signal by name.
-        
+        Apply a low-pass filter using a moving average (core logic).
+
+        This method performs the calculation and returns the resulting DataFrame.
+        Metadata updates and instance handling are managed by apply_operation.
+
         Args:
-            operation_name: String name of the operation registered for this signal class.
-            inplace: If True and operation preserves signal class, modify this signal in place.
-                     If False or operation changes signal class, create and return a new signal.
-            **parameters: Keyword arguments to pass to the registered operation function.
+            cutoff: The window size (number of samples) for the moving average.
+                    Effectively determines the filter's cutoff frequency. Defaults to 5.0.
+            **other_params: Additional parameters (currently unused by this implementation).
 
         Returns:
-            Either this signal instance (if inplace=True) or a new signal instance with the operation results.
-
-        Raises:
-            ValueError: If operation not found in the registry for this signal class.
-            ValueError: If inplace=True is requested for an operation that changes the signal class.
+            A DataFrame containing the filtered data.
         """
-        # ONLY use the registry to find the operation
-        registry = self.__class__.get_registry()
-        if operation_name not in registry:
-            raise ValueError(f"Operation '{operation_name}' not found for {self.__class__.__name__}")
-
-        func, output_class = registry[operation_name]
-
-        # Call the registered function, passing the current signal's data and parameters
-        # Ensure get_data() is called to handle potential regeneration
-        current_data = self.get_data()
-        if current_data is None:
-             # Handle case where data is None (e.g., after clear_data with skip_regeneration)
-             # Or raise an error if operations require data
-             raise ValueError(f"Cannot apply operation '{operation_name}' because signal data is None.")
-
-        result_data = func([current_data], parameters)
-
-        # Validate timestamp index on the result if it's a DataFrame
-        import pandas as pd
-        if isinstance(result_data, pd.DataFrame):
-            self._validate_timestamp(result_data)
-
-        # Handle inplace vs. non-inplace behavior
-        if inplace:
-            if output_class != self.__class__:
-                raise ValueError(f"Cannot perform in-place operation '{operation_name}' because it changes signal class from {self.__class__.__name__} to {output_class.__name__}")
-            self._data = result_data
-            # Ensure metadata.operations exists
-            if not hasattr(self.metadata, 'operations') or self.metadata.operations is None:
-                self.metadata.operations = []
-            self.metadata.operations.append(OperationInfo(operation_name, parameters))
-            # Update sample rate metadata after inplace operation modifies data
-            self._update_sample_rate_metadata()
-            return self
-        else:
-            # Create a new signal instance with the results and updated metadata
-            # Ensure metadata.operations exists before calculating index
-            if not hasattr(self.metadata, 'operations') or self.metadata.operations is None:
-                self.metadata.operations = []
-            operation_index = len(self.metadata.operations) - 1 # Index of the operation *on the source signal* if it had one
-
-            # Prepare metadata for the new signal
-            metadata_dict = asdict(self.metadata) # Start with a copy of the source metadata
-            metadata_dict["signal_id"] = str(uuid.uuid4()) # New unique ID
-            metadata_dict["derived_from"] = [(self.metadata.signal_id, operation_index)] # Link to source signal
-            metadata_dict["operations"] = [OperationInfo(operation_name, parameters)] # Record the operation applied
-
-            # Pass the existing handler to the new signal if it exists
-            handler = getattr(self, 'handler', None)
-
-            # Instantiate the new signal of the correct output class
-            new_signal = output_class(data=result_data, metadata=metadata_dict, handler=handler)
-            # The new signal's __init__ will call _update_sample_rate_metadata automatically.
-            return new_signal
-
-    def resample(self, **parameters):
-        """
-        Resample the signal to a target time index using merge_asof for fast alignment.
-        
-        Args:
-            parameters: Dictionary with:
-                - 'target_index' (required): Target DatetimeIndex to align data to
-                - 'method' (optional, default 'nearest'): Interpolation method (used only if preserve_original=False)
-                - 'preserve_original' (optional, default True): If True, aligns original values to nearest target timestamps within tolerance
-        
-        Returns:
-            Resampled DataFrame aligned to target_index.
-        """
-        import pandas as pd
+        import pandas as pd # Local imports
         import numpy as np
         import logging
-        import time
-        
         logger = logging.getLogger(__name__)
-        start_time = time.time()
-        
-        target_index = parameters["target_index"]
-        method = parameters.get("method", "nearest")
-        preserve_original = parameters.get("preserve_original", True)
-        
-        logger.info(f"Resampling signal {self.metadata.signal_id} with {len(self.get_data())} rows to target index with {len(target_index)} points")
-        signal_rate = self.get_sampling_rate()
-        if signal_rate:
-            logger.debug(f"Signal has sampling rate of approximately {signal_rate:.2f} Hz")
-        
-        # Get signal data
-        df = self.get_data()
-        
-        # Calculate a reasonable tolerance for timestamp matching based on the signal rate
-        # Default to 10ms (supports up to 100Hz) if we don't know the rate
-        tolerance = pd.Timedelta(milliseconds=10)
-        
-        # If we know the signal's sampling rate, adjust tolerance accordingly
-        if signal_rate and signal_rate > 0:
-            # Set tolerance to 1/2 the period for this signal
-            signal_period_ms = (1000 / signal_rate) / 2
-            tolerance = pd.Timedelta(milliseconds=max(1, min(int(signal_period_ms), 100)))
-        
-        logger.info(f"Using tolerance of {tolerance} for timestamp matching")
-        
-        # Get data and convert to DataFrame format needed for merge_asof
-        target_df = pd.DataFrame(index=target_index)
-        target_df['__dummy__'] = 1  # Add dummy column to ensure DataFrame has data
-        target_df = target_df.reset_index()
-        target_df.rename(columns={target_df.columns[0]: 'timestamp'}, inplace=True)
-        
-        source_df = df.reset_index()
-        if source_df.columns[0] != 'timestamp':
-            source_df.rename(columns={source_df.columns[0]: 'timestamp'}, inplace=True)
-        
-        # Sort both DataFrames by timestamp (required for merge_asof)
-        target_df = target_df.sort_values('timestamp')
-        source_df = source_df.sort_values('timestamp')
-        
-        # Use efficient merge_asof for alignment
-        logger.debug("Performing merge_asof alignment")
-        merge_start = time.time()
-        
-        # Perform alignment with tolerance - this will keep only points that match within the tolerance
-        result = pd.merge_asof(
-            target_df,
-            source_df,
-            on='timestamp',
-            direction='nearest',
-            tolerance=tolerance
-        )
-        
-        # Drop the dummy column and any other columns we don't need
-        if '__dummy__' in result.columns:
-            result = result.drop('__dummy__', axis=1)
-        
-        merge_time = time.time() - merge_start
-        logger.debug(f"merge_asof completed in {merge_time:.2f} seconds")
-        
-        # Set timestamp as index and ensure we only keep original columns
-        result = result.set_index('timestamp')
-        if len(df.columns) > 0:
-            result = result[df.columns]
-        
-        # Optional interpolation if needed
-        if not preserve_original:
-            numeric_cols = result.select_dtypes(include=[np.number]).columns
-            if len(numeric_cols) > 0:
-                logger.debug(f"Interpolating {len(numeric_cols)} numeric columns with method '{method}'")
-                result[numeric_cols] = result[numeric_cols].interpolate(method=method)
-        
-        logger.info(f"Resampling completed in {time.time() - start_time:.2f} seconds")
-        return result
 
+        # Note: 'parameters' dict is not needed here as args are passed directly
+        window_size = int(cutoff)
+        if window_size < 1:
+             raise ValueError("Cutoff (window size) for moving average must be at least 1.")
 
+        data = self.get_data() # Get current data
+        if data is None:
+             raise ValueError("Cannot apply filter_lowpass: signal data is None.")
 
- # Common operations for time series signals can be registered here
+        logger.debug(f"Applying rolling mean with window size {window_size}")
+        processed_data = data.copy()
+        numeric_cols = data.select_dtypes(include=[np.number]).columns
 
-# Register the filter_lowpass as a method for all TimeSeriesSignal instances
-@TimeSeriesSignal.register("filter_lowpass")
-def filter_lowpass_operation(data_list, parameters):
-    """
-    Apply a low-pass filter to the signal data using a moving average.
-    
-    Args:
-        data_list: List containing the signal's data (typically a single DataFrame).
-        parameters: Dictionary with parameters including 'cutoff' (default 5.0)
-        
-    Returns:
-        Filtered DataFrame.
-    """
-    import pandas as pd
-    import numpy as np
-    
-    cutoff = parameters.get("cutoff", 5.0)
-    data = data_list[0]  # Assuming data_list contains the signal's DataFrame
-    
-    # Create a copy of the DataFrame to avoid modifying the original
-    processed_data = data.copy()
-    
-    # Only apply rolling mean to numeric columns
-    numeric_cols = data.select_dtypes(include=[np.number]).columns
-    if len(numeric_cols) > 0:
-        for col in numeric_cols:
-            processed_data[col] = data[col].rolling(window=int(cutoff)).mean().fillna(data[col])
-    
-    return processed_data
-     
+        if not numeric_cols.empty:
+            for col in numeric_cols:
+                # Apply rolling mean and fill NaNs at the beginning with original values
+                processed_data[col] = data[col].rolling(window=window_size, min_periods=1).mean() # Use min_periods=1
+            logger.debug(f"Applied rolling mean to columns: {list(numeric_cols)}")
+        else:
+            logger.warning("No numeric columns found to apply low-pass filter.")
+
+        return processed_data

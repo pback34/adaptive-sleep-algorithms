@@ -6,17 +6,31 @@ for all signals in the framework and provides methods for adding, retrieving,
 and managing signals.
 """
 
-import math # Added import
-from typing import Dict, List, Any, Optional, Type, Tuple, Callable, Union
-from .metadata import SignalMetadata
+# Standard library imports
+import math
 import warnings
-import pandas as pd
 import uuid
+import logging
+import time
+import os
+import glob
+from dataclasses import fields
+from typing import Dict, List, Any, Optional, Type, Tuple, Callable, Union
 
+# Third-party imports
+import pandas as pd
+import numpy as np
+
+# Local application imports
+from .metadata import SignalMetadata, CollectionMetadata, OperationInfo
 from .signal_data import SignalData
-from .metadata import CollectionMetadata
-from ..signal_types import SignalType
+from ..signal_types import SignalType, SensorType, SensorModel, BodyPosition
 from .metadata_handler import MetadataHandler
+from ..signals.time_series_signal import TimeSeriesSignal # Added missing import
+from ..utils import str_to_enum # Added missing import
+
+# Initialize logger for the module
+logger = logging.getLogger(__name__)
 
 
 # Define standard rates: factors of 1000 Hz plus rates corresponding to multi-second periods
@@ -79,11 +93,9 @@ class SignalCollection:
         # Check for signal_id uniqueness
         existing_ids = {s.metadata.signal_id for s in self.signals.values()}
         if signal.metadata.signal_id in existing_ids:
-            import uuid
             signal.metadata.signal_id = str(uuid.uuid4())
-            
+
         # Validate that time series signals have a proper timestamp index
-        from ..signals.time_series_signal import TimeSeriesSignal
         if isinstance(signal, TimeSeriesSignal):
             self._validate_timestamp_index(signal)
         
@@ -174,14 +186,10 @@ class SignalCollection:
             
             # Get signals using flexible input specifier
             collection.get_signals(input_spec=["ppg_0", "ecg_1"])
-            collection.get_signals(input_spec={"base_name": "ppg", 
+            collection.get_signals(input_spec={"base_name": "ppg",
                                               "criteria": {"sensor_model": SensorModel.POLAR}})
         """
-        from ..signal_types import SignalType, SensorType, SensorModel, BodyPosition
-        from ..utils import str_to_enum
-        
         result = []
-        
         # Process signal_type parameter if provided
         if signal_type is not None:
             # Convert string to enum if needed
@@ -328,9 +336,6 @@ class SignalCollection:
             signal: The signal to update
             metadata_spec: Dictionary containing metadata values to update
         """
-        from ..signal_types import SensorType, SensorModel, BodyPosition
-        from ..utils import str_to_enum
-        
         # Process any enum fields first
         processed_metadata = {}
         
@@ -380,7 +385,6 @@ class SignalCollection:
         Raises:
             ValueError: If any field is not a valid SignalMetadata attribute.
         """
-        from dataclasses import fields
         valid_fields = {f.name for f in fields(SignalMetadata)}
         if not all(f in valid_fields for f in index_fields):
             raise ValueError(f"Invalid index fields: {set(index_fields) - valid_fields}")
@@ -397,11 +401,7 @@ class SignalCollection:
         Raises:
             ValueError: If the signal doesn't have a DatetimeIndex
         """
-        import pandas as pd
-        import logging
-        
         logger = logging.getLogger(__name__)
-        
         data = signal.get_data()
         if isinstance(data, pd.DataFrame):
             if not isinstance(data.index, pd.DatetimeIndex):
@@ -418,8 +418,6 @@ class SignalCollection:
         Returns:
             float: The target sample rate in Hz.
         """
-        from ..signals.time_series_signal import TimeSeriesSignal # Ensure import
-
         if user_specified is not None:
             return user_specified
 
@@ -437,32 +435,46 @@ class SignalCollection:
 
         # If max_rate is still 0 or less (shouldn't happen with filter), default to 100 Hz
         if max_rate <= 0:
-            return 100.0
-            
-        # Return the largest standard rate ≤ the maximum rate
-        valid_rates = [r for r in STANDARD_RATES if r <= max_rate]
-        return max(valid_rates) if valid_rates else min(STANDARD_RATES) # Fallback to lowest standard rate
+             logger.warning("No valid positive sampling rates found. Defaulting target rate to 100 Hz.") # Added logger
+             return 100.0
+
+        # Find the largest standard rate <= the maximum rate found in the signals
+        valid_standard_rates = [r for r in STANDARD_RATES if r <= max_rate]
+        chosen_rate = max(valid_standard_rates) if valid_standard_rates else min(STANDARD_RATES) # Fallback to lowest standard rate
+        logger.info(f"Determined target sample rate: {chosen_rate} Hz (based on max signal rate {max_rate:.4f} Hz)") # Added logger
+        return chosen_rate
+        # Removed redundant except block as it was outside the try
+
 
     def get_nearest_standard_rate(self, rate):
         """
         Find the nearest standard rate to a given sample rate.
-        
+
         Args:
             rate (float): The signal's sample rate in Hz.
-        
+
         Returns:
             float: The closest rate from STANDARD_RATES.
         """
+        logger = logging.getLogger(__name__)
+
+        # Consolidated the check for invalid rate
         if rate is None or rate <= 0:
-            # Find a reasonable default, perhaps the median standard rate?
-            return sorted(STANDARD_RATES)[len(STANDARD_RATES) // 2] # e.g., 20 Hz
+            logger.warning(f"Invalid rate ({rate}) provided to get_nearest_standard_rate. Returning default rate 1 Hz.")
+            return 1.0 # Default to 1 Hz if rate is invalid
 
         # Find the rate in STANDARD_RATES that minimizes the absolute difference
-        return min(STANDARD_RATES, key=lambda r: abs(r - rate))
+        nearest_rate = min(STANDARD_RATES, key=lambda r: abs(r - rate))
+        logger.debug(f"Nearest standard rate to {rate:.4f} Hz is {nearest_rate} Hz.")
+        return nearest_rate
 
-    def get_reference_time(self, target_period):
+    def get_reference_time(self, target_period: pd.Timedelta) -> pd.Timestamp:
         """
-        Compute the reference timestamp for the grid.
+        Compute the reference timestamp for the grid alignment.
+
+        Finds the earliest timestamp across all time-series signals and aligns
+        it to the grid defined by the target_period, ensuring a consistent
+        starting point relative to the Unix epoch (1970-01-01).
         
         Args:
             target_period (pd.Timedelta): The period corresponding to the target sample rate.
@@ -470,21 +482,135 @@ class SignalCollection:
         Returns:
             pd.Timestamp: The reference time aligned to the grid.
         """
-        import pandas as pd
-        
-        min_times = [s.get_data().index.min() for s in self.signals.values() 
-                    if s.get_data() is not None and len(s.get_data()) > 0]
-        
+        logger = logging.getLogger(__name__)
+
+        min_times = []
+        for signal in self.signals.values():
+             if isinstance(signal, TimeSeriesSignal):
+                 data = signal.get_data()
+                 if data is not None and isinstance(data.index, pd.DatetimeIndex) and not data.empty:
+                     min_times.append(data.index.min())
+
         if not min_times:
-            return pd.Timestamp("1970-01-01")
-            
+            logger.warning("No valid timestamps found in signals. Using default reference time 1970-01-01.")
+            return pd.Timestamp("1970-01-01", tz='UTC') # Ensure timezone consistency
+
+        # Use the overall earliest time across all signals
         min_time = min(min_times)
-        delta_ms = (min_time - pd.Timestamp("1970-01-01")).total_seconds() * 1000
-        floored_delta = (delta_ms // (target_period.total_seconds() * 1000)) * target_period
-        return pd.Timestamp("1970-01-01") + floored_delta
-        
+        logger.debug(f"Earliest timestamp found across signals: {min_time}")
+
+        # Ensure reference time is timezone-aware if min_time is
+        epoch = pd.Timestamp("1970-01-01", tz=min_time.tz)
+
+        # Calculate the offset from the epoch in nanoseconds for precision
+        delta_ns = (min_time - epoch).total_seconds() * 1e9
+        target_period_ns = target_period.total_seconds() * 1e9
+
+        if target_period_ns == 0:
+             logger.error("Target period is zero, cannot calculate reference time.")
+             raise ValueError("Target period cannot be zero for reference time calculation.")
+
+        # Calculate the number of full periods from the epoch to the minimum time
+        # Use floor division to find the grid point *before* or *at* the minimum time
+        num_periods = np.floor(delta_ns / target_period_ns) # type: ignore
+
+        # Calculate the reference time by adding the total duration of these periods to the epoch
+        ref_time = epoch + pd.Timedelta(nanoseconds=num_periods * target_period_ns) # type: ignore
+        logger.debug(f"Calculated reference time: {ref_time} based on target period {target_period}")
+
+        return ref_time
+
+
+    def _calculate_grid_index(self, target_rate: float, ref_time: pd.Timestamp) -> Optional[pd.DatetimeIndex]:
+        """
+        Calculates the final DatetimeIndex grid for the collection.
+
+        Determines the overall time range of all time-series signals and creates
+        a regular DatetimeIndex covering this range at the target_rate, aligned
+        to the ref_time.
+
+        Args:
+            target_rate: The target sampling rate in Hz.
+            ref_time: The reference timestamp for grid alignment.
+
+        Returns:
+            A pd.DatetimeIndex representing the common grid, or None if no valid
+            timestamps are found.
+        """
+        logger = logging.getLogger(__name__)
+
+        if target_rate <= 0:
+            logger.error(f"Invalid target_rate ({target_rate}) for grid calculation.")
+            return None
+
+        target_period = pd.Timedelta(seconds=1 / target_rate)
+
+        min_times = []
+        max_times = []
+        for signal in self.signals.values():
+            if isinstance(signal, TimeSeriesSignal):
+                data = signal.get_data()
+                if data is not None and isinstance(data.index, pd.DatetimeIndex) and not data.empty:
+                    # Ensure timezone consistency with ref_time before comparison
+                    data_index_tz = data.index.tz_convert(ref_time.tz) if data.index.tz is not None else data.index.tz_localize(ref_time.tz)
+                    min_times.append(data_index_tz.min())
+                    max_times.append(data_index_tz.max())
+
+        if not min_times or not max_times:
+            logger.warning("No valid timestamps found in signals. Cannot create grid index.")
+            return None
+
+        earliest_start = min(min_times)
+        latest_end = max(max_times)
+        logger.info(f"Overall time range for grid: {earliest_start} to {latest_end}")
+
+        # Generate a regular grid covering this range, aligned to ref_time
+        # Use floor/ceil on the number of periods from ref_time to ensure full coverage
+        target_period_ns = target_period.total_seconds() * 1e9
+        if target_period_ns == 0:
+             logger.error("Target period is zero, cannot calculate grid index.")
+             return None
+
+        start_offset_ns = (earliest_start - ref_time).total_seconds() * 1e9
+        end_offset_ns = (latest_end - ref_time).total_seconds() * 1e9
+
+        # Calculate periods using floor/ceil for start/end respectively
+        periods_to_start = np.floor(start_offset_ns / target_period_ns) # type: ignore
+        periods_to_end = np.ceil(end_offset_ns / target_period_ns) # type: ignore
+
+        grid_start = ref_time + pd.Timedelta(nanoseconds=periods_to_start * target_period_ns) # type: ignore
+        grid_end = ref_time + pd.Timedelta(nanoseconds=periods_to_end * target_period_ns) # type: ignore
+
+        # Ensure start <= end before creating range
+        if grid_start > grid_end:
+            logger.warning(f"Calculated grid_start ({grid_start}) is after grid_end ({grid_end}). Cannot create grid.")
+            # Swap them if inverted due to potential floating point issues near zero offset
+            if abs((grid_start - grid_end).total_seconds()) < (target_period.total_seconds() * 0.5):
+                 logger.debug("Grid start/end inverted likely due to floating point near zero, swapping.")
+                 grid_start, grid_end = grid_end, grid_start
+            else:
+                 return None # Return None if range is invalid
+
+        try:
+            grid_index = pd.date_range(
+                start=grid_start,
+                end=grid_end,
+                freq=target_period,
+                name='timestamp' # Name the index
+            )
+            # Ensure the grid has the same timezone as ref_time
+            grid_index = grid_index.tz_convert(ref_time.tz) if grid_index.tz is not None else grid_index.tz_localize(ref_time.tz)
+
+            logger.info(f"Calculated grid_index with {len(grid_index)} points from {grid_index.min()} to {grid_index.max()}")
+            return grid_index
+        except Exception as e:
+            logger.error(f"Error creating date_range for grid index: {e}", exc_info=True)
+            return None
+
+
     def compute_optimal_index(self, target_sample_rate: Optional[float] = None) -> pd.DatetimeIndex:
         """
+        DEPRECATED: Use _calculate_grid_index instead.
         Use the index from the signal with the most data points as the target index.
         
         This avoids creating a synthetic dense grid that might be much larger than
@@ -496,10 +622,6 @@ class SignalCollection:
         Returns:
             A pd.DatetimeIndex from the signal with the most data points.
         """
-        import pandas as pd
-        import logging
-        from ..signals.time_series_signal import TimeSeriesSignal
-        
         logger = logging.getLogger(__name__)
 
         # Filter for time-series signals
@@ -514,198 +636,79 @@ class SignalCollection:
         signal_id = target_signal.metadata.signal_id if hasattr(target_signal.metadata, 'signal_id') else 'unknown'
         logger.info(f"Using index from signal {signal_id} with {len(target_index)} points as target index")
         
-        return target_index
+        warnings.warn("compute_optimal_index is deprecated. Use _calculate_grid_index.", DeprecationWarning)
+        # Fallback to calculating a proper grid if called
+        target_rate = self.get_target_sample_rate(target_sample_rate)
+        target_period = pd.Timedelta(seconds=1/target_rate)
+        ref_time = self.get_reference_time(target_period)
+        return self._calculate_grid_index(target_rate, ref_time)
 
-    def align_signals(self, target_sample_rate: Optional[float] = None, method: str = "nearest", 
-                     preserve_original: bool = True, inplace: bool = True,
-                     resample_strategy: str = 'nearest') -> 'SignalCollection':
+
+    def align_signals(self, target_sample_rate: Optional[float] = None) -> 'SignalCollection':
         """
-        Align time-series signals to a common timeline.
-        
-        For signals with a sampling rate higher than the target, applies downsampling.
-        For signals with a sampling rate lower than the target, keeps the original sampling 
-        rate but aligns to the common timeline (no upsampling).
+        Calculates and stores the alignment parameters for the collection.
+
+        Determines the target sampling rate, reference time, and the common
+        DatetimeIndex grid based on all time-series signals in the collection.
+        These parameters are stored on the collection instance (`target_rate`,
+        `ref_time`, `grid_index`) to be used later by `get_combined_dataframe`.
+
+        This method does *not* modify the individual signal data.
 
         Args:
-            target_sample_rate: If None, use the highest sample rate; otherwise, resample to this rate.
-            method: Resampling method for signals that need downsampling.
-            preserve_original: If True, when upsampling, only keeps values at original timestamps.
-            inplace: If True, modify signals in place; if False, add resampled signals with new keys.
-            resample_strategy: Strategy for odd rates: 'downsample', 'upsample', 'nearest', or None.
-            
+            target_sample_rate: Optional. The desired target sample rate in Hz.
+                                If None, the highest standard rate less than or
+                                equal to the maximum rate found among signals
+                                will be used.
+
         Returns:
-            The SignalCollection (self if inplace=True, a new copy if inplace=False)
+            The SignalCollection instance (self) with alignment parameters set.
+
+        Raises:
+            ValueError: If no time-series signals are found or if a valid
+                        grid index cannot be calculated.
         """
-        import logging
-        import time
-        import pandas as pd
-        
         logger = logging.getLogger(__name__)
         start_time = time.time()
-        
-        logger.info(f"Starting align_signals operation with target_sample_rate={target_sample_rate}, method={method}")
-        
-        # Validate resample_strategy
-        valid_strategies = ['downsample', 'upsample', 'nearest', None]
-        if resample_strategy not in valid_strategies:
-            raise ValueError(f"Invalid resample_strategy: {resample_strategy}. Must be 'downsample', 'upsample', 'nearest', or None.")
-        
-        # Determine the target sample rate and period
-        target_rate = self.get_target_sample_rate(target_sample_rate)
-        target_period = pd.Timedelta(milliseconds=1000 / target_rate)
-        
-        # Get reference time for the grid
-        ref_time = self.get_reference_time(target_period)
-        
-        # Identify the signal with the most data points to use as our target index
-        target_index = self.compute_optimal_index(target_sample_rate)
-        if len(target_index) == 0:
-            logger.warning("No valid target index found, nothing to align")
+
+        logger.info(f"Starting align_signals parameter calculation with target_sample_rate={target_sample_rate}")
+
+        # --- Filter for TimeSeriesSignals ---
+        ts_signals = [s for s in self.signals.values() if isinstance(s, TimeSeriesSignal)]
+        if not ts_signals:
+            logger.warning("No time-series signals found in the collection. Cannot perform alignment.")
+            # Set default values or raise error? Setting defaults for now.
+            self.target_rate = 1.0 # Default rate
+            self.ref_time = pd.Timestamp("1970-01-01", tz='UTC')
+            self.grid_index = pd.DatetimeIndex([], name='timestamp', tz='UTC')
             return self
-            
-        logger.info(f"Using target index with {len(target_index)} points, from {target_index[0]} to {target_index[-1]}")
-        
-        # Process each signal
-        signal_count = 0
-        ts_signal_count = 0
-        
-        from ..signals.time_series_signal import TimeSeriesSignal
-        for key, signal in self.signals.items():
-            signal_count += 1
-            
-            if isinstance(signal, TimeSeriesSignal):
-                ts_signal_count += 1
-                signal_size = len(signal.get_data())
-                signal_type = signal.signal_type.name if hasattr(signal.signal_type, 'name') else signal.signal_type
-                
-                logger.info(f"Processing signal {ts_signal_count}/{signal_count}: {key} ({signal_type}) with {signal_size} rows")
-                signal_start_time = time.time()
-                
-                signal_rate = signal.get_sampling_rate()
-                
-                # Handle signals with valid rates
-                if signal_rate and signal_rate > 0:
-                    # Check if rate is close to one of the standard rates
-                    is_standard_rate = any(math.isclose(signal_rate, std_rate, rel_tol=1e-5) for std_rate in STANDARD_RATES)
+            # raise ValueError("No time-series signals found in the collection to align.")
 
-                    if is_standard_rate:
-                        # Rate is standard; snap to grid directly
-                        # Find the exact standard rate it matches
-                        matched_rate = min(STANDARD_RATES, key=lambda r: abs(signal_rate - r))
-                        logger.info(f"Signal {key} has standard rate {signal_rate:.4f} Hz (closest to {matched_rate} Hz). Snapping to grid.")
-                        data = signal.snap_to_grid(target_period, ref_time)
+        # --- Determine Target Rate ---
+        self.target_rate = self.get_target_sample_rate(target_sample_rate)
+        if self.target_rate <= 0:
+             logger.error(f"Calculated invalid target rate: {self.target_rate}. Aborting alignment.")
+             raise ValueError(f"Invalid target sampling rate calculated: {self.target_rate}")
+        target_period = pd.Timedelta(seconds=1 / self.target_rate)
+        logger.info(f"Using target rate: {self.target_rate} Hz (Period: {target_period})")
 
-                        if inplace:
-                            logger.debug(f"Snapping {key} to grid in-place")
-                            signal._data = data
-                            # Record the operation in metadata
-                            from ..core.metadata import OperationInfo
-                            signal.metadata.operations.append(OperationInfo("snap_to_grid", {"target_period": str(target_period)}))
-                        else:
-                            logger.debug(f"Snapping {key} to grid and storing as {key}_aligned")
-                            new_key = f"{key}_aligned"
-                            # Copy the signal with the snapped data
-                            new_signal = signal.copy_with_data(data)
-                            # Record the operation in metadata
-                            from ..core.metadata import OperationInfo
-                            new_signal.metadata.operations.append(OperationInfo("snap_to_grid", {"target_period": str(target_period)}))
-                            self.add_signal(new_key, new_signal)
-                        
-                        # Log some statistics about data density after snapping
-                        has_data = data[data.notna().any(axis=1)]
-                        logger.debug(f"After snapping {key}: {len(has_data)}/{len(data)} points have data ({len(has_data)/len(data)*100:.1f}% density)")
-                    else:
-                        # Odd rate; determine appropriate factor of 1000 Hz
-                        if resample_strategy == 'downsample':
-                            # Find the highest standard rate <= signal_rate
-                            valid_rates = [r for r in STANDARD_RATES if r <= signal_rate]
-                            new_rate = max(valid_rates) if valid_rates else min(STANDARD_RATES)
-                            logger.info(f"Downsampling signal with rate {signal_rate:.4f} Hz to {new_rate} Hz")
-                        elif resample_strategy == 'upsample':
-                            # Find the lowest standard rate >= signal_rate
-                            valid_rates = [r for r in STANDARD_RATES if r >= signal_rate]
-                            new_rate = min(valid_rates) if valid_rates else max(STANDARD_RATES)
-                            logger.info(f"Upsampling signal with rate {signal_rate:.4f} Hz to {new_rate} Hz")
-                        elif resample_strategy == 'nearest':
-                            new_rate = self.get_nearest_standard_rate(signal_rate)
-                            logger.info(f"Resampling signal with rate {signal_rate:.4f} Hz to nearest standard rate {new_rate} Hz")
-                        else:
-                            # If resample_strategy is None or invalid, raise error
-                            raise ValueError(f"Signal '{key}' has rate {signal_rate:.4f} Hz which is not standard. "
-                                           f"Set resample_strategy ('nearest', 'downsample', 'upsample') to handle non-standard rates.")
+        # --- Determine Reference Time ---
+        self.ref_time = self.get_reference_time(target_period)
+        logger.info(f"Using reference time: {self.ref_time}")
 
-                        # Resample and align, passing the chosen strategy as the method
-                        data = signal.resample_to_rate(new_rate, target_period, ref_time, method=resample_strategy)
+        # --- Calculate Grid Index ---
+        self.grid_index = self._calculate_grid_index(self.target_rate, self.ref_time)
 
-                        if inplace:
-                            logger.debug(f"Applying resampling in-place for {key} using method '{resample_strategy}'")
-                            signal._data = data
-                            # Record the operation in metadata
-                            from ..core.metadata import OperationInfo
-                            signal.metadata.operations.append(OperationInfo("resample_to_rate", {"new_rate": new_rate}))
-                        else:
-                            logger.debug(f"Resampling {key} and storing as {key}_aligned")
-                            new_key = f"{key}_aligned"
-                            # Copy the signal with the resampled data
-                            new_signal = signal.copy_with_data(data)
-                            # Record the operation in metadata
-                            from ..core.metadata import OperationInfo
-                            new_signal.metadata.operations.append(OperationInfo("resample_to_rate", {"new_rate": new_rate}))
-                            self.add_signal(new_key, new_signal)
-                else:
-                    # Handle signals with unknown or invalid rates by resampling to the target rate
-                    logger.info(f"Signal {key} has unknown/invalid rate. Resampling to target rate {target_rate:.4f} Hz using method '{method}'.")
-                    
-                    # Call resample_to_rate directly
-                    result_data = signal.resample_to_rate(target_rate, target_period, ref_time, method=method)
-                    
-                    operation_params = {"new_rate": target_rate, "method": method}
-                    from ..core.metadata import OperationInfo # Keep import local
+        if self.grid_index is None or self.grid_index.empty:
+            logger.error("Failed to calculate a valid grid index. Alignment cannot proceed.")
+            # Set defaults to prevent errors later, but log error
+            self.grid_index = pd.DatetimeIndex([], name='timestamp', tz=self.ref_time.tz) # Empty index with correct TZ
+            raise ValueError("Failed to calculate a valid grid index for alignment.")
 
-                    if inplace:
-                        logger.debug(f"Applying resampling in-place for {key}")
-                        signal._data = result_data
-                        # Ensure metadata.operations exists
-                        if not hasattr(signal.metadata, 'operations') or signal.metadata.operations is None:
-                            signal.metadata.operations = []
-                        signal.metadata.operations.append(OperationInfo("resample_to_rate", operation_params))
-                        # Update sample rate metadata after inplace operation modifies data
-                        signal._update_sample_rate_metadata()
-                    else:
-                        logger.debug(f"Resampling {key} and storing as {key}_aligned")
-                        new_key = f"{key}_aligned"
-                        
-                        # Prepare metadata for the new signal
-                        from dataclasses import asdict # Keep import local
-                        import uuid # Keep import local
-                        
-                        # Ensure metadata.operations exists before calculating index
-                        if not hasattr(signal.metadata, 'operations') or signal.metadata.operations is None:
-                            signal.metadata.operations = []
-                        # Find index of operation on source signal (will be -1 if no prior ops)
-                        operation_index = len(signal.metadata.operations) -1 
-
-                        metadata_dict = asdict(signal.metadata) # Start with a copy
-                        metadata_dict["signal_id"] = str(uuid.uuid4()) # New unique ID
-                        metadata_dict["derived_from"] = [(signal.metadata.signal_id, operation_index)] # Link to source
-                        metadata_dict["operations"] = [OperationInfo("resample_to_rate", operation_params)] # Record this op
-
-                        # Pass the existing handler if it exists
-                        handler = getattr(signal, 'handler', None)
-
-                        # Instantiate the new signal of the same class
-                        new_signal = signal.__class__(data=result_data, metadata=metadata_dict, handler=handler)
-                        # The new signal's __init__ will call _update_sample_rate_metadata automatically.
-                        self.add_signal(new_key, new_signal)
-
-                logger.info(f"Completed processing {key} in {time.time() - signal_start_time:.2f} seconds")
-
-        # Store parameters for combined dataframe
-        self.target_rate = target_rate
-        self.ref_time = ref_time
-        
-        logger.info(f"align_signals operation complete: processed {ts_signal_count} signals in {time.time() - start_time:.2f} seconds")
+        logger.info(f"Alignment parameters calculated in {time.time() - start_time:.2f} seconds.")
+        # Note: No signals are modified here. Parameters are stored for get_combined_dataframe.
         return self
+
 
     def get_signals_from_input_spec(self, input_spec: Union[str, Dict[str, Any], List[str], None] = None) -> List[SignalData]:
         """
@@ -735,210 +738,261 @@ class SignalCollection:
         Returns:
             pd.DataFrame: Combined dataframe with aligned signals and consistent grid.
         """
-        import pandas as pd
-        import numpy as np
-        import logging
-        
         logger = logging.getLogger(__name__)
-        
+
         if not self.signals:
-            logger.warning("No signals to combine")
+            logger.warning("No signals to combine into DataFrame.")
             return pd.DataFrame()
-        
+
         logger.info(f"Creating combined dataframe from {len(self.signals)} signals")
-        
-        # Create a proper grid index based on aligned signals
-        # If we have target_rate and ref_time from align_signals, use those
-        if hasattr(self, 'target_rate') and hasattr(self, 'ref_time'):
-            logger.info(f"Using alignment grid with rate {self.target_rate} Hz")
-            target_period = pd.Timedelta(milliseconds=1000 / self.target_rate)
-            
-            # Find time range across all signals
-            min_times = []
-            max_times = []
-            
-            for signal in self.signals.values():
-                data = signal.get_data()
-                if data is not None and len(data) > 0:
-                    # For each signal, find the first and last non-NaN values
-                    non_null_rows = data.dropna(how='all')
-                    if len(non_null_rows) > 0:
-                        min_times.append(non_null_rows.index.min())
-                        max_times.append(non_null_rows.index.max())
-            
-            if not min_times or not max_times:
-                logger.warning("No valid timestamps found in signals")
-                return pd.DataFrame()
-            
-            # Use earliest start and latest end time to preserve all data points
-            earliest_start = min(min_times)
-            latest_end = max(max_times)
-            
-            logger.info(f"Full time range with data: {earliest_start} to {latest_end}")
-            
-            # Generate a regular grid from ref_time through the full range
-            # Make sure start is exactly on grid by calculating periods from ref_time
-            periods_to_start = np.floor((earliest_start - self.ref_time) / target_period)
-            periods_to_end = np.ceil((latest_end - self.ref_time) / target_period)
-            
-            grid_start = self.ref_time + (periods_to_start * target_period)
-            grid_end = self.ref_time + (periods_to_end * target_period)
-            
-            grid_index = pd.date_range(
-                start=grid_start, 
-                end=grid_end, 
-                freq=target_period
-            )
-            
-            logger.info(f"Created regular grid with {len(grid_index)} points from {grid_start} to {grid_end}")
-            
-            # Create empty DataFrame with the regular grid
-            combined_df = pd.DataFrame(index=grid_index)
+
+        # --- Determine the index for the combined DataFrame ---
+        grid_index: Optional[pd.DatetimeIndex] = None
+
+        # Check if align_signals has run and set the grid_index attribute
+        if hasattr(self, 'grid_index') and isinstance(self.grid_index, pd.DatetimeIndex) and not self.grid_index.empty:
+            logger.info(f"Using pre-calculated grid_index from align_signals with {len(self.grid_index)} points.")
+            grid_index = self.grid_index
+            # Get target period from grid frequency for tolerance calculation
+            target_period = pd.Timedelta(nanoseconds=grid_index.freq.nanos) if grid_index.freq else None
+            if target_period is None or target_period.total_seconds() <= 0:
+                 logger.warning("Grid index frequency is missing or invalid. Cannot calculate merge tolerance.")
+                 # Fallback to a small default tolerance? Or fail? Let's warn and use a default.
+                 tolerance = pd.Timedelta(milliseconds=1) # Small default tolerance
+            else:
+                 # Tolerance is half the grid period
+                 tolerance = pd.Timedelta(nanoseconds=target_period.total_seconds() * 1e9 / 2)
+            logger.debug(f"Calculated merge tolerance: {tolerance}")
+
         else:
-            # If align_signals wasn't called, find common points in the data
-            logger.info("align_signals not called; using existing signal timestamps")
-            
-            # Collect all unique timestamps from all signals
+            # Fallback: align_signals wasn't run or failed to create a grid index.
+            # Create index from unique timestamps of all signals.
+            logger.info("Grid index not found or empty. Creating index from unique timestamps of all signals.")
             all_timestamps = set()
             for key, signal in self.signals.items():
+                if not isinstance(signal, TimeSeriesSignal):
+                    continue
                 try:
                     data = signal.get_data()
-                    if isinstance(data, pd.DataFrame) and len(data) > 0:
-                        all_timestamps.update(data.index)
-                    else:
-                        import warnings
-                        warnings.warn(f"Signal {key} does not have DataFrame data, skipping")
-                except Exception as e:
-                    logger.error(f"Error processing signal {key}: {e}")
-            
-            if not all_timestamps:
-                logger.warning("No timestamps found in signals")
-                return pd.DataFrame()
-                
-            # Sort timestamps for consistent order
-            grid_index = pd.DatetimeIndex(sorted(all_timestamps))
-            combined_df = pd.DataFrame(index=grid_index)
-            
-            logger.info(f"Created index with {len(grid_index)} unique timestamps")
-            
-        # Now add each signal's data to the combined dataframe
-        if hasattr(self.metadata, 'index_config') and self.metadata.index_config:
-            # Use multi-index for hierarchical columns
-            columns_data = {}
-            multi_index_tuples = []
-            
-            for key, signal in self.signals.items():
-                try:
-                    # Get the signal data
-                    signal_df = signal.get_data()
-                    if signal_df is None or not isinstance(signal_df, pd.DataFrame):
-                        import warnings
-                        warnings.warn(f"Signal {key} does not have DataFrame data, skipping")
-                        
-                        # Try to create a minimal valid DataFrame for this signal type
-                        if hasattr(signal, 'required_columns') and signal.required_columns:
-                            import numpy as np
-                            # Create a simple DataFrame with required columns
-                            minimal_df = pd.DataFrame(
-                                {col: np.linspace(1, 5, 5) for col in signal.required_columns},
-                                index=pd.date_range("2023-01-01", periods=5, freq="1s")
-                            )
-                            signal._data = minimal_df
-                            signal_df = minimal_df
+                    if data is not None and isinstance(data, pd.DataFrame) and isinstance(data.index, pd.DatetimeIndex) and not data.empty:
+                        # Ensure timezone consistency before adding
+                        if data.index.tz is None:
+                             # Attempt to localize using collection timezone or UTC
+                             tz = getattr(self.metadata, 'timezone', 'UTC')
+                             try:
+                                 all_timestamps.update(data.index.tz_localize(tz))
+                             except Exception as tz_err:
+                                 logger.warning(f"Could not localize timestamps for signal {key} to {tz}: {tz_err}. Skipping.")
                         else:
-                            continue
-                    
-                    # Skip empty DataFrames
-                    if len(signal_df) == 0:
-                        import warnings
-                        warnings.warn(f"Signal {key} has empty DataFrame, skipping")
-                        continue
-                        
-                    # For each column in the signal, prepare the metadata tuple
-                    for col_name in signal_df.columns:
-                        # Create metadata values for multi-index
-                        metadata_values = []
-                        for field in self.metadata.index_config:
-                            value = getattr(signal.metadata, field, None)
-                            if value is None:
-                                value = key if field == 'name' else "N/A"
-                            # Convert enum to string
-                            if hasattr(value, 'name'):
-                                value = value.name
-                            metadata_values.append(value)
-                        
-                        # Add column name to metadata and create tuple
-                        metadata_values.append(col_name)
-                        tuple_key = tuple(metadata_values)
-                        multi_index_tuples.append(tuple_key)
-                        
-                        # Reindex to align with our grid, without filling NaN values
-                        aligned_series = signal_df[col_name].reindex(combined_df.index)
-                        columns_data[tuple_key] = aligned_series
-                        
+                             all_timestamps.update(data.index)
                 except Exception as e:
-                    logger.error(f"Error processing signal {key}: {e}")
-                    import warnings
-                    warnings.warn(f"Error processing signal {key}: {str(e)}")
-            
-            # Create multi-index columns
-            if columns_data:
-                multi_idx = pd.MultiIndex.from_tuples(
-                    multi_index_tuples,
-                    names=self.metadata.index_config + ['column']
-                )
-                
-                # Create the combined DataFrame with multi-index columns
-                combined_df = pd.DataFrame(
-                    {col: data for col, data in columns_data.items()},
-                    index=combined_df.index
-                )
-                combined_df.columns = multi_idx
-                
-                # Remove rows where all values are NaN
-                non_empty_rows = combined_df.notna().any(axis=1)
-                combined_df = combined_df.loc[non_empty_rows]
-                
-                # Log statistics
-                logger.info(f"Combined dataframe has {len(combined_df)} rows and {len(combined_df.columns)} columns")
-                non_null_counts = combined_df.count()
-                if len(combined_df) > 0:
-                    logger.info(f"Column data density: min={non_null_counts.min()/len(combined_df)*100:.1f}%, " +
-                               f"max={non_null_counts.max()/len(combined_df)*100:.1f}%, " +
-                               f"mean={non_null_counts.mean()/len(combined_df)*100:.1f}%")
-        else:
-            # Simple case without multi-index
-            for key, signal in self.signals.items():
-                try:
-                    signal_df = signal.get_data()
-                    if signal_df is None or len(signal_df) == 0:
-                        continue
-                    
-                    # Add each column with appropriate prefix
-                    if len(signal_df.columns) == 1:
-                        col = signal_df.columns[0]
-                        combined_df[key] = signal_df[col].reindex(combined_df.index)
-                    else:
-                        for col in signal_df.columns:
-                            combined_df[f"{key}_{col}"] = signal_df[col].reindex(combined_df.index)
-                            
-                except Exception as e:
-                    logger.error(f"Error processing signal {key}: {e}")
-                    import warnings
-                    warnings.warn(f"Error processing signal {key}: {str(e)}")
-            
-            # Remove rows where all values are NaN
-            non_empty_rows = combined_df.notna().any(axis=1)
-            combined_df = combined_df.loc[non_empty_rows]
-            
-            logger.info(f"Combined dataframe has {len(combined_df)} rows and {len(combined_df.columns)} columns")
-        
-        if len(combined_df) == 0:
-            logger.warning("No data rows in combined dataframe")
-            
-        return combined_df
+                    logger.error(f"Error accessing data for signal {key} during timestamp collection: {e}")
 
-    
+            if not all_timestamps:
+                logger.warning("No timestamps found in any signal. Returning empty DataFrame.")
+                return pd.DataFrame()
+
+            # Sort timestamps and ensure timezone consistency
+            sorted_timestamps = sorted(list(all_timestamps))
+            if sorted_timestamps:
+                 # Infer timezone from the first timestamp if possible
+                 common_tz = sorted_timestamps[0].tz
+                 grid_index = pd.DatetimeIndex(sorted_timestamps, name='timestamp', tz=common_tz)
+                 logger.info(f"Created grid_index with {len(grid_index)} unique timestamps (TZ: {common_tz})")
+            else:
+                 logger.warning("Timestamp collection resulted in empty list. Returning empty DataFrame.")
+                 return pd.DataFrame()
+            # Tolerance is not applicable in this fallback mode
+            tolerance = None
+
+
+        # --- Create the combined DataFrame using the determined grid_index ---
+        # Prepare the target DataFrame for merge_asof
+        target_df = pd.DataFrame({'timestamp': grid_index})
+
+        # Dictionary to hold aligned dataframes for each signal before final concat
+        aligned_signal_dfs = {}
+
+        # --- Align each signal to the grid_index using merge_asof ---
+        for key, signal in self.signals.items():
+             if not isinstance(signal, TimeSeriesSignal):
+                 logger.debug(f"Skipping non-time-series signal: {key}")
+                 continue
+
+             try:
+                 signal_df = signal.get_data()
+                 if signal_df is None or not isinstance(signal_df, pd.DataFrame) or signal_df.empty:
+                     logger.warning(f"Signal {key} has no valid data, skipping.")
+                     continue
+                 if not isinstance(signal_df.index, pd.DatetimeIndex):
+                      logger.warning(f"Signal {key} data does not have a DatetimeIndex, skipping.")
+                      continue
+
+                 # Prepare source DataFrame for merge_asof
+                 source_df = signal_df.reset_index()
+                 # Rename index column to 'timestamp' if it's not already named that
+                 if source_df.columns[0] != 'timestamp':
+                      source_df = source_df.rename(columns={source_df.columns[0]: 'timestamp'})
+
+                 # Ensure timezone consistency for merge
+                 if source_df['timestamp'].dt.tz is None:
+                      source_df['timestamp'] = source_df['timestamp'].dt.tz_localize(grid_index.tz)
+                 else:
+                      source_df['timestamp'] = source_df['timestamp'].dt.tz_convert(grid_index.tz)
+
+                 # Sort by timestamp (required for merge_asof)
+                 source_df = source_df.sort_values('timestamp')
+
+                 # Perform merge_asof
+                 logger.debug(f"Aligning signal {key} using merge_asof (tolerance: {tolerance})")
+                 try:
+                     aligned_df = pd.merge_asof(
+                         target_df,
+                         source_df,
+                         on='timestamp',
+                         direction='nearest',
+                         tolerance=tolerance # Use calculated tolerance if grid is regular
+                     )
+                 except Exception as merge_err:
+                      logger.error(f"merge_asof failed for signal {key}: {merge_err}", exc_info=True)
+                      # Skip this signal but continue with others
+                      warnings.warn(f"Alignment failed for signal {key}: {merge_err}. Skipping.")
+                      continue # Skip to the next signal
+
+                 # Set the grid timestamp as index and select original columns
+                 aligned_df = aligned_df.set_index('timestamp')
+                 # Keep only the original data columns from the signal
+                 original_cols = [col for col in signal_df.columns if col in aligned_df.columns]
+                 aligned_signal_dfs[key] = aligned_df[original_cols]
+                 logger.debug(f"Signal {key} aligned. Result shape: {aligned_signal_dfs[key].shape}")
+
+             except Exception as e:
+                 logger.error(f"Error processing signal {key} for combined dataframe: {e}", exc_info=True)
+                 warnings.warn(f"Error processing signal {key}: {str(e)}")
+
+
+        # --- Combine aligned signals into the final DataFrame ---
+        if not aligned_signal_dfs:
+             logger.warning("No signals were successfully aligned. Returning empty DataFrame with grid index.")
+             # Return an empty DataFrame but preserve the grid index and potentially column structure if possible
+             if hasattr(self, 'metadata') and hasattr(self.metadata, 'index_config') and self.metadata.index_config:
+                  # Create empty multiindex columns if config exists
+                  empty_multi_idx = pd.MultiIndex(levels=[[]]*(len(self.metadata.index_config) + 1),
+                                                   codes=[[]]*(len(self.metadata.index_config) + 1),
+                                                   names=self.metadata.index_config + ['column'])
+                  return pd.DataFrame(index=grid_index, columns=empty_multi_idx)
+             else:
+                  # Return simple empty DataFrame with index
+                  return pd.DataFrame(index=grid_index)
+
+
+        # Use MultiIndex if configured
+        if hasattr(self.metadata, 'index_config') and self.metadata.index_config:
+            logger.info("Using MultiIndex for combined dataframe columns.")
+            # Create hierarchical columns
+            combined_df = pd.concat(aligned_signal_dfs, axis=1, keys=aligned_signal_dfs.keys())
+
+            # Construct the desired MultiIndex based on metadata
+            multi_index_tuples = []
+            final_columns_data = {} # Store data under the new tuple keys
+
+            for key, signal_aligned_df in aligned_signal_dfs.items():
+                 signal = self.signals[key] # Get original signal for metadata
+                 for col_name in signal_aligned_df.columns:
+                      # Create metadata values for multi-index levels
+                      metadata_values = []
+                      for field in self.metadata.index_config:
+                           value = getattr(signal.metadata, field, None)
+                           # Fallback for name or missing values
+                           if value is None:
+                                value = key if field == 'name' else "N/A"
+                           # Convert enum to string representation
+                           if hasattr(value, 'name'):
+                                value = value.name
+                           metadata_values.append(str(value)) # Ensure string conversion
+
+                      # Add the original column name as the last level
+                      metadata_values.append(col_name)
+                      tuple_key = tuple(metadata_values)
+                      multi_index_tuples.append(tuple_key)
+                      # Assign the data series to the new tuple key
+                      final_columns_data[tuple_key] = signal_aligned_df[col_name]
+
+            # Create the final DataFrame with the structured MultiIndex
+            if final_columns_data:
+                 multi_idx = pd.MultiIndex.from_tuples(
+                      multi_index_tuples,
+                      names=self.metadata.index_config + ['column']
+                 )
+                 # Create DataFrame from the dictionary using the grid_index
+                 combined_df = pd.DataFrame(final_columns_data, index=grid_index)
+                 combined_df.columns = multi_idx
+                 logger.debug(f"Applied MultiIndex. Final columns: {combined_df.columns.names}")
+            else:
+                 logger.warning("No data available to create MultiIndex columns.")
+                 # Create empty frame with index and MultiIndex columns structure
+                 # Ensure multi_index_tuples is defined even if empty
+                 if 'multi_index_tuples' not in locals():
+                      multi_index_tuples = [] # Initialize if it wasn't created
+                 empty_multi_idx = pd.MultiIndex.from_tuples(
+                      multi_index_tuples, # Use the (potentially empty) list
+                      names=self.metadata.index_config + ['column']
+                 )
+                 combined_df = pd.DataFrame(index=grid_index, columns=empty_multi_idx)
+
+        else:
+            # Simple column naming (key_colname)
+            logger.info("Using simple column names (key_colname) for combined dataframe.")
+            # Prepare data for simple concat (prefix columns)
+            simple_concat_dict = {}
+            for key, signal_aligned_df in aligned_signal_dfs.items():
+                 prefix = key
+                 # If signal has only one column, don't add suffix
+                 if len(signal_aligned_df.columns) == 1:
+                      simple_concat_dict[prefix] = signal_aligned_df.iloc[:, 0]
+                 else:
+                      for col in signal_aligned_df.columns:
+                           simple_concat_dict[f"{prefix}_{col}"] = signal_aligned_df[col]
+
+            # Check if simple_concat_dict is empty before creating DataFrame
+            if not simple_concat_dict:
+                 logger.warning("No data available for simple column concatenation.")
+                 combined_df = pd.DataFrame(index=grid_index) # Return empty frame with index
+            else:
+                 combined_df = pd.DataFrame(simple_concat_dict, index=grid_index)
+
+
+        # --- Final Cleanup and Logging ---
+        # Remove rows where *all* values are NaN (these are grid points with no nearby data from *any* signal)
+        # Check if dataframe is not empty before dropping NaN rows
+        if not combined_df.empty:
+            initial_rows = len(combined_df)
+            combined_df = combined_df.dropna(axis=0, how='all')
+            final_rows = len(combined_df)
+            logger.info(f"Removed {initial_rows - final_rows} rows with all NaN values.")
+        else:
+            final_rows = 0
+            logger.info("Combined dataframe was empty before NaN removal.")
+
+        # Log statistics
+        if final_rows > 0:
+            logger.info(f"Combined dataframe created with {final_rows} rows and {len(combined_df.columns)} columns.")
+            # Calculate data density based on non-null counts
+            non_null_counts = combined_df.count() # Count per column
+            total_cells = combined_df.size
+            total_non_null = non_null_counts.sum()
+            overall_density = (total_non_null / total_cells * 100) if total_cells > 0 else 0
+            min_density = (non_null_counts.min() / final_rows * 100) if final_rows > 0 else 0
+            max_density = (non_null_counts.max() / final_rows * 100) if final_rows > 0 else 0
+            mean_density = (non_null_counts.mean() / final_rows * 100) if final_rows > 0 and not non_null_counts.empty else 0
+
+            logger.info(f"Overall data density: {overall_density:.1f}%")
+            logger.info(f"Column data density: min={min_density:.1f}%, max={max_density:.1f}%, mean={mean_density:.1f}%")
+        else:
+            logger.warning("Combined dataframe is empty after removing all-NaN rows.")
+
+        return combined_df # Ensure dataframe is always returned
+
     def apply_multi_signal_operation(self, operation_name: str, inputs: List[str], 
                                     parameters: Dict[str, Any] = None) -> SignalData:
         """
@@ -951,12 +1005,12 @@ class SignalCollection:
         
         Returns:
             The result signal instance
-            
+
         Raises:
-            ValueError: If the operation is not found or input signals don't exist
+            ValueError: If the operation is not found or if any input signal
+                key specified in `inputs` does not exist in the collection.
         """
         parameters = parameters or {}
-        
         # Check if operation exists
         if operation_name not in self.multi_signal_registry:
             raise ValueError(f"Multi-signal operation '{operation_name}' not found")
@@ -979,11 +1033,9 @@ class SignalCollection:
         for signal in input_signals:
             operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
             derived_from.append((signal.metadata.signal_id, operation_index))
-        
         # Create the output signal
-        from ..core.metadata import OperationInfo
         operation_info = OperationInfo(operation_name, parameters)
-        
+
         output_metadata = {
             "derived_from": derived_from,
             "operations": [operation_info]
@@ -1066,10 +1118,6 @@ class SignalCollection:
         Raises:
             ValueError: If the source doesn't exist or no signals can be imported
         """
-        import os
-        import glob
-        import warnings
-        
         signal_type = spec["signal_type"]
         strict_validation = spec.get("strict_validation", True)
         

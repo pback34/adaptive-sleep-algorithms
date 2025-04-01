@@ -229,21 +229,26 @@ def convert_timestamp_format(series: pd.Series, source_format: str = None, targe
 
 def standardize_timestamp(df: pd.DataFrame, timestamp_col: str, unit: str = None,
                          format: str = None, output_format: str = None, set_index: bool = True,
-                         tz_convert: Optional[str] = 'UTC', tz_strip: bool = True) -> pd.DataFrame:
+                         origin_timezone: Optional[str] = None, # Added origin_timezone
+                         target_timezone: Optional[str] = 'UTC', # Target internal timezone (UTC default)
+                         tz_strip: bool = False) -> pd.DataFrame: # Changed tz_strip default to False
     """
     Standardize the timestamp column in a DataFrame, optionally set it as the index,
-    and ensure consistent timezone handling (default: convert to UTC and make naive).
+    and ensure consistent timezone handling (default: convert to target_timezone and keep aware).
 
     Args:
         df: Input DataFrame.
         timestamp_col: Name of the timestamp column.
-        unit: Unit for numeric timestamps (e.g., 'ns' for nanoseconds).
+        unit: Unit for numeric timestamps (e.g., 'ns').
         format: Format string for parsing string timestamps (e.g., '%Y-%m-%d %H:%M:%S').
-        output_format: Format string for standardizing the output timestamp format (e.g., '%Y-%m-%d %H:%M:%S.%f').
+        output_format: Format string for standardizing output (applied before final conversion).
         set_index: Whether to set the timestamp as the index (default: True).
-    
+        origin_timezone: Timezone of the source data if naive (e.g., 'America/New_York').
+        target_timezone: The target timezone for internal representation (default: 'UTC'). If None, keeps original timezone.
+        tz_strip: Whether to make the final timestamp naive (default: False).
+
     Returns:
-        DataFrame with standardized timestamp as index.
+        DataFrame with standardized, timezone-aware timestamp (as index or column).
     """
     logger = logging.getLogger(__name__)
     
@@ -267,30 +272,35 @@ def standardize_timestamp(df: pd.DataFrame, timestamp_col: str, unit: str = None
             # Attempt robust parsing
             result_df[timestamp_col] = pd.to_datetime(result_df[timestamp_col], errors='coerce')
 
-        # Handle Timezones Consistently
-        if tz_convert:
+        # --- Timezone Handling ---
+        # 1. Localize if naive and origin_timezone is provided
+        if result_df[timestamp_col].dt.tz is None and origin_timezone:
             try:
-                # Check if already timezone-aware
-                if result_df[timestamp_col].dt.tz is not None:
-                    logger.debug(f"Converting timezone-aware timestamp to {tz_convert}")
-                    result_df[timestamp_col] = result_df[timestamp_col].dt.tz_convert(tz_convert)
-                else:
-                    # Assume UTC if naive and conversion is requested (common case)
-                    # More sophisticated origin timezone detection might be needed in other scenarios
-                    logger.debug(f"Localizing timezone-naive timestamp to {tz_convert}")
-                    result_df[timestamp_col] = result_df[timestamp_col].dt.tz_localize(tz_convert, ambiguous='infer', nonexistent='raise')
+                logger.debug(f"Localizing naive timestamp to origin timezone: {origin_timezone}")
+                result_df[timestamp_col] = result_df[timestamp_col].dt.tz_localize(origin_timezone, ambiguous='infer', nonexistent='raise')
             except Exception as tz_err:
-                 logger.warning(f"Could not convert timestamp timezone to {tz_convert}: {tz_err}. Proceeding without conversion.")
+                logger.warning(f"Could not localize timestamp to {origin_timezone}: {tz_err}. Proceeding as naive.")
 
+        # 2. Convert to target_timezone if specified and timestamp is timezone-aware
+        if target_timezone and result_df[timestamp_col].dt.tz is not None:
+            try:
+                logger.debug(f"Converting timestamp to target timezone: {target_timezone}")
+                result_df[timestamp_col] = result_df[timestamp_col].dt.tz_convert(target_timezone)
+            except Exception as tz_err:
+                 logger.warning(f"Could not convert timestamp timezone to {target_timezone}: {tz_err}. Keeping original timezone.")
 
+        # 3. Strip timezone if requested (AFTER potential conversion)
         if tz_strip:
             logger.debug("Stripping timezone information to make timestamp naive.")
             result_df[timestamp_col] = result_df[timestamp_col].dt.tz_localize(None)
+        # --- End Timezone Handling ---
 
 
-        # Then apply output formatting if specified (AFTER timezone handling)
+        # Apply output formatting if specified (AFTER timezone handling)
+        # Note: Formatting to string and back might strip timezone if not careful
         if output_format:
             logger.debug(f"Applying output format string: {output_format}")
+            original_tz = result_df[timestamp_col].dt.tz # Store original timezone
             # Format to string with desired precision, then back to datetime
             # This step inherently makes the timestamp naive if it wasn't already stripped
             try:

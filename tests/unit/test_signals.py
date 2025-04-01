@@ -47,18 +47,32 @@ def test_registry_inheritance():
     assert ppg_registry["normalize"][1] == PPGSignal
 
     # Check that 'filter_lowpass' is registered for PPGSignal (overriding TimeSeriesSignal)
-    assert "filter_lowpass" in ppg_registry
-    assert ppg_registry["filter_lowpass"][1] == PPGSignal # Should point to PPGSignal
+    # Check that 'filter_lowpass' is NOT registered for PPGSignal (it's handled as a method)
+    assert "filter_lowpass" not in ppg_registry
 
     # Check that AccelerometerSignal inherits from TimeSeriesSignal but not from PPGSignal
     acc_registry = AccelerometerSignal.get_registry()
     assert "normalize" not in acc_registry  # PPGSignal-specific operation not inherited
 
-    # Check that AccelerometerSignal inherits 'filter_lowpass' from TimeSeriesSignal
-    assert "filter_lowpass" in acc_registry
-    # The registry lookup should resolve to TimeSeriesSignal's function, but the
-    # output class should be adapted to AccelerometerSignal by get_registry()
-    assert acc_registry["filter_lowpass"][1] == AccelerometerSignal
+    # Check that AccelerometerSignal does NOT have 'filter_lowpass' in its registry (it's handled as a method)
+    assert "filter_lowpass" not in acc_registry
+
+    # --- Test that apply_operation still works for methods ---
+    # Create instances to test apply_operation
+    ppg_signal = create_test_signal(freq_hz=100) # Helper creates PPGSignal
+    acc_signal = AccelerometerSignal(data=pd.DataFrame({'x':[1,2],'y':[1,2],'z':[1,2]}, index=pd.date_range('2023-01-01', periods=2, freq='s')), metadata={"signal_id": "acc_test"})
+
+    # Check that apply_operation finds the method on PPGSignal
+    try:
+        ppg_signal.apply_operation("filter_lowpass", cutoff=5)
+    except ValueError as e:
+        pytest.fail(f"PPGSignal.apply_operation('filter_lowpass') failed: {e}")
+
+    # Check that apply_operation finds the method on AccelerometerSignal (inherited from TimeSeriesSignal)
+    try:
+        acc_signal.apply_operation("filter_lowpass", cutoff=5)
+    except ValueError as e:
+        pytest.fail(f"AccelerometerSignal.apply_operation('filter_lowpass') failed: {e}")
 
 def test_apply_operation_inplace(sample_metadata, sample_dataframe):
     """Test applying an operation in-place."""

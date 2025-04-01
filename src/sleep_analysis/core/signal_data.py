@@ -184,24 +184,33 @@ class SignalData(ABC):
             return func
         return decorator
     
+    # Note: apply_operation is now concretely implemented in TimeSeriesSignal
+    # to handle method/registry lookup and metadata.
+    # Keep abstract here to enforce its presence, but subclasses like
+    # TimeSeriesSignal will provide the actual working implementation.
     @abstractmethod
     def apply_operation(self, operation_name: str, inplace: bool = False, **parameters) -> 'SignalData':
         """
-        Apply an operation to this signal.
-        
+        Apply an operation to this signal by name.
+
+        Concrete implementations (like in TimeSeriesSignal) handle method/registry
+        lookup, execution, metadata updates, and inplace/new instance creation.
+
         Args:
-            operation_name: Name of the operation to apply
-            inplace: Whether to modify this signal in place
-            **parameters: Parameters to pass to the operation
-            
+            operation_name: String name of the operation.
+            inplace: If True, attempts to modify this signal in place.
+            **parameters: Keyword arguments passed to the operation's core logic.
+
         Returns:
-            The result signal (either a new instance or self if inplace=True)
-            
+            The resulting signal (self if inplace, or a new instance).
+
         Raises:
-            ValueError: If the operation is not found or cannot be applied in place
+            NotImplementedError: If called on a class that doesn't implement it.
+            ValueError: If operation not found, inplace fails, or core logic fails.
+            AttributeError: If a non-callable attribute matches the operation name.
         """
-        pass
-    
+        raise NotImplementedError("Subclasses like TimeSeriesSignal must implement apply_operation")
+
     def clear_data(self, skip_regeneration=False):
         """
         Clear the signal data to free memory.

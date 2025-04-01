@@ -98,13 +98,29 @@ class WorkflowExecutor:
                 # Call the operation directly on the collection
                 operation = getattr(self.container, operation_name, None)
                 if not operation:
-                    raise ValueError(f"Operation '{operation_name}' not found on SignalCollection")
-                
-                # Call the operation with parameters
-                result = operation(**parameters)
-                
-                # Store the result with the output key if provided and not inplace
-                if not inplace and "output" in step:
+                    raise ValueError(f"Collection operation '{operation_name}' not found on SignalCollection")
+
+                # Call the collection operation with parameters
+                # For align_signals, we only pass target_sample_rate if specified
+                if operation_name == 'align_signals':
+                     op_params = {}
+                     if 'target_sample_rate' in parameters:
+                          op_params['target_sample_rate'] = parameters['target_sample_rate']
+                     result = operation(**op_params)
+                else:
+                     # For other collection operations, pass all parameters
+                     result = operation(**parameters)
+
+                # Collection operations typically return self or None,
+                # and don't produce a new signal to be added under 'output'.
+                # Log the completion.
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.debug(f"Collection operation '{operation_name}' executed.")
+                # No need to handle 'output' or 'inplace' for collection ops like align_signals
+
+            # Handle multi-signal operations
+            elif "inputs" in step:
                     # Check if the result is a SignalData before adding it as a signal
                     from ..core.signal_data import SignalData
                     if isinstance(result, SignalData):

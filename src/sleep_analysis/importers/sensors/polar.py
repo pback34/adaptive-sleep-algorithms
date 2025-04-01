@@ -158,13 +158,21 @@ class PolarCSVImporter(CSVImporterBase):
                     self.logger.warning("Attempting to parse timestamps without a specific format")
                     df[timestamp_col] = pd.to_datetime(df[timestamp_col]).dt.strftime(target_format)
                 
+                # Determine origin timezone from config
+                origin_timezone = self.config.get("origin_timezone")
+                self.logger.debug(f"Using origin_timezone for standardization: {origin_timezone}")
+
                 # Then use standardize_timestamp to handle the DataFrame structure
+                # Keep timestamps as timezone-aware UTC
                 df = standardize_timestamp(
-                    df, 
-                    timestamp_col, 
-                    set_index=True
+                    df,
+                    timestamp_col,
+                    set_index=True,
+                    origin_timezone=origin_timezone,
+                    target_timezone='UTC', # Ensure internal representation is UTC
+                    tz_strip=False # Keep timezone information
                 )
-            
+
             self.logger.info(f"Successfully parsed CSV file with {len(df)} rows")
             return df
             
