@@ -36,6 +36,7 @@ class SignalImporter(ABC):
 
         Returns:
             An instance of a SignalData subclass corresponding to the signal_type.
+        """
         pass
 
     def _standardize_timestamp(self, df: pd.DataFrame, timestamp_col: str,

@@ -42,13 +42,15 @@ class EnchantedWaveImporter(CSVImporterBase):
 
         # Set default configuration values if not provided
         if "column_mapping" not in self.config:
-            self.logger.debug("Using default column mapping for Enchanted Wave")
+            self.logger.debug("Using default column mapping for Enchanted Wave (lowercase)")
+            # Default to lowercase names apparently found in the file based on logs
             self.config["column_mapping"] = {
-                "timestamp": "Time", # Primary timestamp column
-                "seconds": "Seconds", # Alternative time reference
-                "sleep_stage": "SleepStage",
-                "sum_power": "SumPower",
-                "eeg_quality": "EegQuality"
+                # Standard Name : Source Name (from file)
+                "timestamp": "Time", # Keep 'Time' as potential primary, fallback handled in _parse_csv
+                "seconds": "seconds",
+                "sleep_stage": "sleep_stage",
+                "sum_power": "sum_power",
+                "eeg_quality": "eeg_quality"
             }
         # Enchanted Wave uses a specific header structure, not a simple CSV header row
         self.config["header"] = None # Header is determined dynamically

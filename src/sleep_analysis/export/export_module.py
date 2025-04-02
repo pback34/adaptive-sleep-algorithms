@@ -179,7 +179,11 @@ class ExportModule:
                 data = signal.get_data()
                 if isinstance(data, pd.DataFrame):
                     data = self._format_timestamp(data)
-                    data.to_excel(writer, sheet_name=key[:31])
+                    # Excel doesn't support timezone-aware datetimes, remove timezone
+                    if 'timestamp' in data.columns and pd.api.types.is_datetime64_any_dtype(data['timestamp']):
+                         if data['timestamp'].dt.tz is not None:
+                              data['timestamp'] = data['timestamp'].dt.tz_localize(None)
+                    data.to_excel(writer, sheet_name=key[:31], index=False) # Use index=False as timestamp is a column
                     has_sheets = True
                 else:
                     warnings.warn(f"Signal {key} does not have DataFrame data, skipping")
@@ -209,8 +213,13 @@ class ExportModule:
             combined_df = self._get_filtered_combined_dataframe()
             if not combined_df.empty:
                 combined_df = self._format_timestamp(combined_df)
+                # Excel doesn't support timezone-aware datetimes, remove timezone
+                if 'timestamp' in combined_df.columns and pd.api.types.is_datetime64_any_dtype(combined_df['timestamp']):
+                    if combined_df['timestamp'].dt.tz is not None:
+                        combined_df['timestamp'] = combined_df['timestamp'].dt.tz_localize(None)
+
                 # Ensure no NaN rows are included and index is properly handled
-                combined_df.to_excel(combined_file, na_rep='', index=True)
+                combined_df.to_excel(combined_file, na_rep='', index=False) # Use index=False as timestamp is a column
             else:
                 warnings.warn("No data available for combined export")
     

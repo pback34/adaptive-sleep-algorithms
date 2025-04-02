@@ -128,7 +128,8 @@ def import_workflow_config(polar_csv):
                 "config": {
                     "column_mapping": {"value": "ppg_value", "timestamp": "timestamp"},
                     "filename_pattern": r"polar_(?P<subject_id>\w+)_(?P<session>\d+)\.csv",
-                    "preserve_timestamp_column": True  # Ensure timestamp stays as column
+                    "preserve_timestamp_column": True,  # Ensure timestamp stays as column
+                    "origin_timezone": "UTC" # Added origin timezone for naive data
                 },
                 "sensor_type": "PPG",
                 "sensor_model": "POLAR_H10",
@@ -514,7 +515,8 @@ class TestWorkflowExecutor:
                         "file_pattern": "polar_multi_*.csv",
                         "time_column": "timestamp",
                         "column_mapping": {"value": "ppg_value", "timestamp": "timestamp"},
-                        "merge": True
+                        "merge": True,
+                        "origin_timezone": "UTC" # Added origin timezone for naive data
                     },
                     "base_name": "ppg_merged"
                 }

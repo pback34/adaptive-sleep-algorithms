@@ -5,6 +5,10 @@
 # To run:
 # python -m sleep_analysis.cli.run_workflow --workflow workflows/polar_workflow.yaml --data-dir data
 
+# Timezone settings
+default_input_timezone: "America/New_York" # Assume source files are EST unless overridden
+target_timezone: "system" # Standardize all timestamps to the system's local timezone
+
 import:
   # Heart Rate data from Polar H10 - using MergingImporter
   - signal_type: "heart_rate"
@@ -98,8 +102,8 @@ import:
       importer_name: "EnchantedWaveImporter"
       file_pattern: "*.Session.csv" # Pattern to find Enchanted Wave files
       # EnchantedWaveImporter uses default column mapping, no need to specify here unless overriding
-      # Specify the timezone of the source file if it's naive or has incorrect offset
-      origin_timezone: "UTC" # Example: Assumes source file is US Eastern Time
+      # Override the default_input_timezone for this specific source
+      origin_timezone: "UTC" # Assume this specific source file is in UTC
     sensor_type: "EEG"
     sensor_model: "EnchantedWave"
     body_position: "head"

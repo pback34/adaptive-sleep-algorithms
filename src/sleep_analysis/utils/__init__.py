@@ -348,18 +348,26 @@ def standardize_timestamp(
                 # More specific error catching could be added (e.g., pytz.NonExistentTimeError)
                 logger.warning(f"Could not localize timestamp to {origin_timezone}: {tz_err}. Proceeding as naive (will likely convert to target assuming UTC).")
         else:
-            # If origin_timezone is None and timestamp is naive, tz_convert might assume UTC or fail.
-            # Consider adding a default assumption (e.g., UTC) or requiring origin_timezone for naive data.
-            logger.warning(f"Timestamp column '{timestamp_col}' is naive but no origin_timezone was specified. Timezone conversion behavior may be ambiguous (often assumes UTC).")
+            # If origin_timezone is None and timestamp is naive, assume UTC before converting.
+            logger.warning(f"Timestamp column '{timestamp_col}' is naive but no origin_timezone was specified. Assuming UTC before converting to target.")
+            try:
+                df[timestamp_col] = df[timestamp_col].dt.tz_localize('UTC')
+                logger.debug("Successfully localized naive timestamp to UTC as fallback.")
+            except Exception as utc_loc_err:
+                # This might happen if timestamps are ambiguous around DST changes even in UTC, though less likely.
+                logger.error(f"Failed to localize naive timestamp to UTC: {utc_loc_err}")
+                raise ValueError(f"Failed to localize naive timestamp to UTC: {utc_loc_err}") from utc_loc_err
 
     # Convert to target_timezone (handles both originally naive localized and already aware timestamps)
-    try:
-        logger.debug(f"Converting timestamp to target timezone: {target_timezone}")
-        df[timestamp_col] = df[timestamp_col].dt.tz_convert(target_timezone)
-    except Exception as tz_err:
-        logger.error(f"Could not convert timestamp timezone to {target_timezone}: {tz_err}. Returning with original/localized timezone.")
-        # Decide on error handling: raise error or return partially converted? Raising is safer.
-        raise ValueError(f"Failed to convert timestamp to target timezone {target_timezone}: {tz_err}") from tz_err
+    # Only proceed if the timestamp column is now timezone-aware
+    if df[timestamp_col].dt.tz is not None:
+        try:
+            logger.debug(f"Converting timestamp to target timezone: {target_timezone}")
+            df[timestamp_col] = df[timestamp_col].dt.tz_convert(target_timezone)
+        except Exception as tz_err:
+            logger.error(f"Could not convert timestamp timezone to {target_timezone}: {tz_err}. Returning with original/localized timezone.")
+            # Decide on error handling: raise error or return partially converted? Raising is safer.
+            raise ValueError(f"Failed to convert timestamp to target timezone {target_timezone}: {tz_err}") from tz_err
 
     # Set as index if requested
     if set_index:

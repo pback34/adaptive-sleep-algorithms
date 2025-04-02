@@ -187,10 +187,11 @@ class TestPolarCSVImporter:
         csv_path = tmp_path / "test.csv"
         data.to_csv(csv_path, index=False, sep=",")
         
-        # Configure importer with column mapping
+        # Configure importer with column mapping and target timezone
         config = {
             "column_mapping": {"timestamp": "time", "value": "ppg_value"},
-            "delimiter": ","
+            "delimiter": ",",
+            "target_timezone": "UTC" # Added target timezone
         }
         importer = PolarCSVImporter(config)
         
@@ -212,7 +213,8 @@ class TestPolarCSVImporter:
             "body_position": "LEFT_WRIST",
             "delimiter": ",",
             # Add flag to prevent timestamp from being set as index
-            "preserve_timestamp_column": True
+            "preserve_timestamp_column": True,
+            "target_timezone": "UTC" # Added target timezone
         }
         importer = PolarCSVImporter(config)
         signal = importer.import_signal(polar_csv, "PPG")
@@ -236,7 +238,8 @@ class TestPolarCSVImporter:
         config = {
             "column_mapping": {"timestamp": "timestamp", "value": "ppg_value"},
             "filename_pattern": r"polar_(?P<subject_id>\w+)_(?P<session>\d+)\.csv",
-            "delimiter": ","
+            "delimiter": ",",
+            "target_timezone": "UTC" # Added target timezone
         }
         importer = PolarCSVImporter(config)
         signals = importer.import_signals(polar_csv_directory, "PPG")
@@ -268,9 +271,10 @@ class TestPolarCSVImporter:
         config = {
             "column_mapping": {"timestamp": "time", "value": "ppg_value"},
             "time_format": "%Y/%m/%d %H:%M:%S",
-            "delimiter": ","
+            "delimiter": ",",
+            "target_timezone": "UTC" # Added target timezone
         }
-        
+
         importer = PolarCSVImporter(config)
         signal = importer.import_signal(str(custom_csv), "PPG")
         
@@ -349,7 +353,10 @@ class TestMergingImporter:
     
     def test_import_signal(self, fragmented_data_dir, merging_config):
         """Test importing and merging signals from multiple files."""
-        importer = MergingImporter(merging_config)
+        # Add target_timezone to the config for the test
+        config = merging_config.copy()
+        config["target_timezone"] = "UTC"
+        importer = MergingImporter(config)
         signal = importer.import_signal(fragmented_data_dir, "PPG")
         
         # Check that it's the right type and has merged data
@@ -361,10 +368,11 @@ class TestMergingImporter:
 
     def test_sort_by_timestamp(self, fragmented_data_dir, merging_config):
         """Test sorting files by timestamp in the data."""
-        # Modify config to sort by timestamp
+        # Modify config to sort by timestamp and add target_timezone
         config = merging_config.copy()
         config["sort_by"] = "timestamp"
-        
+        config["target_timezone"] = "UTC" # Added target timezone
+
         importer = MergingImporter(config)
         signal = importer.import_signal(fragmented_data_dir, "PPG")
         

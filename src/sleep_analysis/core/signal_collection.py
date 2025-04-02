@@ -115,18 +115,22 @@ class SignalCollection:
                         collection_tz = pd.Timestamp('now', tz=collection_tz_str).tz
                     except Exception as tz_parse_err:
                         logger.warning(f"Could not parse collection timezone string '{collection_tz_str}' for validation: {tz_parse_err}")
+                        # Proceed without robust comparison if collection TZ parsing fails
+                        collection_tz = None # Ensure it's None if parsing failed
 
-                # Perform comparison
-                if signal_tz is None:
-                     logger.warning(f"Signal '{key}' has a naive timestamp index, while collection timezone is '{collection_tz_str}'. Potential inconsistency.")
+                # Perform comparison using string representations for robustness
+                signal_tz_str = str(signal_tz) if signal_tz is not None else "None"
+
+                if signal_tz is None and collection_tz_str != "None": # Check against string "None" if collection_tz_str could be None
+                     logger.warning(f"Signal '{key}' has a naive timestamp index (timezone: {signal_tz_str}), while collection timezone is '{collection_tz_str}'. Potential inconsistency.")
                      # Optionally raise ValueError("Signal timezone mismatch: Signal is naive, collection is aware.")
-                elif collection_tz is not None and signal_tz != collection_tz:
-                     # Compare tzinfo objects directly if possible
-                     logger.warning(f"Signal '{key}' timezone ({signal_tz}) does not match collection timezone ({collection_tz}). Potential inconsistency.")
+                elif signal_tz is not None and collection_tz_str == "None":
+                     logger.warning(f"Signal '{key}' has timezone '{signal_tz_str}', while collection timezone is not set ('{collection_tz_str}'). Potential inconsistency.")
+                elif signal_tz is not None and collection_tz_str != "None" and signal_tz_str != collection_tz_str:
+                     # Compare string representations
+                     logger.warning(f"Signal '{key}' timezone string ('{signal_tz_str}') does not match collection timezone string ('{collection_tz_str}'). Potential inconsistency.")
                      # Optionally raise ValueError("Signal timezone mismatch")
-                elif collection_tz is None and signal_tz is not None:
-                     # Collection TZ couldn't be parsed, but signal is aware
-                     logger.warning(f"Collection timezone '{collection_tz_str}' could not be parsed, but signal '{key}' timezone is {signal_tz}. Cannot validate consistency.")
+                # No warning if both are None or if string representations match
 
             except AttributeError:
                  logger.warning(f"Could not access index or timezone for signal '{key}' during validation.")
@@ -641,42 +645,6 @@ class SignalCollection:
         except Exception as e:
             logger.error(f"Error creating date_range for grid index: {e}", exc_info=True)
             return None
-
-
-    def compute_optimal_index(self, target_sample_rate: Optional[float] = None) -> pd.DatetimeIndex:
-        """
-        DEPRECATED: Use _calculate_grid_index instead.
-        Use the index from the signal with the most data points as the target index.
-        
-        This avoids creating a synthetic dense grid that might be much larger than
-        what's needed, which can slow down alignment operations.
-
-        Args:
-            target_sample_rate: Not used in this implementation but kept for compatibility.
-
-        Returns:
-            A pd.DatetimeIndex from the signal with the most data points.
-        """
-        logger = logging.getLogger(__name__)
-
-        # Filter for time-series signals
-        time_series_signals = [s for s in self.signals.values() if isinstance(s, TimeSeriesSignal)]
-        if not time_series_signals:
-            raise ValueError("No time-series signals found in the collection")
-
-        # Find the signal with the most data points (which is likely the highest frequency)
-        target_signal = max(time_series_signals, key=lambda s: len(s.get_data()))
-        target_index = target_signal.get_data().index
-        
-        signal_id = target_signal.metadata.signal_id if hasattr(target_signal.metadata, 'signal_id') else 'unknown'
-        logger.info(f"Using index from signal {signal_id} with {len(target_index)} points as target index")
-        
-        warnings.warn("compute_optimal_index is deprecated. Use _calculate_grid_index.", DeprecationWarning)
-        # Fallback to calculating a proper grid if called
-        target_rate = self.get_target_sample_rate(target_sample_rate)
-        target_period = pd.Timedelta(seconds=1/target_rate)
-        ref_time = self.get_reference_time(target_period)
-        return self._calculate_grid_index(target_rate, ref_time)
 
 
     def align_signals(self, target_sample_rate: Optional[float] = None) -> 'SignalCollection':

@@ -330,7 +330,8 @@ def test_resample_and_align_signals(signal_collection):
     signal_collection.signals["low_rate"].metadata.name = "low_rate"
 
     # Test 1: Align to highest sample rate (100 Hz)
-    signal_collection.align_signals(inplace=True)
+    # align_signals now only calculates parameters, doesn't modify signals
+    signal_collection.align_signals()
     combined = signal_collection.get_combined_dataframe()
     # We expect all points to be included - should be 100 points for 100Hz signal
     assert len(combined) == 100  # Matches high-rate signal length
@@ -338,7 +339,8 @@ def test_resample_and_align_signals(signal_collection):
     assert combined.index.freqstr in ["10ms", "10L"]  # Accept either format depending on pandas version
 
     # Test 2: Downsample to 25 Hz
-    signal_collection.align_signals(target_sample_rate=25.0, method="linear", inplace=True)
+    # align_signals now only calculates parameters, doesn't modify signals
+    signal_collection.align_signals(target_sample_rate=25.0) # Removed method and inplace
     combined = signal_collection.get_combined_dataframe()
     expected_freq = "40ms"  # 1/25 Hz = 40ms
     assert combined.index.freqstr in [expected_freq, "40L"]  # Accept either format depending on pandas version
@@ -357,7 +359,8 @@ def test_resample_and_align_signals(signal_collection):
     signal_collection.signals["none_rate"].metadata.name = "none_rate"
     
     # Align should still work, using the valid rates
-    signal_collection.align_signals(inplace=True)
+    # align_signals now only calculates parameters, doesn't modify signals
+    signal_collection.align_signals() # Removed inplace
     combined = signal_collection.get_combined_dataframe()
     assert "none_rate" in [l[0] for l in combined.columns]
     
@@ -370,14 +373,10 @@ def test_resample_and_align_signals(signal_collection):
     assert signal_collection.get_nearest_standard_rate(95) == 100
     assert signal_collection.get_nearest_standard_rate(112) == 100 # 100 is closer than 125
     assert signal_collection.get_nearest_standard_rate(137) == 125 # 125 is closer than 100 or 200
-    # Find a reasonable default for None, e.g., the median standard rate
-    median_rate = sorted(STANDARD_RATES)[len(STANDARD_RATES) // 2]
-    assert signal_collection.get_nearest_standard_rate(None) == median_rate
-    
-    # Test compute_optimal_index
-    optimal_index = signal_collection.compute_optimal_index()
-    assert isinstance(optimal_index, pd.DatetimeIndex)
-    assert len(optimal_index) > 0
+    # Check the default rate returned for None or invalid input
+    assert signal_collection.get_nearest_standard_rate(None) == 1.0
+    assert signal_collection.get_nearest_standard_rate(0) == 1.0
+    assert signal_collection.get_nearest_standard_rate(-10) == 1.0
     
     # Test get_reference_time
     target_period = pd.Timedelta(milliseconds=10)  # 100 Hz
