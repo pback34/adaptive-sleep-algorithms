@@ -37,7 +37,37 @@ class WorkflowExecutor:
         self.container = container or SignalCollection()
         self.strict_validation = strict_validation
         self.data_dir = data_dir
-    
+        self.default_input_timezone: Optional[str] = None
+        self.target_timezone: str = "UTC" # Default target timezone
+
+    def _resolve_target_timezone(self, target_tz_config: Optional[str]) -> str:
+        """Resolves the target timezone based on config, system, or fallback."""
+        if target_tz_config is None or target_tz_config.lower() in ["system", "local"]:
+            if tzlocal:
+                try:
+                    system_tz = tzlocal.get_localzone_name()
+                    # Optional: Validate system_tz before returning using pytz
+                    # if pytz:
+                    #     pytz.timezone(system_tz)
+                    logger.info(f"Using system local timezone: {system_tz}")
+                    return system_tz
+                except Exception as e:
+                    logger.warning(f"Failed to detect system timezone using tzlocal: {e}. Falling back to UTC.")
+                    return "UTC"
+            else:
+                logger.warning("tzlocal library not found. Cannot detect system timezone. Falling back to UTC.")
+                return "UTC"
+        else:
+            # Optional: Validate the provided timezone string using pytz
+            # if pytz:
+            #     try:
+            #         pytz.timezone(target_tz_config)
+            #     except pytz.UnknownTimeZoneError:
+            #         logger.error(f"Invalid target_timezone specified: '{target_tz_config}'")
+            #         raise ValueError(f"Invalid target_timezone specified: '{target_tz_config}'")
+            logger.info(f"Using specified target timezone: {target_tz_config}")
+            return target_tz_config
+
     def execute_workflow(self, workflow_config: Dict[str, Any]):
         """
         Execute a workflow defined in a configuration dictionary.
@@ -48,14 +78,29 @@ class WorkflowExecutor:
                 - steps: List of processing step specifications
                 - export: Export configuration (optional)
                 - visualization: Visualization configuration (optional)
-                
+
         Raises:
             ValueError: If the workflow configuration is invalid or execution fails.
         """
+        # --- Timezone Configuration ---
+        self.default_input_timezone = workflow_config.get("default_input_timezone") # Can be None
+        if not self.default_input_timezone:
+             logger.warning("No 'default_input_timezone' specified in workflow. Naive timestamps in source data without an 'origin_timezone' override may be handled ambiguously (often assumed UTC).")
+
+        target_tz_config = workflow_config.get("target_timezone") # Can be None, 'system', or a specific zone
+        self.target_timezone = self._resolve_target_timezone(target_tz_config)
+        logger.info(f"Resolved target timezone for workflow: {self.target_timezone}")
+
+        # Update collection metadata with the resolved target timezone
+        if self.container:
+            self.container.metadata.timezone = self.target_timezone
+            logger.debug(f"Set SignalCollection timezone to: {self.target_timezone}")
+        # --- End Timezone Configuration ---
+
         # Handle import section if present
         if "import" in workflow_config:
             self._process_import_section(workflow_config["import"])
-            
+
         # Execute processing steps
         if "steps" in workflow_config:
             for step in workflow_config["steps"]:
@@ -291,21 +336,42 @@ class WorkflowExecutor:
         
         for spec in import_specs:
             # Add strict_validation to the spec for error handling
+            # Add strict_validation to the spec for error handling within import_signals_from_source
             spec["strict_validation"] = self.strict_validation
-            
+
             # Validate required fields
             required_fields = ["signal_type", "importer", "source"]
             missing_fields = [field for field in required_fields if field not in spec]
             if missing_fields:
+                logger.error(f"Import specification missing required fields: {missing_fields}. Spec: {spec}")
                 raise ValueError(f"Import specification missing required fields: {missing_fields}")
-            
+
             try:
-                # Get importer instance
-                importer = self._get_importer_instance(spec["importer"], spec.get("config", {}))
-                if hasattr(importer, 'config'):
-                    importer.config["timestamp_format"] = self.container.metadata.timestamp_format
-                
-                # Resolve source path
+                # Prepare importer configuration, injecting timezones
+                importer_config = spec.get("config", {}).copy()
+
+                # Determine the origin timezone to use for this specific importer
+                # Priority: importer's config -> workflow default -> None
+                origin_timezone = importer_config.get("origin_timezone", self.default_input_timezone)
+                logger.debug(f"Determined origin_timezone for importer '{spec['importer']}': {origin_timezone}")
+
+                # Inject resolved target and determined origin timezones into the config passed to the importer
+                importer_config["target_timezone"] = self.target_timezone
+                importer_config["origin_timezone"] = origin_timezone # Pass the determined origin_timezone
+
+                # Get importer instance with the updated config
+                importer = self._get_importer_instance(spec["importer"], importer_config)
+
+                # Inject timestamp format from collection metadata if importer has config
+                if hasattr(importer, 'config') and importer.config is not None:
+                     # Ensure config is a dictionary before accessing
+                     if isinstance(importer.config, dict):
+                          importer.config["timestamp_format"] = self.container.metadata.timestamp_format
+                     else:
+                          logger.warning(f"Importer '{spec['importer']}' config is not a dictionary, cannot set timestamp_format.")
+
+
+                # Resolve source path relative to data_dir if provided
                 source = spec["source"]
                 if self.data_dir:
                     source = os.path.join(self.data_dir, source)

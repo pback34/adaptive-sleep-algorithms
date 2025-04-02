@@ -12,7 +12,7 @@ from ..formats.csv import CSVImporterBase
 from ...core.signal_data import SignalData
 from ...signals.eeg_sleep_stage_signal import EEGSleepStageSignal
 from ...signal_types import SensorModel, BodyPosition, SignalType, SensorType
-from ...utils import get_logger, standardize_timestamp, str_to_enum
+from ...utils import get_logger, str_to_enum # Removed standardize_timestamp import
 
 class EnchantedWaveImporter(CSVImporterBase):
     """
@@ -204,45 +204,37 @@ class EnchantedWaveImporter(CSVImporterBase):
 
 
         # --- Timestamp Handling ---
-        timestamp_col_name = self.config["column_mapping"].get("timestamp", "Time")
-        seconds_col_name = self.config["column_mapping"].get("seconds", "Seconds")
-        # Determine origin timezone: config > parsed offset > None
-        origin_timezone = self.config.get("origin_timezone", parsed_timezone_offset)
-        self.logger.debug(f"Using origin_timezone for standardization: {origin_timezone}")
+        timestamp_col_name = self.config.get("column_mapping", {}).get("timestamp", "Time")
+        seconds_col_name = self.config.get("column_mapping", {}).get("seconds", "Seconds")
 
+        # Determine origin and target timezones from config (injected by WorkflowExecutor)
+        origin_timezone = self.config.get("origin_timezone", parsed_timezone_offset) # Use parsed offset as fallback
+        target_timezone = self.config.get("target_timezone")
+
+        if target_timezone is None:
+            self.logger.error("Target timezone not found in importer configuration. Cannot standardize timestamps.")
+            raise ValueError("Target timezone is required for timestamp standardization.")
+
+        self.logger.debug(f"Attempting timestamp standardization with: col='{timestamp_col_name}', origin='{origin_timezone}', target='{target_timezone}'")
+
+        timestamp_standardized = False
         if timestamp_col_name in df.columns:
             self.logger.debug(f"Using '{timestamp_col_name}' column for timestamps.")
             try:
-                # Use standardize_timestamp, passing origin_timezone, keep tz-aware UTC
-                df = standardize_timestamp(
-                    df.copy(),
-                    timestamp_col_name,
-                    set_index=True,
-                    origin_timezone=origin_timezone,
-                    target_timezone='UTC', # Ensure internal representation is UTC
-                    tz_strip=False # Keep timezone information
-                )
-                if not isinstance(df.index, pd.DatetimeIndex):
-                     raise ValueError("Timestamp standardization did not result in DatetimeIndex")
-                if df.index.tz is None:
-                     self.logger.warning("Timestamp index is naive after standardization. Expected timezone-aware.")
-                     # Attempt to force UTC localization as a fallback
-                     df.index = df.index.tz_localize('UTC', ambiguous='infer')
-                elif df.index.tz.zone != 'UTC':
-                     self.logger.warning(f"Timestamp index is not UTC ({df.index.tz.zone}) after standardization. Converting.")
-                     df.index = df.index.tz_convert('UTC')
-
-                self.logger.debug(f"Timestamp standardization successful using '{timestamp_col_name}' column (result is aware UTC).")
+                # Use the base class helper method
+                df = self._standardize_timestamp(df, timestamp_col_name, origin_timezone, target_timezone, set_index=True)
+                timestamp_standardized = True
+                self.logger.debug(f"Timestamp standardization successful using '{timestamp_col_name}' column.")
             except Exception as e:
                 self.logger.warning(f"Failed to standardize timestamp using '{timestamp_col_name}' column: {str(e)}. Trying 'Seconds'.")
-                df.index = None # Reset index if standardization failed
+                # Don't reset index here, let the next block handle it if needed
         else:
-             df.index = None # Ensure index is None if primary timestamp column not found
+             self.logger.debug(f"Primary timestamp column '{timestamp_col_name}' not found.")
 
-        # Fallback to 'Seconds' column if timestamp index is not set
-        if not isinstance(df.index, pd.DatetimeIndex):
+        # Fallback to 'Seconds' column if primary timestamp failed or wasn't present
+        if not timestamp_standardized:
             if seconds_col_name in df.columns and base_timestamp_utc is not None:
-                self.logger.debug(f"Using '{seconds_col_name}' column and base timestamp (UTC).")
+                self.logger.debug(f"Using '{seconds_col_name}' column and base timestamp (UTC) for fallback.")
                 try:
                     seconds = pd.to_numeric(df[seconds_col_name], errors='coerce')
                     valid_seconds_mask = seconds.notna()
@@ -252,33 +244,39 @@ class EnchantedWaveImporter(CSVImporterBase):
                     if not df.empty:
                         # Calculate timestamps relative to base_timestamp_utc (which is aware UTC)
                         timestamps = base_timestamp_utc + pd.to_timedelta(seconds, unit='s')
-                        # Resulting timestamps will be aware UTC
+                        # Convert the calculated UTC timestamps to the target timezone
+                        timestamps = timestamps.tz_convert(target_timezone)
                         df.index = pd.DatetimeIndex(timestamps)
                         df.index.name = 'timestamp' # Use standard name
                         if seconds_col_name in df.columns and seconds_col_name != 'timestamp':
                             df = df.drop(columns=[seconds_col_name])
-                        self.logger.debug("Timestamp creation successful using 'Seconds' column (result is aware UTC).")
+                        timestamp_standardized = True
+                        self.logger.debug(f"Timestamp creation successful using 'Seconds' column (result is aware {target_timezone}).")
                     else:
                         self.logger.warning("No valid 'Seconds' values found after coercion.")
                         df = pd.DataFrame() # Return empty if no valid seconds
 
                 except Exception as e:
                     self.logger.warning(f"Failed to create timestamps using '{seconds_col_name}' column: {str(e)}. Trying synthetic.")
-                    df.index = None # Reset index on failure
             else:
                 self.logger.warning(f"Neither '{timestamp_col_name}' nor '{seconds_col_name}' column available or base timestamp missing. Trying synthetic.")
-                df.index = None
 
-        # Final fallback: Synthetic timestamps (make them UTC aware)
-        if not isinstance(df.index, pd.DatetimeIndex):
+        # Final fallback: Synthetic timestamps (make them target_timezone aware)
+        if not timestamp_standardized:
              if not df.empty:
-                 self.logger.warning("Generating synthetic timestamps (4-second interval, UTC).")
-                 # Use a 4-second frequency, make UTC aware
-                 df.index = pd.date_range(start='2025-01-01', periods=len(df), freq='4S', tz='UTC')
+                 self.logger.warning(f"Generating synthetic timestamps (4-second interval, {target_timezone}).")
+                 # Use a 4-second frequency, make target_timezone aware
+                 df.index = pd.date_range(start='2025-01-01', periods=len(df), freq='4S', tz=target_timezone)
                  df.index.name = 'timestamp' # Use standard name
+                 timestamp_standardized = True
              else:
                  self.logger.warning("DataFrame is empty, cannot generate synthetic timestamps.")
                  return pd.DataFrame() # Return empty if no data and no timestamps
+
+        # Ensure index is set if standardization succeeded
+        if timestamp_standardized and not isinstance(df.index, pd.DatetimeIndex):
+             self.logger.error("Timestamp standardization failed to set a DatetimeIndex.")
+             raise ValueError("Timestamp standardization failed to produce a DatetimeIndex.")
 
 
         # --- Column Mapping and Data Cleaning ---

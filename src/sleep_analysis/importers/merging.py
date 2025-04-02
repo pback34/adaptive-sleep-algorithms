@@ -14,7 +14,7 @@ from typing import List, Dict, Any
 from .base import SignalImporter
 from ..core.signal_data import SignalData
 from ..signal_types import SignalType
-from ..utils import get_logger, standardize_timestamp
+from ..utils import get_logger # Removed standardize_timestamp import
 
 class MergingImporter(SignalImporter):
     """
@@ -260,35 +260,35 @@ class MergingImporter(SignalImporter):
                     if sample_time:
                         self.logger.debug(f"Sample timestamp before standardization: {sample_time}")
 
-                    # Ensure we retain millisecond precision and get naive timestamps
-                    # Use the enhanced standardize_timestamp, ensuring tz stripping
-                    merged_df = standardize_timestamp(
-                        merged_df.copy(), # Pass copy to avoid SettingWithCopyWarning
-                        "timestamp",
-                        output_format="%Y-%m-%d %H:%M:%S.%f", # Retain precision
-                        set_index=True, # Set index directly
-                        tz_convert='UTC', # Convert to UTC first (optional but good practice)
-                        tz_strip=True # Ensure output is naive
-                    )
+                    # Standardize timestamp using the base class helper
+                    origin_timezone = self.config.get("origin_timezone") # Might be None
+                    target_timezone = self.config.get("target_timezone") # Should be injected
+
+                    if target_timezone is None:
+                         self.logger.error("Target timezone not found in MergingImporter configuration. Cannot standardize timestamps.")
+                         raise ValueError("Target timezone is required for timestamp standardization.")
+
+                    self.logger.debug(f"Standardizing timestamp column 'timestamp' using base helper.")
+                    merged_df = self._standardize_timestamp(merged_df, "timestamp", origin_timezone, target_timezone, set_index=True)
 
                     # Log sample after conversion (index is now the timestamp)
                     if not merged_df.empty:
                         self.logger.debug(f"Sample timestamp after standardization (index): {merged_df.index[0]}")
 
-                    # Index is already set and sorted by standardize_timestamp if set_index=True
-                    # Remove duplicates after sorting (which happens inside standardize if index is set)
+                    # Remove duplicates after sorting (which happens inside _standardize_timestamp if index is set)
                     if merged_df.index.duplicated().any():
                         self.logger.warning(f"Removing {merged_df.index.duplicated().sum()} duplicate timestamps after merging.")
                         merged_df = merged_df[~merged_df.index.duplicated(keep='first')]
 
                 except Exception as e:
-                    self.logger.error(f"Failed to standardize timestamp column: {e}")
-                    raise ValueError(f"Failed to standardize timestamp column: {e}")
+                    self.logger.error(f"Failed to standardize timestamp column: {e}", exc_info=True)
+                    raise ValueError(f"Failed to standardize timestamp column: {e}") from e
 
                 self.logger.debug(f"Merged dataframe has {len(merged_df)} rows")
+
             except Exception as e: # This except now correctly corresponds to the try block starting line 216
-                self.logger.error(f"Error merging or processing dataframes: {str(e)}")
-                raise ValueError(f"Error merging or processing dataframes: {str(e)}")
+                self.logger.error(f"Error merging or processing dataframes: {str(e)}", exc_info=True)
+                raise ValueError(f"Error merging or processing dataframes: {str(e)}") from e
 
         # --- Signal Creation ---
         # Get appropriate signal class for the signal type

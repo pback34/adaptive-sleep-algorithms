@@ -93,12 +93,47 @@ class SignalCollection:
         # Check for signal_id uniqueness
         existing_ids = {s.metadata.signal_id for s in self.signals.values()}
         if signal.metadata.signal_id in existing_ids:
-            signal.metadata.signal_id = str(uuid.uuid4())
+            # If ID conflict, generate a new one and log a warning
+            new_id = str(uuid.uuid4())
+            logger.warning(f"Signal ID '{signal.metadata.signal_id}' conflicts with existing signal. Assigning new ID: {new_id}")
+            signal.metadata.signal_id = new_id
 
-        # Validate that time series signals have a proper timestamp index
+        # Validate that time series signals have a proper timestamp index and matching timezone
         if isinstance(signal, TimeSeriesSignal):
-            self._validate_timestamp_index(signal)
-        
+            self._validate_timestamp_index(signal) # Checks for DatetimeIndex
+
+            # Optional: Validate timezone consistency
+            try:
+                signal_tz = signal.get_data().index.tz
+                collection_tz_str = self.metadata.timezone # The string name from collection metadata
+
+                # Convert collection timezone string to tzinfo object for robust comparison if possible
+                collection_tz = None
+                if collection_tz_str:
+                    try:
+                        # Use pandas to interpret the timezone string robustly
+                        collection_tz = pd.Timestamp('now', tz=collection_tz_str).tz
+                    except Exception as tz_parse_err:
+                        logger.warning(f"Could not parse collection timezone string '{collection_tz_str}' for validation: {tz_parse_err}")
+
+                # Perform comparison
+                if signal_tz is None:
+                     logger.warning(f"Signal '{key}' has a naive timestamp index, while collection timezone is '{collection_tz_str}'. Potential inconsistency.")
+                     # Optionally raise ValueError("Signal timezone mismatch: Signal is naive, collection is aware.")
+                elif collection_tz is not None and signal_tz != collection_tz:
+                     # Compare tzinfo objects directly if possible
+                     logger.warning(f"Signal '{key}' timezone ({signal_tz}) does not match collection timezone ({collection_tz}). Potential inconsistency.")
+                     # Optionally raise ValueError("Signal timezone mismatch")
+                elif collection_tz is None and signal_tz is not None:
+                     # Collection TZ couldn't be parsed, but signal is aware
+                     logger.warning(f"Collection timezone '{collection_tz_str}' could not be parsed, but signal '{key}' timezone is {signal_tz}. Cannot validate consistency.")
+
+            except AttributeError:
+                 logger.warning(f"Could not access index or timezone for signal '{key}' during validation.")
+            except Exception as val_err:
+                 logger.error(f"Error during timezone validation for signal '{key}': {val_err}", exc_info=True)
+
+
         # Set the signal's name to the key if not already set
         # This ensures consistency between standalone signals and collection signals
         if signal.handler:

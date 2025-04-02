@@ -98,20 +98,28 @@ class ExportModule:
                 result_df = result_df.loc[~result_df.index.duplicated(keep='first')]
                 
             # Reset index to convert DatetimeIndex to column, preserving datetime type
-            # Set the name of the index column to 'timestamp' instead of default 'index'
+            # Set the name of the index column to 'timestamp'
             result_df = result_df.reset_index(names='timestamp')
-            logger.debug(f"Reset index to column named 'timestamp', dtype: {result_df['timestamp'].dtype}")
-            
-            # Double-check that it's still a datetime
+            logger.debug(f"Reset index to column named 'timestamp', dtype: {result_df['timestamp'].dtype}, TZ: {result_df['timestamp'].dt.tz}")
+
+            # Ensure it's still datetime64[ns, TZ] type
             if not pd.api.types.is_datetime64_any_dtype(result_df['timestamp']):
-                logger.warning(f"Column 'timestamp' is not datetime: {result_df['timestamp'].dtype}")
-                try:
-                    result_df['timestamp'] = pd.to_datetime(result_df['timestamp'])
-                    logger.debug("Successfully converted timestamp column to datetime")
-                except Exception as e:
-                    logger.warning(f"Could not convert timestamp to datetime: {e}")
-            
-        logger.debug(f"Formatted dataframe has {len(result_df)} rows")
+                 logger.warning(f"Column 'timestamp' is not datetime after reset_index: {result_df['timestamp'].dtype}. Attempting conversion.")
+                 try:
+                     # Preserve original timezone if possible during conversion
+                     original_tz = df.index.tz
+                     result_df['timestamp'] = pd.to_datetime(result_df['timestamp'])
+                     if original_tz and result_df['timestamp'].dt.tz is None:
+                          result_df['timestamp'] = result_df['timestamp'].dt.tz_localize(original_tz)
+                     elif original_tz and result_df['timestamp'].dt.tz != original_tz:
+                          result_df['timestamp'] = result_df['timestamp'].dt.tz_convert(original_tz)
+                     logger.debug(f"Successfully converted timestamp column back to datetime. New dtype: {result_df['timestamp'].dtype}, TZ: {result_df['timestamp'].dt.tz}")
+                 except Exception as e:
+                     logger.error(f"Could not convert timestamp column back to datetime: {e}")
+                     # Decide how to handle - raise error or proceed with potentially incorrect type?
+                     # raise ValueError(f"Failed to ensure timestamp column is datetime: {e}") from e
+
+        logger.debug(f"Formatted dataframe for export has {len(result_df)} rows")
         return result_df
         
     def _serialize_metadata(self) -> Dict[str, Any]:

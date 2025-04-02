@@ -6,11 +6,13 @@ as the foundation for the importer hierarchy.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
+import pandas as pd # Added import
 
 from ..core.signal_data import SignalData
 from ..utils import get_logger
+# Note: standardize_timestamp is imported locally within the helper method
 
 class SignalImporter(ABC):
     """
@@ -34,8 +36,15 @@ class SignalImporter(ABC):
 
         Returns:
             An instance of a SignalData subclass corresponding to the signal_type.
-        """
         pass
+
+    def _standardize_timestamp(self, df: pd.DataFrame, timestamp_col: str,
+                               origin_timezone: Optional[str], target_timezone: str,
+                               set_index: bool = True) -> pd.DataFrame:
+        """Helper method to call the centralized timestamp standardization utility."""
+        from ..utils import standardize_timestamp # Local import to avoid circular dependency issues
+        self.logger.debug(f"Calling centralized standardize_timestamp with: col='{timestamp_col}', origin='{origin_timezone}', target='{target_timezone}', set_index={set_index}")
+        return standardize_timestamp(df, timestamp_col, origin_timezone, target_timezone, set_index)
 
     @abstractmethod
     def import_signals(self, source: str, signal_type: str) -> List[SignalData]:

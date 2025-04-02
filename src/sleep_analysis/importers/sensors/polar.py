@@ -14,7 +14,7 @@ import logging
 
 from ..formats.csv import CSVImporterBase
 from ...core.signal_data import SignalData
-from ...utils import get_logger, standardize_timestamp, str_to_enum
+from ...utils import get_logger, str_to_enum # Removed standardize_timestamp import
 
 class PolarCSVImporter(CSVImporterBase):
     """
@@ -135,45 +135,31 @@ class PolarCSVImporter(CSVImporterBase):
                         self.logger.warning(f"Cannot filter to mapped columns - missing some columns. Available: {list(df.columns)}")
                 
                 self.logger.debug(f"Columns after mapping ({len(df.columns)} total): {list(df.columns)}")
-            
-            # Standardize timestamp column if present
-            timestamp_col = next((col for col in df.columns if "timestamp" in col.lower()), None)
-            if timestamp_col:
-                # First standardize the timestamp format using convert_timestamp_format
-                from ...utils import convert_timestamp_format
-                target_format = self.config.get("timestamp_format", "%Y-%m-%d %H:%M:%S")
-                time_format = self.config.get("time_format")
-                
-                # Convert the timestamp series to standard format
-                try:
-                    # First try with specified format
-                    df[timestamp_col] = convert_timestamp_format(
-                        df[timestamp_col],
-                        source_format=time_format,
-                        target_format=target_format
-                    )
-                except ValueError as e:
-                    # If that fails, try without a specific format (let pandas infer it)
-                    self.logger.warning(f"Failed to parse timestamps with format {time_format}: {e}")
-                    self.logger.warning("Attempting to parse timestamps without a specific format")
-                    df[timestamp_col] = pd.to_datetime(df[timestamp_col]).dt.strftime(target_format)
-                
-                # Determine origin timezone from config
-                origin_timezone = self.config.get("origin_timezone")
-                self.logger.debug(f"Using origin_timezone for standardization: {origin_timezone}")
+            # Standardize timestamp using the base class helper
+            # Assume 'timestamp' is the standard column name *after* mapping
+            timestamp_col_name = "timestamp"
+            if timestamp_col_name in df.columns:
+                 origin_timezone = self.config.get("origin_timezone") # Might be None
+                 target_timezone = self.config.get("target_timezone") # Should be injected by WorkflowExecutor
 
-                # Then use standardize_timestamp to handle the DataFrame structure
-                # Keep timestamps as timezone-aware UTC
-                df = standardize_timestamp(
-                    df,
-                    timestamp_col,
-                    set_index=True,
-                    origin_timezone=origin_timezone,
-                    target_timezone='UTC', # Ensure internal representation is UTC
-                    tz_strip=False # Keep timezone information
-                )
+                 if target_timezone is None:
+                      self.logger.error("Target timezone not found in importer configuration. Cannot standardize timestamps.")
+                      raise ValueError("Target timezone is required for timestamp standardization.")
 
-            self.logger.info(f"Successfully parsed CSV file with {len(df)} rows")
+                 self.logger.debug(f"Standardizing timestamp column '{timestamp_col_name}' using base helper.")
+                 df = self._standardize_timestamp(df, timestamp_col_name, origin_timezone, target_timezone, set_index=True)
+            else:
+                 # Check if the original timestamp column name exists before mapping
+                 original_ts_col = self.config.get("column_mapping", {}).get("timestamp")
+                 if original_ts_col and original_ts_col in df.columns:
+                      self.logger.error(f"Timestamp column '{original_ts_col}' exists but was not mapped to '{timestamp_col_name}'. Check column_mapping.")
+                      raise ValueError(f"Timestamp column mapping failed for '{original_ts_col}'.")
+                 else:
+                      self.logger.warning(f"Timestamp column '{timestamp_col_name}' (or its mapped source) not found in the data. Skipping timestamp standardization.")
+                      # Decide if this should be an error based on requirements. For now, warn and continue.
+                      # raise ValueError(f"Timestamp column '{timestamp_col_name}' not found after mapping.")
+
+            self.logger.info(f"Successfully parsed CSV file. Final shape: {df.shape}")
             return df
             
         except FileNotFoundError:
