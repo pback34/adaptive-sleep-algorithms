@@ -15,6 +15,19 @@ from ..core.signal_data import SignalData
 from ..signal_types import SignalType, SensorType, SensorModel, BodyPosition
 from ..utils import str_to_enum
 
+# Added imports for logging and timezone handling
+import logging
+try:
+    import tzlocal
+    import pytz # Optional: for validation
+except ImportError:
+    tzlocal = None
+    # pytz = None # Keep commented if only used for optional validation
+
+# Initialize logger for this module
+logger = logging.getLogger(__name__)
+
+
 class WorkflowExecutor:
     """
     Class for running workflow definitions.
