@@ -19,10 +19,11 @@ try:
     from bokeh.plotting import figure, show, output_file
     from bokeh.models import (
         ColumnDataSource, HoverTool, LinearAxis, Range1d, 
-        Span, BoxAnnotation, Legend, LegendItem, GridBox
+        ColumnDataSource, HoverTool, LinearAxis, Range1d,
+        Span, BoxAnnotation, Legend, LegendItem, GridBox, Label # Added Label
     )
     from bokeh.layouts import gridplot
-    from bokeh.palettes import Category10_10
+    from bokeh.palettes import Category10_10, Category20 # Added Category20 for more colors
 except ImportError:
     raise ImportError(
         "Bokeh is required for BokehVisualizer. "
@@ -30,6 +31,7 @@ except ImportError:
     )
 
 from .base import VisualizerBase
+from ..signals.eeg_sleep_stage_signal import EEGSleepStageSignal # Added import
 
 class BokehVisualizer(VisualizerBase):
     """
@@ -885,3 +887,140 @@ class BokehVisualizer(VisualizerBase):
             figure: The Bokeh figure to display
         """
         show(figure)
+
+    def visualize_hypnogram(self, figure: Any, signal: EEGSleepStageSignal, **kwargs) -> Any:
+        """
+        Create a sleep stage hypnogram visualization using Bokeh quads.
+        """
+        # Merge default parameters with provided kwargs
+        params = {**self.default_params, **kwargs}
+
+        # Extract data from signal
+        df = signal.get_data()
+        stage_column = 'sleep_stage'
+        if stage_column not in df.columns:
+            logger.warning("Sleep stage column not found in data")
+            return None
+
+        # Define stage order and mapping to numeric values (include 'Unknown')
+        default_order = ['Awake', 'REM', 'N1', 'N2', 'N3', 'Unknown']
+        stage_order = params.get('stage_order', default_order)
+        stage_to_num = {stage: i for i, stage in enumerate(stage_order)}
+        num_stages = len(stage_order)
+
+        # Define colors for each stage (fallback to default palette if not provided)
+        default_colors = {
+            'Awake': '#FF5733',  # Orange-red
+            'N1': '#33A8FF',     # Light blue
+            'N2': '#3358FF',     # Medium blue
+            'N3': '#0D0C8A',     # Dark blue
+            'REM': '#AA33FF',    # Purple
+            'Unknown': '#CCCCCC' # Grey for Unknown/Other
+        }
+        # Ensure default colors cover the default order
+        palette = Category20[max(3, min(20, num_stages))] # Use a larger palette if needed
+        for i, stage in enumerate(stage_order):
+             if stage not in default_colors:
+                 default_colors[stage] = palette[i % len(palette)]
+
+        stage_colors = params.get('stage_colors', default_colors)
+
+        # Prepare data for plotting quads
+        quad_data = {
+            'left': [], 'right': [], 'top': [], 'bottom': [],
+            'color': [], 'alpha': [], 'stage_name': [], 'duration_min': []
+        }
+        alpha = params.get('alpha', 0.8)
+        line_color = params.get('line_color', "white")
+        line_width = params.get('line_width', 1)
+
+        # Iterate through the dataframe to create segments for quads
+        for i in range(len(df) - 1):
+            stage = df[stage_column].iloc[i]
+            # Map unexpected stages to 'Unknown'
+            if stage not in stage_to_num:
+                logger.debug(f"Mapping stage '{stage}' to 'Unknown'")
+                stage = 'Unknown'
+
+            stage_num = stage_to_num[stage]
+            start_time = df.index[i]
+            end_time = df.index[i+1]
+            duration = (end_time - start_time).total_seconds() / 60.0
+
+            quad_data['left'].append(start_time)
+            quad_data['right'].append(end_time)
+            quad_data['top'].append(stage_num + 0.4)  # Add slight padding
+            quad_data['bottom'].append(-0.5)          # Extend to bottom
+            quad_data['color'].append(stage_colors.get(stage, '#CCCCCC')) # Fallback color
+            quad_data['alpha'].append(alpha)
+            quad_data['stage_name'].append(stage)
+            quad_data['duration_min'].append(duration)
+
+        if not quad_data['left']:
+             logger.warning("No valid sleep stage segments found to plot.")
+             return None
+
+        source = ColumnDataSource(data=quad_data)
+
+        # Add quads to the figure
+        quads = figure.quad(
+            left='left', right='right', top='top', bottom='bottom',
+            color='color', alpha='alpha', source=source,
+            line_color=line_color, line_width=line_width,
+            name='hypnogram_quads' # Give the renderer a name
+        )
+
+        # Customize y-axis to show stage names
+        figure.yaxis.ticker = [i for i in range(num_stages)]
+        figure.yaxis.major_label_overrides = {i: stage for i, stage in enumerate(stage_order)}
+        figure.y_range = Range1d(-0.5, num_stages - 0.5) # Set y-range explicitly
+
+        # Add hover tool for better interactivity
+        if params.get('add_hover', True) and 'hover' in figure.tools:
+            hover = next((tool for tool in figure.tools if isinstance(tool, HoverTool)), None)
+            if hover:
+                hover.tooltips = [
+                    ('Time', '@left{%F %T}'),
+                    ('Stage', '@stage_name'),
+                    ('Duration', '@duration_min{0.1f} min')
+                ]
+                hover.formatters = {'@left': 'datetime'}
+                hover.mode = 'vline'
+                hover.renderers = [quads] # Attach hover tool specifically to quads
+
+        return quads # Return the quad renderer
+
+    def _add_statistics_annotation(self, figure: Any, stats_text: List[str], **kwargs) -> None:
+        """Add sleep statistics annotation using Bokeh Label."""
+        # Combine default parameters with provided kwargs
+        params = {**self.default_params, **kwargs}
+
+        # Extract annotation parameters
+        x = params.get('stats_x', 10)
+        y = params.get('stats_y', 10)
+        x_units = params.get('stats_x_units', 'screen')
+        y_units = params.get('stats_y_units', 'screen')
+        text_font_size = params.get('stats_font_size', '8pt') # Smaller default
+        bg_color = params.get('stats_bg_color', 'white')
+        bg_alpha = params.get('stats_bg_alpha', 0.7)
+        border_color = params.get('stats_border_color', 'lightgrey')
+        border_alpha = params.get('stats_border_alpha', 0.5)
+
+        # Join the list of strings into a single multi-line string
+        annotation_text = "\n".join(stats_text)
+
+        # Create and add the label
+        stats_label = Label(
+            x=x, y=y,
+            x_units=x_units, y_units=y_units,
+            text=annotation_text,
+            text_font_size=text_font_size,
+            background_fill_color=bg_color,
+            background_fill_alpha=bg_alpha,
+            border_line_color=border_color,
+            border_line_alpha=border_alpha,
+            border_line_width=1,
+            text_align='left',
+            level='annotation' # Ensure it's drawn on top
+        )
+        figure.add_layout(stats_label)

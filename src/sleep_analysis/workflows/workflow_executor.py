@@ -8,10 +8,12 @@ specified in YAML/JSON format, including import, processing steps, and export.
 import os
 import importlib
 import warnings
+import os # Added os import
 from typing import Dict, Any, List, Optional, Type, Union, Callable
 
 from ..core.signal_collection import SignalCollection
 from ..core.signal_data import SignalData
+from ..signals.eeg_sleep_stage_signal import EEGSleepStageSignal # Added import
 from ..signal_types import SignalType, SensorType, SensorModel, BodyPosition
 from ..utils import str_to_enum
 
@@ -466,7 +468,7 @@ class WorkflowExecutor:
             vis_specs: List of visualization specifications
         """
         for spec in vis_specs:
-            # Determine the backend to use
+            vis_type = spec.get('type', 'time_series') # Default to time_series if not specified
             backend = spec.get('backend', 'bokeh').lower()
             
             try:
@@ -479,12 +481,58 @@ class WorkflowExecutor:
                     visualizer = PlotlyVisualizer()
                 else:
                     raise ValueError(f"Unsupported visualization backend: {backend}")
-                    
-                # Process the visualization
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.info(f"Using {backend} backend for visualization: {spec.get('title', 'Untitled')}")
-                visualizer.process_visualization_config(spec, self.container)
-                
+
+                # --- Process based on visualization type ---
+                logger.info(f"Processing visualization type '{vis_type}' using {backend} backend: {spec.get('title', 'Untitled')}")
+
+                if vis_type == 'hypnogram':
+                    # Extract the sleep stage signal(s)
+                    signals = self.container.get_signals(
+                        input_spec=spec.get('signals'),
+                        signal_type=SignalType.EEG_SLEEP_STAGE
+                    )
+
+                    if not signals:
+                        warnings.warn(f"No EEG sleep stage signals found for hypnogram visualization spec: {spec.get('signals')}")
+                        continue
+
+                    # Process each signal and create visualizations
+                    for i, signal in enumerate(signals):
+                        # Ensure signal is of the correct type
+                        if not isinstance(signal, EEGSleepStageSignal):
+                             warnings.warn(f"Signal '{signal.metadata.signal_id}' is not an EEGSleepStageSignal, skipping hypnogram.")
+                             continue
+
+                        # Extract parameters
+                        params = spec.get('parameters', {}).copy()
+                        params['title'] = spec.get('title', f'Hypnogram - {signal.metadata.signal_id}') # Add title from spec
+
+                        # Create the hypnogram
+                        fig = visualizer.create_hypnogram_plot(signal, **params)
+
+                        # Generate output filename
+                        output = spec.get('output')
+                        if output:
+                            if len(signals) > 1:
+                                # Add signal index for multiple signals
+                                base, ext = os.path.splitext(output)
+                                output_file = f"{base}_{i}{ext}"
+                            else:
+                                output_file = output
+
+                            # Save the visualization
+                            visualizer.save(fig, output_file, format=output_file.split('.')[-1], **params) # Pass params for save options
+                        else:
+                            # Show the visualization
+                            visualizer.show(fig)
+
+                elif vis_type == 'time_series':
+                    # Existing logic for time_series plots
+                    visualizer.process_visualization_config(spec, self.container)
+
+                # Add other visualization types here (e.g., 'scatter', 'spectrogram') if needed
+                else:
+                     warnings.warn(f"Unsupported visualization type '{vis_type}' specified. Skipping.")
+
             except Exception as e:
-                self._handle_error(e)
+                self._handle_error(e, operation_name=f"visualization ({vis_type}, {backend})")

@@ -8,9 +8,12 @@ a unified interface for all visualization backends used in the sleep analysis fr
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Union, Tuple
 import pandas as pd
+from abc import abstractmethod # Added import
+from typing import Any, Dict, List, Optional # Added imports
 
 from ..core.signal_collection import SignalCollection
 from ..core.signal_data import SignalData
+from ..signals.eeg_sleep_stage_signal import EEGSleepStageSignal # Added import
 from ..signal_types import SignalType
 
 class VisualizerBase(ABC):
@@ -259,7 +262,111 @@ class VisualizerBase(ABC):
             figure: The figure to display
         """
         pass
-    
+
+    @abstractmethod
+    def visualize_hypnogram(self, figure: Any, signal: EEGSleepStageSignal, **kwargs) -> Any:
+        """
+        Create a sleep stage hypnogram visualization.
+
+        Args:
+            figure: The figure to add the hypnogram to
+            signal: The EEGSleepStageSignal object containing sleep stage data
+            **kwargs: Optional styling parameters
+
+        Returns:
+            Any visualization elements created
+        """
+        pass
+
+    @abstractmethod
+    def _add_statistics_annotation(self, figure: Any, stats_text: List[str], **kwargs) -> None:
+        """
+        Add statistics text annotation to a figure (backend-specific implementation).
+
+        Args:
+            figure: The figure to add the annotation to.
+            stats_text: A list of strings, where each string is a line of statistics.
+            **kwargs: Optional parameters for annotation styling and positioning.
+        """
+        pass
+
+    # --- High-Level Plot Creation Methods ---
+
+    def create_hypnogram_plot(self, signal: EEGSleepStageSignal, **kwargs) -> Any:
+        """
+        Create a hypnogram plot from an EEGSleepStageSignal.
+
+        Args:
+            signal: The EEGSleepStageSignal object containing sleep stage data
+            **kwargs: Optional visualization parameters
+                - title: Plot title
+                - width: Plot width
+                - height: Plot height
+                - stage_colors: Dict mapping stages to colors
+                - stage_order: List defining the order of stages on the y-axis
+                - add_statistics: Whether to add sleep statistics (default: True)
+
+        Returns:
+            A figure object with the hypnogram
+        """
+        # Create figure
+        fig = self.create_figure(
+            title=kwargs.get('title', 'Sleep Stages Hypnogram'),
+            width=kwargs.get('width', self.default_params.get('width')),
+            height=kwargs.get('height', self.default_params.get('height')),
+            x_axis_type='datetime'
+        )
+
+        # Add the hypnogram visualization
+        self.visualize_hypnogram(fig, signal, **kwargs)
+
+        # Set axis labels
+        self.set_axis_labels(
+            fig,
+            x_label=kwargs.get('x_label', 'Time'),
+            y_label=kwargs.get('y_label', 'Sleep Stage')
+        )
+
+        # Add sleep statistics if requested
+        if kwargs.get('add_statistics', True):
+            self._add_sleep_statistics(fig, signal, **kwargs)
+
+        return fig
+
+    def _add_sleep_statistics(self, figure: Any, signal: EEGSleepStageSignal, **kwargs) -> None:
+        """
+        Calculate and add sleep statistics to a hypnogram plot.
+
+        Args:
+            figure: The figure to add statistics to
+            signal: The EEGSleepStageSignal object containing sleep stage data
+            **kwargs: Optional parameters for statistics display
+        """
+        # Calculate statistics
+        stage_distribution = signal.get_stage_distribution()
+        if stage_distribution is None or stage_distribution.empty:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("No stage distribution data found, skipping statistics annotation.")
+            return
+
+        # Format statistics text
+        total_minutes = stage_distribution.sum()
+        stats_text = [f"Total recording time: {total_minutes:.1f} minutes"]
+
+        # Use the stage order from kwargs or default for consistent ordering
+        stage_order = kwargs.get('stage_order', ['Awake', 'REM', 'N1', 'N2', 'N3', 'Unknown'])
+        for stage in stage_order:
+            if stage in stage_distribution.index:
+                count = stage_distribution[stage]
+                percentage = (count / total_minutes * 100).round(1) if total_minutes > 0 else 0
+                stats_text.append(f"{stage}: {count:.1f} minutes ({percentage}%)")
+            # Optionally add entries for stages present in data but not in order
+            # Or handle 'Unknown' specifically if needed
+
+        # Add statistics based on backend type (implementation in concrete classes)
+        self._add_statistics_annotation(figure, stats_text, **kwargs)
+
     def create_time_series_plot(self, signal: SignalData, **kwargs) -> Any:
         """
         Create a time-series plot for a single signal.
@@ -271,6 +378,9 @@ class VisualizerBase(ABC):
         Returns:
             A backend-specific figure object
         """
+        import logging # Import logging
+        logger = logging.getLogger(__name__) # Get logger instance
+
         # Create figure
         figure = self.create_figure(**kwargs)
         
@@ -292,13 +402,19 @@ class VisualizerBase(ABC):
         # Apply downsampling if specified in kwargs (only for numerical)
         if not is_categorical and 'downsample' in kwargs:
             downsample_param = kwargs['downsample']
+            original_len = len(data) # Log original length
+            logger.debug(f"Signal '{signal.metadata.name or 'Unnamed'}': Checking downsample ({downsample_param}). Original points: {original_len}") # Removed (Col: {col})
+
             if isinstance(downsample_param, int) and downsample_param > 0:
                 # Interpret as max_points
                 max_points = downsample_param
-                if len(data) > max_points:
+                if original_len > max_points:
                     import numpy as np
-                    step = max(1, len(data) // max_points)
+                    step = max(1, original_len // max_points)
                     data = data.iloc[::step]
+                    logger.info(f"Signal '{signal.metadata.name or 'Unnamed'}': Downsampled from {original_len} to {len(data)} points (max: {max_points})") # Removed (Col: {col})
+                else:
+                    logger.debug(f"Signal '{signal.metadata.name or 'Unnamed'}': No downsampling needed ({original_len} <= {max_points})") # Removed (Col: {col})
             elif isinstance(downsample_param, float) and 0 < downsample_param < 1:
                  # Interpret as fraction (not implemented yet, could use resample)
                  pass # Placeholder for fractional downsampling
@@ -306,9 +422,10 @@ class VisualizerBase(ABC):
                  # Interpret as time frequency (e.g., '1S', '1T')
                  try:
                      data = data.resample(downsample_param).mean() # Or first(), median() etc.
+                     logger.info(f"Signal '{signal.metadata.name or 'Unnamed'}': Resampled from {original_len} to {len(data)} points using frequency '{downsample_param}'") # Removed (Col: {col})
                  except Exception as e:
-                     import logging
-                     logging.getLogger(__name__).warning(f"Could not apply time-based downsampling '{downsample_param}': {e}")
+                     # Logger already defined above, no need to import logging here
+                     logger.warning(f"Could not apply time-based downsampling '{downsample_param}': {e}")
 
         # Get color palette if available
         palette = kwargs.get('palette', self.default_params.get('palette', None))

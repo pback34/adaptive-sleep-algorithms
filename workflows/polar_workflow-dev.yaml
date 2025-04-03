@@ -131,7 +131,13 @@ steps:
   - type: collection
     operation: "align_signals"
     parameters:
-      target_sample_rate: 50.0  # Optional: Specify target rate (Hz). If omitted, uses max standard rate <= highest signal rate.
+      target_sample_rate: 10.0  # Optional: Specify target rate (Hz). If omitted, uses max standard rate <= highest signal rate.
+
+  # Apply the calculated alignment grid to all time-series signals in place
+  - type: collection
+    operation: "apply_grid_alignment"
+    parameters:
+      method: "nearest" # Use 'nearest' neighbor for alignment
 
 # Export section - defines the output formats and location
 export:
@@ -172,11 +178,11 @@ visualization:
       strict: false
       downsample: '1S' # Resample to 1-second frequency for visualization
 
-  # Create a grid layout with multiple signal types including sleep stage
+  # Create a grid layout with multiple signal types (including sleep stage)
   - type: time_series
-    signals: ["hr", "accel_magnitude", "accel_angle", "sleep_stage"] # Added sleep_stage
+    signals: ["hr", "accel_magnitude", "accel_angle", "sleep_stage_0"] # Added sleep_stage_0
     layout: grid
-    title: "Multivariate Signal Dashboard (with Sleep Stage)"
+    title: "Multivariate Signal Dashboard"
     output: "results/visualizations/multivariate_dashboard.html"
     backend: plotly
     parameters:
@@ -184,12 +190,12 @@ visualization:
       # height: 600
       link_x_axes: true  # Synchronize x-axes for time alignment
       strict: false
-      
+      downsample: 20000 # Limit each subplot to max 20,000 points for performance
   # Create a comprehensive plot with all signals (including sleep stage) in separate subplots
   - type: time_series
-    signals: ["hr", "accel_magnitude", "accel_angle", "sleep_stage"] # Added sleep_stage
+    signals: ["hr", "accel_magnitude", "accel_angle", "sleep_stage_0"] # Added sleep_stage_0
     layout: vertical
-    title: "All Signals Overview (with Sleep Stage) - Linked X-Axes"
+    title: "All Signals Overview - Linked X-Axes"
     output: "results/visualizations/all_signals_overview.html"
     backend: plotly
     parameters:
@@ -199,20 +205,4 @@ visualization:
       # height: 1800  # Taller to accommodate all subplots
       strict: false
 
-  # New plot: Sleep Stages with HR and Accelerometer Magnitude
-  - type: time_series
-    signals: ["hr_0", "accel_magnitude", "sleep_stage_0"] # Use specific indexed signals (accel_magnitude might not have index if only one source)
-    layout: vertical
-    title: "Sleep Stages with Heart Rate and Activity (Example)"
-    output: "results/visualizations/sleep_stage_dashboard.html"
-    backend: bokeh # Or bokeh
-    parameters:
-      link_x_axes: true
-      strict: false # Be lenient if index 0 doesn't exist for all
-      # Optional: Define custom colors for sleep stages if needed
-      # category_map: 
-      #   Awake: 'rgb(150, 150, 150)'
-      #   N1: 'rgb(173, 216, 230)'
-      #   N2: 'rgb(0, 0, 255)'
-      #   N3: 'rgb(0, 0, 139)'
-      #   REM: 'rgb(128, 0, 128)'
+# Removed standalone hypnogram plot configuration

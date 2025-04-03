@@ -22,6 +22,7 @@ except ImportError:
     )
 
 from .base import VisualizerBase
+from ..signals.eeg_sleep_stage_signal import EEGSleepStageSignal # Added import
 
 class PlotlyVisualizer(VisualizerBase):
     """
@@ -91,9 +92,11 @@ class PlotlyVisualizer(VisualizerBase):
         # Set axis types if specified
         x_axis_type = kwargs.get('x_axis_type')
         y_axis_type = kwargs.get('y_axis_type')
-        
+
         if x_axis_type:
-            fig.update_xaxes(type=x_axis_type)
+            # Map 'datetime' to 'date' for Plotly
+            plotly_x_type = 'date' if x_axis_type == 'datetime' else x_axis_type
+            fig.update_xaxes(type=plotly_x_type)
         if y_axis_type:
             fig.update_yaxes(type=y_axis_type)
         
@@ -972,3 +975,167 @@ class PlotlyVisualizer(VisualizerBase):
             figure: The Plotly figure to display
         """
         figure.show()
+
+    def visualize_hypnogram(self, figure: Any, signal: EEGSleepStageSignal, **kwargs) -> Any:
+        """
+        Create a sleep stage hypnogram visualization using Plotly filled scatters.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Merge default parameters with provided kwargs
+        params = {**self.default_params, **kwargs}
+
+        # Extract data from signal
+        df = signal.get_data()
+        stage_column = 'sleep_stage'
+        if stage_column not in df.columns:
+            logger.warning("Sleep stage column not found in data")
+            return None
+
+        # Define stage order and mapping to numeric values (include 'Unknown')
+        default_order = ['Awake', 'REM', 'N1', 'N2', 'N3', 'Unknown']
+        stage_order = params.get('stage_order', default_order)
+        stage_to_num = {stage: i for i, stage in enumerate(stage_order)}
+        num_stages = len(stage_order)
+
+        # Define colors for each stage (fallback to default palette if not provided)
+        default_colors = {
+            'Awake': '#FF5733',  # Orange-red
+            'N1': '#33A8FF',     # Light blue
+            'N2': '#3358FF',     # Medium blue
+            'N3': '#0D0C8A',     # Dark blue
+            'REM': '#AA33FF',    # Purple
+            'Unknown': '#CCCCCC' # Grey for Unknown/Other
+        }
+        # Ensure default colors cover the default order
+        colorscale = params.get('colorscale', self.default_params.get('colorscale', 'Plotly'))
+        if hasattr(px.colors.qualitative, colorscale):
+             palette = getattr(px.colors.qualitative, colorscale)
+        else:
+             palette = px.colors.qualitative.Plotly # Fallback palette
+
+        for i, stage in enumerate(stage_order):
+             if stage not in default_colors:
+                 default_colors[stage] = palette[i % len(palette)]
+
+        stage_colors = params.get('stage_colors', default_colors)
+
+        # --- Data Processing for Plotly Filled Area ---
+        # Create a timeline with start/end points for each segment
+        timeline = []
+        for i in range(len(df)):
+            stage = df[stage_column].iloc[i]
+            # Map unexpected stages to 'Unknown'
+            if stage not in stage_to_num:
+                logger.debug(f"Mapping stage '{stage}' to 'Unknown'")
+                stage = 'Unknown'
+
+            stage_num = stage_to_num[stage]
+            time = df.index[i]
+
+            # Add point for this time
+            timeline.append({'time': time, 'stage': stage, 'stage_num': stage_num})
+
+            # Add point for the *next* time step to define the segment end
+            # This creates the step-like appearance
+            if i < len(df) - 1:
+                next_time = df.index[i+1]
+                timeline.append({'time': next_time, 'stage': stage, 'stage_num': stage_num})
+            else:
+                # For the last segment, estimate end time (e.g., add typical epoch duration)
+                # Or use the last timestamp if duration is not critical for visualization end
+                # Here, we just duplicate the last point's time for simplicity
+                 timeline.append({'time': time, 'stage': stage, 'stage_num': stage_num})
+
+
+        # Sort timeline by time (important for plotting)
+        timeline = sorted(timeline, key=lambda x: x['time'])
+
+        # Create processed data structure for plotting
+        processed_data = {'time': [item['time'] for item in timeline]}
+        for stage in stage_order:
+            # Create a column for each stage: height = num_stages - stage_num when active, 0 otherwise
+            # This plots 'Awake' at the top (y=num_stages), 'N3' near the bottom (y=1)
+            processed_data[stage] = [
+                (num_stages - item['stage_num']) if item['stage'] == stage else 0
+                for item in timeline
+            ]
+        # --- End Data Processing ---
+
+        # Add filled area traces for each stage
+        traces = []
+        for stage in stage_order:
+            trace = go.Scatter(
+                x=processed_data['time'],
+                y=processed_data[stage],
+                mode='lines',
+                line=dict(width=0), # No line, just fill
+                fill='tozeroy',     # Fill down to y=0
+                fillcolor=stage_colors.get(stage, '#CCCCCC'),
+                name=stage,
+                hoverinfo='name+x', # Show stage name and time on hover
+                hoverlabel=dict(namelength=-1),
+                showlegend=True # Ensure legend items are created
+            )
+            figure.add_trace(trace)
+            traces.append(trace)
+
+        # Update y-axis to show stage names correctly ordered
+        # Tick values correspond to the 'height' calculated (1 to num_stages)
+        # Tick text corresponds to the stage names in the desired order
+        figure.update_yaxes(
+            tickvals=list(range(1, num_stages + 1)),
+            ticktext=list(reversed(stage_order)), # Reverse order to match plotting height
+            range=[0, num_stages + 0.5] # Set range from 0 to slightly above top stage
+        )
+
+        return traces # Return the list of traces added
+
+    def _add_statistics_annotation(self, figure: Any, stats_text: List[str], **kwargs) -> None:
+        """Add sleep statistics annotation using Plotly annotations."""
+        # Combine default parameters with provided kwargs
+        params = {**self.default_params, **kwargs}
+
+        # Extract annotation parameters
+        x = params.get('stats_x', 0.01)
+        y = params.get('stats_y', 0.01)
+        xref = params.get('stats_xref', 'paper')
+        yref = params.get('stats_yref', 'paper')
+        align = params.get('stats_align', 'left')
+        font_size_param = params.get('stats_font_size', 10) # Get the parameter
+        bgcolor = params.get('stats_bg_color', 'rgba(255, 255, 255, 0.8)')
+        border_color = params.get('stats_border_color', 'black')
+        border_width = params.get('stats_border_width', 1)
+        border_pad = params.get('stats_border_pad', 4)
+
+        # Join the list of strings with HTML line breaks for Plotly
+        annotation_text = "<br>".join(stats_text)
+
+        # --- Convert font size to number ---
+        font_size = 10 # Default numeric font size
+        if isinstance(font_size_param, (int, float)):
+            font_size = font_size_param
+        elif isinstance(font_size_param, str):
+            try:
+                # Remove 'pt', 'px', etc. and convert to float then int
+                font_size = int(float(font_size_param.lower().replace('pt', '').replace('px', '').strip()))
+            except ValueError:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Could not parse stats_font_size '{font_size_param}' as number. Using default {font_size}.")
+        # --- End font size conversion ---
+
+        # Add the annotation
+        figure.add_annotation(
+            xref=xref, yref=yref,
+            x=x, y=y,
+            text=annotation_text,
+            showarrow=False,
+            font=dict(size=font_size),
+            align=align,
+            bgcolor=bgcolor,
+            bordercolor=border_color,
+            borderwidth=border_width,
+            borderpad=border_pad
+        )
