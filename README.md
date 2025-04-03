@@ -4,13 +4,15 @@ A flexible, extensible framework for processing sleep-related signals, designed 
 
 ## Key Features
 
-- **Type-Safe Signal Processing**: Enum-based type safety ensures operations match signal types
-- **Complete Traceability**: Full metadata and operation history for reproducibility
-- **Memory Optimization**: Smart memory management for processing large datasets efficiently
-- **Flexible Workflows**: Support for both structured workflows and ad-hoc processing
-- **Extensible Design**: Easy to add new signal types and processing operations
-- **Import Flexibility**: Convert signals from various sources to a standardized format
-- **Interactive Visualization**: Backend-agnostic visualization layer with support for Bokeh and Plotly
+- **Type-Safe Signal Processing**: Enum-based type safety ensures operations match signal types.
+- **Complete Traceability**: Full metadata and operation history for reproducibility.
+- **Memory Optimization**: Smart memory management for processing large datasets efficiently.
+- **Flexible Workflows**: Support for both structured workflows and ad-hoc processing.
+- **Extensible Design**: Easy to add new signal types and processing operations.
+- **Import Flexibility**: Convert signals from various sources to a standardized format.
+- **Modular Importer System**: Easily add support for new file formats or sensor types, including handling fragmented data files via `MergingImporter`.
+- **Robust Timestamp Handling**: Consistent management of timezones across import, processing, and export.
+- **Interactive Visualization**: Backend-agnostic visualization layer with support for Bokeh and Plotly.
 
 ## Installation
 
@@ -71,35 +73,63 @@ python -m sleep_analysis.cli.run_workflow --workflow workflows/polar_workflow.ya
 
 ### Creating Workflow Files
 
-Workflow files are YAML documents with four main sections:
-1. `import` - Data import specifications
-2. `steps` - Processing operations to apply
-3. `export` - Output format and location
-4. `visualization` - Data visualization specifications
+Workflow files are YAML documents with several key sections:
 
-Example of basic workflow:
+1.  **Top-Level Settings**: Define global parameters like timezones.
+    *   `default_input_timezone`: (Optional) The assumed timezone for naive timestamps in source files if not specified per importer (e.g., "America/New_York"). If omitted, naive timestamps might be treated as UTC.
+    *   `target_timezone`: (Optional) The target timezone for all processed signals (e.g., "UTC", "Europe/London", or "system" to use the local machine's timezone). Defaults to "UTC".
+2.  `import`: Data import specifications. Define how raw data is loaded.
+3.  `steps`: Processing operations to apply to signals or the entire collection.
+4.  `export`: Output format and location.
+5.  `visualization`: Data visualization specifications.
+
+Example workflow demonstrating timezone handling and importer wrapping:
+
 ```yaml
+# Top-level settings
+default_input_timezone: "America/New_York" # Assume naive timestamps are US Eastern
+target_timezone: "UTC"                     # Convert all signals to UTC
+
 import:
-  - signal_type: "heart_rate"
-    importer: "MergingImporter"
-    source: "."
+  - signal_type: "EEG_SLEEP_STAGE"
+    importer: "EnchantedWaveImporter"      # Importer for specific device format
+    source: "session_data/subject1"
     config:
-      file_pattern: "Polar_H10_*_HR.txt"
-      timestamp_col: "Phone timestamp"
-    base_name: "hr_h10_merged"
+      # No origin_timezone needed here, EnchantedWaveImporter reads it from file
+      # or uses default_input_timezone if file doesn't specify offset.
+      filename_pattern: "Session_(?P<session_id>\\d+).csv" # Extract metadata from filename
+    base_name: "eeg_stages"
+
+  - signal_type: "heart_rate"
+    importer: "MergingImporter"            # Use MergingImporter to combine files
+    source: "hr_data/subject1"
+    config:
+      importer_name: "PolarCSVImporter"    # Wrap Polar importer to handle file format
+      file_pattern: "Polar_H10_.*_HR.txt"  # Pattern for files to merge
+      # origin_timezone: "Europe/Berlin"   # Override default_input_timezone for this source
+      # column_mapping, delimiter etc. are passed to the underlying PolarCSVImporter config
+    base_name: "hr_polar" # Signals will be named hr_polar_0, hr_polar_1, etc.
 
 steps:
+  # Align all time-series signals to a common grid (calculates alignment parameters)
+  - type: collection
+    operation: align_signals
+    # parameters:
+    #   target_sample_rate: 100 # Optional: force a specific rate
+
+  # Apply a filter to a specific signal
   - type: signal
-    input: "hr_h10_merged_0"
+    input: "hr_polar_merged_0"
     operation: "filter_lowpass"
     parameters:
-      cutoff_frequency: 0.5
-    output: "hr_h10_filtered"
+      cutoff: 0.5 # Parameter name might vary based on operation
+    output: "hr_polar_filtered"
 
 export:
-  formats: ["csv"]
-  output_dir: "results/polar_data"
-  include_combined: true
+  formats: ["csv", "excel"]
+  output_dir: "results/subject1_analysis"
+  include_combined: true # Export a combined dataframe of all non-temporary signals
+  index_config: ["name", "signal_type"] # Configure MultiIndex for combined export
 ```
 
 ### Visualization
@@ -168,18 +198,68 @@ The visualizer will create the specified plots and save them to the output paths
 
 ## Project Structure
 
-- `src/sleep_analysis/core/`: Base classes and metadata structures
-- `src/sleep_analysis/signals/`: Signal type implementations
-- `src/sleep_analysis/importers/`: Data import modules
-- `src/sleep_analysis/operations/`: Signal processing operations
-- `src/sleep_analysis/workflows/`: Workflow execution
-- `src/sleep_analysis/visualization/`: Visualization infrastructure
-  - `base.py`: Base abstract class defining visualization interface
-  - `bokeh_visualizer.py`: Bokeh implementation
-  - `plotly_visualizer.py`: Plotly implementation
-- `src/sleep_analysis/utils/`: Utility functions
+- `src/sleep_analysis/core/`: Base classes (`SignalData`, `SignalCollection`), metadata structures (`SignalMetadata`, `CollectionMetadata`), and `MetadataHandler`.
+- `src/sleep_analysis/signals/`: Concrete signal type implementations (e.g., `PPGSignal`, `TimeSeriesSignal`, `EEGSleepStageSignal`).
+- `src/sleep_analysis/importers/`: Data import modules (`base.py`, `formats/csv.py`, `sensors/polar.py`, `merging.py`).
+- `src/sleep_analysis/operations/`: Signal processing operations (registered with signal classes via `@SignalClass.register`).
+- `src/sleep_analysis/workflows/`: Workflow execution logic (`WorkflowExecutor`).
+- `src/sleep_analysis/visualization/`: Visualization infrastructure (`base.py`, `BokehVisualizer`, `PlotlyVisualizer`).
+- `src/sleep_analysis/export/`: Data export module (`ExportModule`).
+- `src/sleep_analysis/utils/`: Utility functions (logging, `standardize_timestamp`, enum conversion).
+- `src/sleep_analysis/cli/`: Command-line interface (`run_workflow.py`).
 
 ## Advanced Usage
+
+### Timestamp Handling and Timezones
+
+The framework employs a robust strategy for handling timestamps and timezones:
+
+1.  **Internal Representation**: All `TimeSeriesSignal` objects internally use timezone-aware `pandas.DatetimeIndex`.
+2.  **Target Timezone**: The `target_timezone` setting in the workflow (or the default "UTC") defines the timezone all signals will be converted to during import or processing. You can use specific timezones (e.g., "Europe/Paris") or "system" to use the local machine's timezone.
+3.  **Input Timezones**:
+    *   **Aware Sources**: If source data includes timezone information (e.g., ISO 8601 format with offset), it's used directly.
+    *   **Naive Sources**: If source data has naive timestamps (no timezone info), the framework needs guidance:
+        *   `origin_timezone`: Specify this in the importer's `config` section within the workflow to declare the source's local timezone (e.g., `origin_timezone: "America/Denver"`).
+        *   `default_input_timezone`: Set this at the top level of the workflow as a fallback if an importer doesn't specify `origin_timezone`.
+        *   **Ambiguity**: If timestamps are naive and neither `origin_timezone` nor `default_input_timezone` is provided, the framework will likely assume UTC, which might lead to incorrect alignment if the data originated elsewhere. A warning will be issued.
+4.  **Standardization**: A central `standardize_timestamp` utility handles parsing, localization of naive timestamps (using `origin_timezone`), and conversion to the `target_timezone`.
+5.  **Export**: Timestamps are formatted appropriately for export (e.g., timezone removed for Excel, ISO format with offset for CSV/JSON).
+
+### Signal Alignment and Combined DataFrames
+
+-   **`align_signals` Step**: This collection-level operation (run via the `steps` section) **calculates** alignment parameters (`target_rate`, `ref_time`, `grid_index`) based on all time-series signals present. It determines a common sampling grid but **does not modify** the signals themselves. The calculated parameters are stored on the `SignalCollection` instance.
+-   **`get_combined_dataframe()`**: This method (used internally by the `ExportModule` when `include_combined: true`) generates a single DataFrame containing data from multiple signals, **applying** the alignment.
+    *   It uses the pre-calculated alignment parameters (`target_rate`, `ref_time`, `grid_index`) from `align_signals` if available. If not, it creates a grid based on the unique timestamps across all signals.
+    *   It uses `pandas.merge_asof` with `direction='nearest'` and a tolerance (half the grid period, if a regular grid exists) to align each signal's data points to the common grid index. This method avoids simple resampling and preserves original values by finding the nearest data point within the tolerance window.
+    *   The resulting DataFrame can have simple columns (`key_colname`) or a `pandas.MultiIndex` if `index_config` is set in the `export` section.
+
+### Metadata Management
+
+-   **`SignalMetadata` & `CollectionMetadata`**: Dataclasses defined in `core/metadata.py` store structured information about individual signals (type, sensor, operations, source files) and the overall collection (subject, session, timezone).
+-   **`MetadataHandler`**: A helper class (`core/metadata_handler.py`) ensures consistent creation and updating of `SignalMetadata`, handling defaults and unique ID generation. Each `SignalData` instance holds a reference to a handler.
+-   **Traceability**: Operations applied to signals are recorded in `SignalMetadata.operations`, providing a history for reproducibility. The `derived_from` field links signals to their parent signals and the operation that created them.
+
+### Importers
+
+-   **Hierarchy**: Importers inherit from `SignalImporter` (`importers/base.py`). Format-specific bases like `CSVImporterBase` (`importers/formats/csv.py`) provide common logic. Concrete importers like `PolarCSVImporter` or `EnchantedWaveImporter` (`importers/sensors/`) handle specific device formats.
+-   **Configuration**: Importers are typically configured via the `config` section in the workflow `import` step. This allows specifying column mappings, time formats, delimiters, etc.
+-   **`MergingImporter`**: A specialized importer (`importers/merging.py`) that can wrap another importer (specified via `importer_name` in its config). It finds files matching a `file_pattern`, uses the underlying importer to read each file, and then merges the resulting data into a single `SignalData` instance. This is useful for data fragmented across multiple files.
+-   **Timestamp Handling**: Importers use the centralized `standardize_timestamp` utility (`utils/__init__.py`) to parse timestamps, handle naive timestamps using `origin_timezone` and `default_input_timezone`, and convert everything to the `target_timezone`.
+
+### Extensibility
+
+-   **Adding New Signal Types**:
+    1.  Define a new `Enum` value in `SignalType` (`signal_types.py`).
+    2.  Create a new class inheriting from `SignalData` or `TimeSeriesSignal` (`signals/`).
+    3.  Set the `signal_type` class attribute to the new enum value.
+    4.  Define `required_columns` for the signal.
+    5.  Implement any specific methods needed for this signal type.
+-   **Adding New Operations**:
+    1.  Define a function that takes a list of DataFrames (`data_list`) and a parameters dictionary (`parameters`) and returns the resulting DataFrame.
+    2.  Register the function with the relevant signal class using the `@SignalClass.register("operation_name", output_class=...)` decorator. The `output_class` specifies the type of signal the operation produces (defaults to the class it's registered with).
+    3.  The operation can then be called using `signal.apply_operation("operation_name", ...)` or specified in the `steps` section of a workflow.
+
+### Visualization Configuration Options
 
 ### Visualization Configuration Options
 
@@ -214,6 +294,14 @@ The visualizer will create the specified plots and save them to the output paths
     fill_color: "blue"
     opacity: 0.7
 ```
+
+#### Categorical Data (e.g., Sleep Stages)
+- Time series plots automatically handle categorical data (like `EEGSleepStageSignal`) by default:
+  - Plotting as a stepped line.
+  - Mapping categories to numerical values for plotting.
+  - Setting appropriate y-axis labels and tick marks.
+- You can customize the appearance using `category_map` in the `parameters` section to define specific colors for each category.
+- Categorical regions can also be added explicitly using `add_categorical_regions` (though this is less common for direct signal plotting).
 
 #### Grid Layouts
 ```yaml
