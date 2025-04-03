@@ -47,10 +47,10 @@ class EnchantedWaveImporter(CSVImporterBase):
             self.config["column_mapping"] = {
                 # Standard Name : Source Name (from file)
                 "timestamp": "Time", # Keep 'Time' as potential primary, fallback handled in _parse_csv
-                "seconds": "seconds",
-                "sleep_stage": "sleep_stage",
-                "sum_power": "sum_power",
-                "eeg_quality": "eeg_quality"
+                "seconds": "Seconds", # Corrected case
+                "sleep_stage": "SleepStage", # Corrected case
+                "sum_power": "SumPower", # Corrected case
+                "eeg_quality": "EegQuality" # Corrected case
             }
         # Enchanted Wave uses a specific header structure, not a simple CSV header row
         self.config["header"] = None # Header is determined dynamically
