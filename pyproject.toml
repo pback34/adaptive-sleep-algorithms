@@ -16,10 +16,26 @@ dependencies = [
     "pyyaml>=6.0",
     "dataclasses-json>=0.5.7",
     "typing-extensions>=4.0.0",
+    "tzlocal>=4.0", # For system timezone detection
+    "openpyxl>=3.0.0", # For Excel export (.xlsx)
 ]
 
 [project.optional-dependencies]
+vis = [
+    "bokeh>=3.0.0",
+    "plotly>=5.0.0",
+]
+export = [
+    "h5py>=3.0.0", # For HDF5 export
+]
+export-extra = [
+    "cairosvg>=2.5.0", # For PDF export via Bokeh/Plotly
+    "svgwrite>=1.4.0", # For SVG export via Bokeh/Plotly
+    "selenium>=4.0.0", # For PNG export via Bokeh
+    # Note: PNG export with Bokeh/Selenium also requires a webdriver (e.g., geckodriver or chromedriver) installed separately.
+]
 dev = [
+    "sleep_analysis[vis,export,export-extra]", # Include all optional dependencies
     "pytest>=7.0.0",
     "pytest-cov>=2.12.0",
     "black>=22.1.0",
