@@ -994,14 +994,62 @@ class SignalCollection:
 
          return combined_df # Ensure dataframe is always returned
 
+    def generate_and_store_aligned_dataframe(self, force_recalculation: bool = False) -> None:
+        """
+        Generates the combined, aligned dataframe and stores it internally.
+
+        Uses the parameters calculated by align_signals (grid_index, target_rate, ref_time).
+        If the dataframe already exists and force_recalculation is False, does nothing.
+
+        Args:
+            force_recalculation: If True, recalculates even if it already exists.
+        """
+        if self._aligned_dataframe is not None and not force_recalculation:
+            logger.info("Aligned dataframe already exists. Skipping generation.")
+            return
+
+        # 1. Ensure alignment parameters exist
+        if not hasattr(self, 'grid_index') or self.grid_index is None or self.grid_index.empty:
+            logger.error("Cannot generate aligned dataframe: align_signals parameters not set or invalid.")
+            raise RuntimeError("align_signals must be run successfully before generating the aligned dataframe.")
+
+        logger.info("Generating and storing the aligned dataframe...")
+        # 2. Reuse the core logic from _calculate_combined_dataframe()
+        combined_df = self._calculate_combined_dataframe() # Call the refactored logic
+
+        # 3. Store the result and the parameters used
+        self._aligned_dataframe = combined_df
+        self._aligned_dataframe_params = {
+            "target_rate": self.target_rate,
+            "ref_time": self.ref_time,
+            "grid_index_size": len(self.grid_index),
+            "grid_start": self.grid_index.min(),
+            "grid_end": self.grid_index.max(),
+            "tolerance": self._merge_tolerance # Use the stored tolerance
+        }
+        logger.info(f"Stored aligned dataframe with shape {self._aligned_dataframe.shape}")
+
+    def get_stored_aligned_dataframe(self) -> Optional[pd.DataFrame]:
+        """Returns the internally stored aligned dataframe, if generated."""
+        if self._aligned_dataframe is None:
+             logger.warning("Stored aligned dataframe has not been generated yet.")
+        return self._aligned_dataframe
+
+    def get_aligned_dataframe_params(self) -> Optional[Dict[str, Any]]:
+         """Returns the parameters used to generate the stored aligned dataframe."""
+         if self._aligned_dataframe_params is None:
+              logger.warning("Stored aligned dataframe parameters are not available (dataframe not generated).")
+         return self._aligned_dataframe_params
+
 
     def get_combined_dataframe(self) -> pd.DataFrame:
         """
-        Combine all signals into a single dataframe.
-        
-        Creates a combined dataframe with a regular grid determined by align_signals,
-        preserving the exact timestamps and only including rows where data exists.
-        
+        Generates and returns the combined dataframe ON THE FLY.
+
+        This method is for cases where you need the combined data immediately
+        without storing it persistently in the collection. It calls the internal
+        calculation helper.
+
         Returns:
             pd.DataFrame: Combined dataframe with aligned signals.
         """
