@@ -139,6 +139,11 @@ steps:
     parameters:
       method: "nearest" # Use 'nearest' neighbor for alignment
 
+  # Generate and store the combined aligned dataframe internally
+  - type: collection
+    operation: "generate_and_store_aligned_dataframe"
+    parameters: {} # No parameters needed for this operation
+
 # Export section - defines the output formats and location
 export:
   formats: ["csv"]
