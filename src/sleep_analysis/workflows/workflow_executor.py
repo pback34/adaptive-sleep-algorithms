@@ -160,39 +160,48 @@ class WorkflowExecutor:
                 if not operation:
                     raise ValueError(f"Collection operation '{operation_name}' not found on SignalCollection")
 
-                # Call the collection operation with parameters
-                # For align_signals, we only pass target_sample_rate if specified
-                if operation_name == 'align_signals':
+                # --- Map workflow operation names to new SignalCollection methods ---
+                if operation_name == 'generate_alignment_grid':
+                    # Pass target_sample_rate if specified
+                    op_params = {}
+                    if 'target_sample_rate' in parameters:
+                         op_params['target_sample_rate'] = parameters['target_sample_rate']
+                    result = operation(**op_params) # Calls collection.generate_alignment_grid()
+                elif operation_name == 'apply_grid_alignment':
+                    # Pass method if specified
+                    op_params = {}
+                    if 'method' in parameters:
+                         op_params['method'] = parameters['method']
+                    result = operation(**op_params) # Calls collection.apply_grid_alignment()
+                elif operation_name == 'combine_aligned_signals':
+                    result = operation(**parameters) # Calls collection.combine_aligned_signals()
+                elif operation_name == 'align_and_combine_signals':
+                    result = operation(**parameters) # Calls collection.align_and_combine_signals()
+                # --- Deprecated operations ---
+                elif operation_name == 'align_signals':
+                     logger.warning("Workflow operation 'align_signals' is deprecated. Use 'generate_alignment_grid' instead.")
+                     # Map to new method for backward compatibility (optional)
                      op_params = {}
                      if 'target_sample_rate' in parameters:
                           op_params['target_sample_rate'] = parameters['target_sample_rate']
-                     result = operation(**op_params)
+                     result = self.container.generate_alignment_grid(**op_params)
+                elif operation_name == 'generate_and_store_aligned_dataframe':
+                     logger.warning("Workflow operation 'generate_and_store_aligned_dataframe' is deprecated. Use 'combine_aligned_signals' or 'align_and_combine_signals' instead.")
+                     # Cannot directly map; depends on whether apply_grid_alignment was run.
+                     # For now, just log warning. A more robust solution might check prior steps.
+                     logger.error("Cannot automatically map 'generate_and_store_aligned_dataframe'. Please update workflow.")
+                     result = None # Indicate failure or skip
                 else:
-                     # For other collection operations, pass all parameters
+                     # For other potential collection operations, pass all parameters
                      result = operation(**parameters)
 
-                # Collection operations typically return self or None,
-                # and don't produce a new signal to be added under 'output'.
                 # Log the completion.
-                import logging
-                logger = logging.getLogger(__name__)
                 logger.debug(f"Collection operation '{operation_name}' executed.")
-                # No need to handle 'output' or 'inplace' for collection ops like align_signals
+                # No need to handle 'output' or 'inplace' for these collection ops
 
-            # Handle multi-signal operations
-            elif "inputs" in step:
-                    # Check if the result is a SignalData before adding it as a signal
-                    from ..core.signal_data import SignalData
-                    if isinstance(result, SignalData):
-                        self.container.add_signal(output_name, result)
-                    else:
-                        # When a collection operation returns the collection itself,
-                        # we don't need to add it as a signal
-                        import logging
-                        logger = logging.getLogger(__name__)
-                        logger.debug(f"Collection operation '{operation_name}' returned {type(result).__name__}, not adding as signal")
-                    
-            # Handle multi-signal operations
+            # Handle multi-signal operations (This block seems duplicated, check logic)
+            # Assuming the first 'elif "inputs" in step:' block was intended for collection results
+            # and this second one is for actual multi-signal operations.
             elif "inputs" in step:
                 if inplace:
                     raise ValueError("Inplace operations not supported for multi-signal steps")

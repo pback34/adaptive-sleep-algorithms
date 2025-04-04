@@ -124,27 +124,26 @@ steps:
     input: "accel"  # Base name for all accelerometer signals
     operation: "compute_angle"
     output: "accel_angle"
-    
-  # Align signals to the same time grid
-  # Align signals - calculates alignment parameters (target_rate, ref_time, grid_index)
-  # The actual alignment happens during get_combined_dataframe or export.
+
+  # Step 1: Calculate alignment grid parameters
   - type: collection
-    operation: "align_signals"
+    operation: "generate_alignment_grid"
     parameters:
       target_sample_rate: 10.0  # Optional: Specify target rate (Hz). If omitted, uses max standard rate <= highest signal rate.
 
-  # Apply the calculated alignment grid to all time-series signals in place
+  # Step 2: Apply the calculated alignment grid to all time-series signals in place
   - type: collection
     operation: "apply_grid_alignment"
     parameters:
       method: "nearest" # Use 'nearest' neighbor for alignment
 
-  # Generate and store the combined aligned dataframe internally
+  # Step 3: Combine the now-aligned signals using concatenation and store the result
   - type: collection
-    operation: "generate_and_store_aligned_dataframe"
+    operation: "combine_aligned_signals"
     parameters: {} # No parameters needed for this operation
 
 # Export section - defines the output formats and location
+# The exporter will now retrieve the dataframe stored by combine_aligned_signals
 export:
   formats: ["csv"]
   output_dir: "results/polar_data"
