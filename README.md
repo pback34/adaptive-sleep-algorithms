@@ -12,7 +12,7 @@ A flexible, extensible framework for processing sleep-related signals, designed 
 - **Import Flexibility**: Convert signals from various sources to a standardized format.
 - **Modular Importer System**: Easily add support for new file formats or sensor types, including handling fragmented data files via `MergingImporter`.
 - **Robust Timestamp Handling**: Consistent management of timezones across import, processing, and export.
-- **Interactive Visualization**: Backend-agnostic visualization layer with support for Bokeh and Plotly.
+- **Interactive Visualization**: Backend-agnostic visualization layer with support for Bokeh and Plotly, including specialized plots like hypnograms.
 
 ## Installation
 
@@ -138,10 +138,11 @@ The framework provides a powerful visualization abstraction layer that supports 
 
 #### Supported Visualization Types
 
-- **Time Series Plots**: Display one or more signals over time
-- **Scatter Plots**: Compare two signals against each other
-- **Heatmaps**: Visualize 2D data like spectrograms
-- **Multi-panel Layouts**: Arrange multiple plots in grid, vertical, or horizontal layouts
+- **Time Series Plots**: Display one or more signals over time. Automatically handles numerical and categorical data (e.g., sleep stages plotted as stepped lines). Supports downsampling via `max_points` or time frequency string (e.g., `'1S'`).
+- **Hypnograms**: Specialized visualization for sleep stage data (`EEGSleepStageSignal`), showing stages over time with optional sleep statistics.
+- **Scatter Plots**: Compare two signals against each other.
+- **Heatmaps**: Visualize 2D data like spectrograms.
+- **Multi-panel Layouts**: Arrange multiple plots in grid, vertical, or horizontal layouts, with options for linked axes.
 
 #### Visualization Configuration
 
@@ -172,6 +173,20 @@ visualization:
     parameters:
       marker_size: 10
       marker_color: "red"
+
+  # Create a hypnogram plot for a sleep stage signal
+  - type: hypnogram # Specific type for sleep stage visualization
+    signal: "sleep_stage_0" # Key of the EEGSleepStageSignal
+    title: "Sleep Hypnogram - Subject 1"
+    output: "results/plots/hypnogram_subject1.html"
+    backend: plotly
+    parameters:
+      width: 1000
+      height: 400
+      add_statistics: true # Display calculated sleep statistics on the plot
+      # Optional: Customize stage colors and order
+      # stage_colors: { Awake: 'red', REM: 'purple', ... }
+      # stage_order: [ Awake, REM, N1, N2, N3, Unknown ]
 ```
 
 #### Backend-Specific Features
@@ -228,9 +243,10 @@ The framework employs a robust strategy for handling timestamps and timezones:
 ### Signal Alignment and Combined DataFrames
 
 -   **`align_signals` Step**: This collection-level operation (run via the `steps` section) **calculates** alignment parameters (`target_rate`, `ref_time`, `grid_index`) based on all time-series signals present. It determines a common sampling grid but **does not modify** the signals themselves. The calculated parameters are stored on the `SignalCollection` instance.
--   **`get_combined_dataframe()`**: This method (used internally by the `ExportModule` when `include_combined: true`) generates a single DataFrame containing data from multiple signals, **applying** the alignment.
-    *   It uses the pre-calculated alignment parameters (`target_rate`, `ref_time`, `grid_index`) from `align_signals` if available. If not, it creates a grid based on the unique timestamps across all signals.
-    *   It uses `pandas.merge_asof` with `direction='nearest'` and a tolerance (half the grid period, if a regular grid exists) to align each signal's data points to the common grid index. This method avoids simple resampling and preserves original values by finding the nearest data point within the tolerance window.
+-   **`apply_grid_alignment` Step**: This collection-level operation **applies** the previously calculated grid alignment to the specified signals (or all time-series signals if none specified) **in place**. It modifies the internal data of each `TimeSeriesSignal` by calling its `reindex_to_grid` operation, which uses the collection's `grid_index` and a specified method (e.g., 'nearest', 'ffill'). The operation is recorded in each signal's metadata.
+-   **`generate_and_store_aligned_dataframe` Step**: This collection-level operation generates the combined, aligned dataframe using the parameters from `align_signals` and **stores it persistently** within the `SignalCollection` instance. This avoids recalculating the potentially large dataframe multiple times (e.g., for export and visualization). The stored dataframe can be accessed programmatically via `collection.get_stored_aligned_dataframe()`.
+-   **`get_combined_dataframe()`**: This method generates and returns the combined dataframe **on the fly** each time it's called. It uses the alignment parameters from `align_signals` if available. This is used internally by the `ExportModule` when `include_combined: true` if the dataframe hasn't been pre-generated and stored.
+    *   Alignment uses `pandas.merge_asof` with `direction='nearest'` and a tolerance (half the grid period, if a regular grid exists) to align each signal's data points to the common grid index. This method avoids simple resampling and preserves original values by finding the nearest data point within the tolerance window.
     *   The resulting DataFrame can have simple columns (`key_colname`) or a `pandas.MultiIndex` if `index_config` is set in the `export` section.
 
 ### Metadata Management
@@ -257,9 +273,7 @@ The framework employs a robust strategy for handling timestamps and timezones:
 -   **Adding New Operations**:
     1.  Define a function that takes a list of DataFrames (`data_list`) and a parameters dictionary (`parameters`) and returns the resulting DataFrame.
     2.  Register the function with the relevant signal class using the `@SignalClass.register("operation_name", output_class=...)` decorator. The `output_class` specifies the type of signal the operation produces (defaults to the class it's registered with).
-    3.  The operation can then be called using `signal.apply_operation("operation_name", ...)` or specified in the `steps` section of a workflow.
-
-### Visualization Configuration Options
+    3.  The operation can then be called using `signal.apply_operation("operation_name", ...)` or specified in the `steps` section of a workflow. Example: `reindex_to_grid` is registered on `TimeSeriesSignal`.
 
 ### Visualization Configuration Options
 
@@ -281,6 +295,8 @@ The framework employs a robust strategy for handling timestamps and timezones:
     max_points: 10000  # Downsample for better performance
     line_width: 2
     line_color: "blue"  # Only applies if not using multiple signals
+    downsample: 10000 # Optional: Max points per plot
+    # downsample: '1S' # Optional: Resample frequency string
 ```
 
 #### Scatter Plots
@@ -295,13 +311,22 @@ The framework employs a robust strategy for handling timestamps and timezones:
     opacity: 0.7
 ```
 
-#### Categorical Data (e.g., Sleep Stages)
+#### Hypnogram Plots
+```yaml
+- type: hypnogram
+  signal: "sleep_stage_signal_key" # Key of the EEGSleepStageSignal
+  parameters:
+    add_statistics: true # Show sleep stats (Total time, time in stage, %)
+    stage_colors: { Awake: '#FF5733', REM: '#AA33FF', ... } # Optional color overrides
+    stage_order: [ Awake, REM, N1, N2, N3, Unknown ] # Optional y-axis order
+```
+
+#### Categorical Data (e.g., Sleep Stages) in Time Series Plots
 - Time series plots automatically handle categorical data (like `EEGSleepStageSignal`) by default:
-  - Plotting as a stepped line.
+  - Plotting as a stepped line (`line_shape='hv'` in Plotly).
   - Mapping categories to numerical values for plotting.
-  - Setting appropriate y-axis labels and tick marks.
-- You can customize the appearance using `category_map` in the `parameters` section to define specific colors for each category.
-- Categorical regions can also be added explicitly using `add_categorical_regions` (though this is less common for direct signal plotting).
+  - Setting appropriate y-axis labels (e.g., "Stage") and tick marks based on category names.
+- You can customize the appearance using `category_map` in the `parameters` section to define specific colors for each category, although the hypnogram plot type is generally preferred for dedicated sleep stage visualization.
 
 #### Grid Layouts
 ```yaml
