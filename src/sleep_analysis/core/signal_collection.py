@@ -896,79 +896,6 @@ class SignalCollection:
 
         if error_signals: # Check error_signals list
             # Raise the error to be caught by apply_operation if called via workflow
-            raise RuntimeError(f"Failed to apply grid alignment to the following signals: {', '.join(error_signals)}") # Use error_signals
-
-    @register_collection_operation("combine_aligned_signals")
-    def combine_aligned_signals(self) -> None:
-        """
-        Combines signals assuming they have already been aligned to the grid.
-
-        This method requires `generate_alignment_grid` and `apply_grid_alignment`
-        to have been run successfully beforehand. It verifies that all TimeSeriesSignal
-        data indices match the stored `grid_index` and then concatenates their data
-        into `self._aligned_dataframe`.
-
-        Raises:
-            RuntimeError: If alignment parameters haven't been calculated, or if any
-                          signal's index doesn't match the grid index.
-        """
-        if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
-            logger.error("Cannot combine aligned signals: generate_alignment_grid must be run successfully first.")
-            raise RuntimeError("generate_alignment_grid must be run successfully before combining aligned signals.")
-
-        logger.info("Combining signals assuming prior grid alignment (using concatenation)...")
-        start_time = time.time()
-
-        aligned_signal_dfs = {}
-        failed_signals = []
-
-        # --- Verify and Collect Data ---
-        for key, signal in self.signals.items():
-            if isinstance(signal, TimeSeriesSignal):
-                try:
-                    signal_df = signal.get_data()
-                    if signal_df is None or signal_df.empty:
-                        logger.warning(f"Signal '{key}' has no data, skipping combination.")
-                        continue
-                    if not isinstance(signal_df.index, pd.DatetimeIndex):
-                        logger.error(f"Signal '{key}' index is not DatetimeIndex after alignment attempt.")
-                        failed_signals.append(key)
-                        continue
-
-                    # THE CRITICAL CHECK: Ensure index matches the stored grid
-                    if not signal_df.index.equals(self.grid_index):
-                        logger.error(f"Signal '{key}' index does not match the stored grid_index. "
-                                     f"Ensure apply_grid_alignment was run successfully.")
-                        failed_signals.append(key)
-                        continue
-
-                    aligned_signal_dfs[key] = signal_df
-                    logger.debug(f"Signal '{key}' verified and collected for concatenation.")
-
-                except Exception as e:
-                    logger.error(f"Error accessing or verifying data for signal '{key}': {e}", exc_info=True)
-                    failed_signals.append(key)
-
-        if failed_signals:
-            raise RuntimeError(f"Failed to combine signals. The following signals did not match the grid index "
-                               f"or had errors: {', '.join(failed_signals)}")
-
-        if not aligned_signal_dfs:
-            logger.warning("No valid aligned signals found to combine. Storing empty DataFrame.")
-            self._aligned_dataframe = pd.DataFrame(index=self.grid_index) # Store empty frame with grid index
-            self._aligned_dataframe_params = self._get_current_alignment_params("concat")
-            return
-
-        # --- Combine Data (Concatenation) ---
-        combined_df = self._perform_concatenation(aligned_signal_dfs, self.grid_index)
-
-        # --- Store Result and Parameters ---
-        self._aligned_dataframe = combined_df
-        self._aligned_dataframe_params = self._get_current_alignment_params("concat")
-
-        logger.info(f"Successfully combined {len(aligned_signal_dfs)} signals using concatenation "
-                    f"in {time.time() - start_time:.2f} seconds. Stored shape: {combined_df.shape}")
-
     @register_collection_operation("align_and_combine_signals")
     def align_and_combine_signals(self) -> None:
         """
@@ -1243,6 +1170,127 @@ class SignalCollection:
          if self._aligned_dataframe_params is None:
               logger.debug("Stored combined dataframe parameters are not available (dataframe not generated).")
          return self._aligned_dataframe_params
+
+    @register_collection_operation("combine_aligned_signals")
+    def combine_aligned_signals(self) -> None:
+        """
+        Combines signals that have been modified in-place by apply_grid_alignment.
+
+        This method assumes `apply_grid_alignment` was run, potentially resulting
+        in signals with sparse indices (due to NaN dropping in reindex_to_grid).
+        It uses an outer join on these potentially sparse signals and then reindexes
+        the result to the full `grid_index` to create the final combined dataframe
+        with NaNs where appropriate. Requires `generate_alignment_grid` to have run.
+        full grid_index to create the final combined dataframe with NaNs.
+        Requires generate_alignment_grid and apply_grid_alignment (with modified
+        _reindex_to_grid_logic) to have run.
+        """
+        if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
+            logger.error("Cannot combine snapped signals: generate_alignment_grid must be run successfully first.")
+            raise RuntimeError("generate_alignment_grid must be run successfully before combining snapped signals.")
+        if not self.signals:
+             logger.warning("No signals in collection to combine.")
+             self._aligned_dataframe = pd.DataFrame(index=self.grid_index) # Store empty frame with grid index
+             self._aligned_dataframe_params = self._get_current_alignment_params("outer_join_reindex")
+             return
+
+        logger.info("Combining in-place snapped signals using outer join and reindexing...")
+        start_time = time.time()
+
+        # --- Collect Modified Signal DataFrames ---
+        snapped_signal_dfs = {}
+        error_signals = []
+        for key, signal in self.signals.items():
+            if isinstance(signal, TimeSeriesSignal):
+                try:
+                    signal_df = signal.get_data() # Get the modified data
+                    if signal_df is None or signal_df.empty:
+                        logger.warning(f"Signal '{key}' has no data after snapping, skipping combination.")
+                        continue
+                    if not isinstance(signal_df.index, pd.DatetimeIndex):
+                        logger.error(f"Signal '{key}' index is not DatetimeIndex after snapping attempt.")
+                        error_signals.append(key)
+                        continue
+                    # No need to check against grid_index here, indices are expected to be sparse
+
+                    # Prepare for MultiIndex or simple columns based on config
+                    if hasattr(self.metadata, 'index_config') and self.metadata.index_config:
+                        # Create MultiIndex tuples for this signal's columns
+                        metadata_values = []
+                        for field in self.metadata.index_config:
+                            value = getattr(signal.metadata, field, None)
+                            value = key if value is None and field == 'name' else value
+                            value = "N/A" if value is None else value
+                            value = value.name if hasattr(value, 'name') else str(value)
+                            metadata_values.append(value)
+
+                        new_cols = pd.MultiIndex.from_tuples(
+                            [tuple(metadata_values + [col_name]) for col_name in signal_df.columns],
+                            names=self.metadata.index_config + ['column']
+                        )
+                        df_to_join = signal_df.copy()
+                        df_to_join.columns = new_cols
+                        snapped_signal_dfs[key] = df_to_join
+                    else:
+                        # Use simple prefixed columns
+                        prefix = key
+                        if len(signal_df.columns) == 1:
+                             df_to_join = signal_df.rename(columns={signal_df.columns[0]: prefix})
+                        else:
+                             df_to_join = signal_df.add_prefix(f"{prefix}_")
+                        snapped_signal_dfs[key] = df_to_join
+
+                    logger.debug(f"Collected snapped data for signal '{key}'. Shape: {snapped_signal_dfs[key].shape}")
+
+                except Exception as e:
+                    logger.error(f"Error accessing data for signal '{key}': {e}", exc_info=True)
+                    error_signals.append(key)
+
+        if error_signals:
+            raise RuntimeError(f"Failed to combine signals. Errors occurred while accessing data for: {', '.join(error_signals)}")
+
+        if not snapped_signal_dfs:
+            logger.warning("No valid snapped signals found to combine. Storing empty DataFrame.")
+            self._aligned_dataframe = pd.DataFrame(index=self.grid_index)
+            self._aligned_dataframe_params = self._get_current_alignment_params("outer_join_reindex")
+            return
+
+        # --- Perform Outer Join ---
+        logger.debug(f"Performing outer join on {len(snapped_signal_dfs)} signals...")
+        combined_df = pd.DataFrame(index=pd.DatetimeIndex([])) # Start with an empty frame
+        first = True
+        # Use list comprehension for potentially better performance if dict is large
+        dfs_to_join_list = list(snapped_signal_dfs.values())
+        if dfs_to_join_list:
+             combined_df = dfs_to_join_list[0]
+             for df_to_join in dfs_to_join_list[1:]:
+                 # Outer join preserves all unique index points from both frames
+                 combined_df = combined_df.join(df_to_join, how='outer')
+        # else: combined_df remains empty DataFrame
+
+        logger.debug(f"Outer join complete. Shape before reindex: {combined_df.shape}")
+
+        # --- Reindex to Full Grid ---
+        logger.debug(f"Reindexing joined data to the full grid_index ({len(self.grid_index)} points)...")
+        combined_df_final = combined_df.reindex(self.grid_index)
+        logger.debug(f"Reindexing complete. Final shape: {combined_df_final.shape}")
+
+        # --- Final Cleanup (Optional but good practice) ---
+        # Drop rows where *all* values are NaN (though reindex might handle this)
+        initial_rows = len(combined_df_final)
+        combined_df_final = combined_df_final.dropna(axis=0, how='all')
+        final_rows = len(combined_df_final)
+        if initial_rows != final_rows:
+            logger.info(f"Removed {initial_rows - final_rows} rows with all NaN values after reindexing.")
+
+
+        # --- Store Result and Parameters ---
+        self._aligned_dataframe = combined_df_final
+        self._aligned_dataframe_params = self._get_current_alignment_params("outer_join_reindex")
+
+        logger.info(f"Successfully combined {len(snapped_signal_dfs)} snapped signals using outer join and reindex "
+                    f"in {time.time() - start_time:.2f} seconds. Stored shape: {combined_df_final.shape}")
+
 
     # --- Multi-Signal Operations ---
 
