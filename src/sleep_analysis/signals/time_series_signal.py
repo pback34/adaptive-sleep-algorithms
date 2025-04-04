@@ -20,6 +20,9 @@ from ..signal_types import SignalType
 from ..core.metadata import OperationInfo
 from ..core.metadata_handler import MetadataHandler
 
+
+# --- Class Definition ---
+    
 class TimeSeriesSignal(SignalData):
     """
     Base class for all time-series signals.
@@ -279,7 +282,15 @@ class TimeSeriesSignal(SignalData):
             metadata_dict = asdict(self.metadata) # Start with a copy
             metadata_dict["signal_id"] = str(uuid.uuid4()) # New unique ID
             metadata_dict["derived_from"] = [(self.metadata.signal_id, operation_index)] # Link to source
-            metadata_dict["operations"] = [OperationInfo(operation_name, parameters)] # Record this operation
+
+            # --- Initialize operations list for the NEW signal ---
+            # Sanitize parameters for the deriving operation
+            sanitized_params = self.handler._sanitize_parameters(parameters) if self.handler else parameters
+            # Create the OperationInfo for the current deriving operation
+            deriving_op_info = OperationInfo(operation_name, sanitized_params)
+            # Initialize the new signal's operations list with ONLY this operation
+            metadata_dict["operations"] = [deriving_op_info]
+            # --- End operations list initialization ---
 
             # Pass the existing handler to the new signal if it exists
             handler = getattr(self, 'handler', None)
@@ -523,9 +534,9 @@ class TimeSeriesSignal(SignalData):
             func._output_class = cls
             return func
         return decorator
-
+    
     # --- Standard Operations Implemented as Methods ---
-
+    
     def filter_lowpass(self, cutoff: float = 5.0, **other_params) -> pd.DataFrame:
         """
         Apply a low-pass filter using a moving average (core logic).
@@ -566,5 +577,52 @@ class TimeSeriesSignal(SignalData):
             logger.debug(f"Applied rolling mean to columns: {list(numeric_cols)}")
         else:
             logger.warning("No numeric columns found to apply low-pass filter.")
-
+    
         return processed_data
+    
+    
+    # --- Registered Operations (Defined as Static Methods) ---
+    
+    # Define as static method first, register explicitly after class definition
+    @staticmethod
+    def _reindex_to_grid_logic(data_list: List[pd.DataFrame], parameters: Dict[str, Any]) -> pd.DataFrame:
+        """
+        Core logic for reindexing a signal's DataFrame to a target grid.
+        Expects 'grid_index' and 'method' in parameters.
+        """
+        import pandas as pd # Local import needed within static method
+        import numpy as np # Local import needed within static method
+        import logging # Local import needed within static method
+        logger = logging.getLogger(__name__) # Get logger within static method
+
+        if not data_list:
+            raise ValueError("No data provided for reindexing.")
+        data = data_list[0] # Expecting only one DataFrame
+
+        grid_index = parameters.get('grid_index')
+        method = parameters.get('method', 'nearest') # Default to nearest
+
+        if not isinstance(grid_index, pd.DatetimeIndex):
+            raise ValueError("Missing or invalid 'grid_index' parameter (must be pd.DatetimeIndex).")
+        if grid_index.empty:
+             raise ValueError("'grid_index' parameter cannot be empty.")
+
+        # Ensure data index timezone matches grid timezone before reindexing
+        grid_tz = grid_index.tz
+        if data.index.tz is None:
+            # Avoid modifying original data if possible, but need tz info
+            # Consider if a copy is needed or if source data should already be tz-aware
+            logger.debug("Localizing timezone-naive index to grid timezone for reindexing.")
+            data = data.tz_localize(grid_tz) # Localize a copy if necessary
+        elif data.index.tz != grid_tz:
+            logger.debug(f"Converting index timezone from {data.index.tz} to {grid_tz} for reindexing.")
+            data = data.tz_convert(grid_tz) # Convert a copy if necessary
+
+        # Perform the reindexing
+        logger.debug(f"Reindexing data to target grid using method: {method}")
+        aligned_data = data.reindex(grid_index, method=method)
+        logger.debug("Reindexing complete.")
+        return aligned_data
+
+# Explicitly register the static method after the class definition is complete
+TimeSeriesSignal.register("reindex_to_grid")(TimeSeriesSignal._reindex_to_grid_logic)

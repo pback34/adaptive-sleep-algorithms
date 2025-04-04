@@ -183,7 +183,7 @@ class SignalData(ABC):
             cls.registry[operation_name] = (func, output)
             return func
         return decorator
-    
+
     # Note: apply_operation is now concretely implemented in TimeSeriesSignal
     # to handle method/registry lookup and metadata.
     # Keep abstract here to enforce its presence, but subclasses like

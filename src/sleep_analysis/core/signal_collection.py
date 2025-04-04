@@ -1272,37 +1272,35 @@ class SignalCollection:
 
     def apply_grid_alignment(self, method: str = 'nearest', signals_to_align: Optional[List[str]] = None):
         """
-        Applies the pre-calculated grid alignment to specified signals in place.
+        Applies the pre-calculated grid alignment to specified signals in place
+        by calling the 'reindex_to_grid' operation on each signal.
 
         Modifies the internal data of TimeSeriesSignal objects to conform to the
-        grid_index calculated by a prior call to align_signals.
+        grid_index calculated by a prior call to align_signals. Records the
+        operation in each signal's metadata.
 
         Args:
             method: The method to use for reindexing ('nearest', 'pad'/'ffill', 'backfill'/'bfill').
-                    Interpolation methods ('linear', etc.) are generally not suitable
-                    for direct reindexing to a potentially sparse grid, 'nearest' is safer.
             signals_to_align: Optional list of signal keys to align. If None, attempts
                               to align all TimeSeriesSignal objects in the collection.
 
         Raises:
             RuntimeError: If align_signals has not been run successfully first (no valid grid_index).
-            ValueError: If an invalid alignment method is provided.
+            ValueError: If an invalid alignment method is provided or the operation fails.
         """
         if not hasattr(self, 'grid_index') or self.grid_index is None or self.grid_index.empty:
             logger.error("Cannot apply grid alignment: align_signals must be run successfully first.")
             raise RuntimeError("align_signals must be run successfully before applying grid alignment.")
 
-        # Validate method - typically 'nearest' or padding methods are safest for reindex
+        # Validate method (can keep the stricter validation if desired)
         allowed_methods = ['nearest', 'pad', 'ffill', 'backfill', 'bfill']
         if method not in allowed_methods:
-             logger.warning(f"Alignment method '{method}' might not be suitable for reindexing. Using 'nearest'.")
-             # Force nearest as it's generally the safest for conforming data points to a grid
+             # Decide whether to warn and default, or raise error
+             logger.warning(f"Alignment method '{method}' not in allowed list {allowed_methods}. Using 'nearest'.")
              method = 'nearest'
-             # raise ValueError(f"Invalid alignment method for reindexing: {method}. Use one of {allowed_methods}")
+             # raise ValueError(f"Invalid alignment method: {method}. Use one of {allowed_methods}")
 
-
-        logger.info(f"Applying grid alignment in-place to signals using method '{method}'...")
-        # Determine which signals to process
+        logger.info(f"Applying grid alignment in-place to signals using method '{method}' by calling 'reindex_to_grid' operation...")
         target_keys = signals_to_align if signals_to_align is not None else self.signals.keys()
 
         processed_count = 0
@@ -1324,33 +1322,24 @@ class SignalCollection:
                         skipped_count += 1
                         continue
 
-                    # Ensure data index is timezone-aware and matches grid index timezone
-                    grid_tz = self.grid_index.tz
-                    if current_data.index.tz is None:
-                        logger.debug(f"Localizing index for signal '{key}' to grid timezone '{grid_tz}' before reindexing.")
-                        current_data.index = current_data.index.tz_localize(grid_tz)
-                    elif current_data.index.tz != grid_tz:
-                        logger.debug(f"Converting index for signal '{key}' from {current_data.index.tz} to grid timezone '{grid_tz}' before reindexing.")
-                        current_data.index = current_data.index.tz_convert(grid_tz)
+                    # Call apply_operation to handle reindexing and metadata
+                    logger.debug(f"Calling apply_operation('reindex_to_grid') for signal '{key}'...")
+                    signal.apply_operation(
+                        'reindex_to_grid',
+                        inplace=True,
+                        grid_index=self.grid_index, # Pass the grid index
+                        method=method              # Pass the method
+                    )
+                    # apply_operation now handles metadata recording and sample rate update
 
-                    # Perform the reindexing to conform to the grid
-                    logger.debug(f"Reindexing signal '{key}' to grid...")
-                    aligned_data = current_data.reindex(self.grid_index, method=method)
-
-                    # Update the signal's internal data directly
-                    signal._data = aligned_data
-                    # Update the sample rate metadata as it now matches the grid
-                    signal._update_sample_rate_metadata()
-                    logger.debug(f"Applied grid alignment to signal '{key}'. New shape: {aligned_data.shape}")
+                    logger.debug(f"Successfully applied 'reindex_to_grid' operation to signal '{key}'.")
                     processed_count += 1
                 except Exception as e:
-                    logger.error(f"Failed to apply grid alignment to signal '{key}': {e}", exc_info=True)
+                    logger.error(f"Failed to apply 'reindex_to_grid' operation to signal '{key}': {e}", exc_info=True)
                     warnings.warn(f"Failed to apply grid alignment to signal '{key}': {e}")
                     error_count += 1
             else:
-                 # Log signals that are skipped because they are not TimeSeriesSignal
                  logger.debug(f"Skipping alignment for signal '{key}': not a TimeSeriesSignal.")
                  skipped_count += 1
-
 
         logger.info(f"Grid alignment application complete. Processed: {processed_count}, Skipped: {skipped_count}, Errors: {error_count}")

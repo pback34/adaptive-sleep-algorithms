@@ -69,3 +69,16 @@ This document outlines the rules for implementing the sleep analysis framework i
 
 ### Error Handling
 - Raise `ValueError` if an operation isn't found or if `inplace=True` is unsupported.
+
+## Rule 6: Metadata Integrity via `apply_operation`
+- **Description**: Any operation that modifies a signal's data (`_data` attribute) *must* be implemented such that it is invoked via the signal's `apply_operation` method (either directly or through the registry). Avoid modifying `signal._data` directly from external classes (like `SignalCollection`).
+- **Rationale**: The `apply_operation` method is the designated pathway for ensuring that all necessary metadata updates (e.g., recording the operation in `metadata.operations`, updating `sample_rate`, handling `derived_from` for non-inplace operations) occur consistently. Bypassing this mechanism, as seen with the initial `apply_grid_alignment`, leads to incomplete or incorrect metadata.
+- **Example**:
+  - **Incorrect**: `signal._data = signal._data.resample(...)` called from `SignalCollection`.
+  - **Correct**: `signal.apply_operation('resample', inplace=True, rule=...)` called from `SignalCollection`, where 'resample' is a registered operation or method within the signal class.
+
+## Rule 7: Signal Encapsulation
+- **Description**: Treat `SignalData` objects as encapsulated units. `SignalCollection` should orchestrate workflows by calling public methods or operations on its contained signals (primarily `apply_operation`), rather than directly accessing or modifying their internal state (like `_data`).
+- **Rationale**: This promotes modularity and maintainability. Signals are responsible for their own data and metadata integrity. The collection manages the signals and coordinates operations between them but respects their boundaries.
+- **Example**:
+  - Instead of `SignalCollection` calculating a new dataframe and assigning it to `signal._data`, it should call `signal.apply_operation('calculate_new_data', ...)` and let the signal handle the update internally via its `apply_operation` implementation.

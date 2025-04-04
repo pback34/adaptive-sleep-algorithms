@@ -7,6 +7,7 @@ in a consistent way across standalone signals and collections.
 
 from typing import Dict, Any, Optional, List
 import uuid
+import pandas as pd # Added import
 from ..core.metadata import SignalMetadata, OperationInfo
 
 class MetadataHandler:
@@ -111,8 +112,48 @@ class MetadataHandler:
             operation_name: Name of the operation performed
             parameters: Parameters used for the operation
         """
-        if metadata.operations is None:
+        if metadata.operations is None: # Should not happen with default_factory=list
             metadata.operations = []
-            
-        operation_info = OperationInfo(operation_name, parameters)
+
+        # Sanitize parameters before storing
+        sanitized_params = self._sanitize_parameters(parameters)
+
+        operation_info = OperationInfo(operation_name, sanitized_params)
         metadata.operations.append(operation_info)
+
+    def _sanitize_parameters(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Sanitize operation parameters for safe storage in metadata.
+
+        Converts complex objects like DataFrames or Index objects into
+        string representations.
+
+        Args:
+            params: The original parameters dictionary.
+
+        Returns:
+            A new dictionary with sanitized parameters.
+        """
+        sanitized = {}
+        if not isinstance(params, dict):
+             # Return input directly if not a dict (shouldn't happen with **kwargs)
+             return params
+
+        for key, value in params.items():
+            if isinstance(value, pd.DataFrame):
+                sanitized[key] = f"<DataFrame shape={value.shape}>"
+            elif isinstance(value, pd.Series):
+                sanitized[key] = f"<Series size={len(value)}>"
+            elif isinstance(value, pd.Index):
+                 # More specific for DatetimeIndex
+                 if isinstance(value, pd.DatetimeIndex):
+                      sanitized[key] = f"<DatetimeIndex size={len(value)} freq={value.freq}>"
+                 else:
+                      sanitized[key] = f"<Index size={len(value)}>"
+            # Add checks for other large or non-serializable types if needed
+            # elif isinstance(value, np.ndarray):
+            #     sanitized[key] = f"<ndarray shape={value.shape}>"
+            else:
+                # Assume other types are serializable (or handle specific cases)
+                sanitized[key] = value
+        return sanitized
