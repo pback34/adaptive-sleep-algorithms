@@ -112,6 +112,18 @@ class WorkflowExecutor:
             logger.debug(f"Set SignalCollection timezone to: {self.target_timezone}")
         # --- End Timezone Configuration ---
 
+        # --- Process Collection Settings (e.g., index_config) ---
+        if "collection_settings" in workflow_config:
+            settings = workflow_config["collection_settings"]
+            if "index_config" in settings:
+                try:
+                    self.container.set_index_config(settings["index_config"])
+                    logger.info(f"Set collection index_config to: {settings['index_config']}")
+                except ValueError as e:
+                    logger.error(f"Invalid index_config in collection_settings: {e}")
+                    raise # Re-raise error if config is invalid
+        # --- End Collection Settings ---
+
         # Handle import section if present
         if "import" in workflow_config:
             self._process_import_section(workflow_config["import"])
@@ -153,55 +165,37 @@ class WorkflowExecutor:
             raise ValueError("Output must be specified for non-inplace operations")
         
         try:
-            # Handle collection-level operations
+            # Handle collection-level operations using the new apply_operation method
             if "type" in step and step["type"] == "collection":
-                # Call the operation directly on the collection
-                operation = getattr(self.container, operation_name, None)
-                if not operation:
-                    raise ValueError(f"Collection operation '{operation_name}' not found on SignalCollection")
+                # --- Handle Deprecated Operations First ---
+                # It's cleaner to check for deprecated names here before calling apply_operation
+                if operation_name in ['align_signals', 'generate_and_store_aligned_dataframe']:
+                    error_msg = (f"Workflow operation '{operation_name}' is deprecated and removed. "
+                                 f"Please update your workflow. Use 'generate_alignment_grid', "
+                                 f"'apply_grid_alignment', 'combine_aligned_signals', or "
+                                 f"'align_and_combine_signals' instead.")
+                    logger.error(error_msg)
+                    # Raise error immediately if strict, otherwise warn and skip
+                    if self.strict_validation:
+                        raise ValueError(error_msg)
+                    else:
+                        warnings.warn(error_msg + " Skipping step.")
+                        return # Skip this step
 
-                # --- Map workflow operation names to new SignalCollection methods ---
-                if operation_name == 'generate_alignment_grid':
-                    # Pass target_sample_rate if specified
-                    op_params = {}
-                    if 'target_sample_rate' in parameters:
-                         op_params['target_sample_rate'] = parameters['target_sample_rate']
-                    result = operation(**op_params) # Calls collection.generate_alignment_grid()
-                elif operation_name == 'apply_grid_alignment':
-                    # Pass method if specified
-                    op_params = {}
-                    if 'method' in parameters:
-                         op_params['method'] = parameters['method']
-                    result = operation(**op_params) # Calls collection.apply_grid_alignment()
-                elif operation_name == 'combine_aligned_signals':
-                    result = operation(**parameters) # Calls collection.combine_aligned_signals()
-                elif operation_name == 'align_and_combine_signals':
-                    result = operation(**parameters) # Calls collection.align_and_combine_signals()
-                # --- Deprecated operations ---
-                elif operation_name == 'align_signals':
-                     logger.warning("Workflow operation 'align_signals' is deprecated. Use 'generate_alignment_grid' instead.")
-                     # Map to new method for backward compatibility (optional)
-                     op_params = {}
-                     if 'target_sample_rate' in parameters:
-                          op_params['target_sample_rate'] = parameters['target_sample_rate']
-                     result = self.container.generate_alignment_grid(**op_params)
-                elif operation_name == 'generate_and_store_aligned_dataframe':
-                     logger.warning("Workflow operation 'generate_and_store_aligned_dataframe' is deprecated. Use 'combine_aligned_signals' or 'align_and_combine_signals' instead.")
-                     # Cannot directly map; depends on whether apply_grid_alignment was run.
-                     # For now, just log warning. A more robust solution might check prior steps.
-                     logger.error("Cannot automatically map 'generate_and_store_aligned_dataframe'. Please update workflow.")
-                     result = None # Indicate failure or skip
-                else:
-                     # For other potential collection operations, pass all parameters
-                     result = operation(**parameters)
+                # --- Call the generic apply_operation method ---
+                try:
+                    # Pass the operation name and parameters directly
+                    # The container (SignalCollection) now handles the dispatch
+                    result = self.container.apply_operation(operation_name, **parameters)
+                    # Logging is handled within apply_operation and the method itself
+                except Exception as e:
+                    # Let _handle_error manage logging/raising based on strict_validation
+                    self._handle_error(e, operation_name=f"collection.{operation_name}")
+                    return # Stop processing this step if an error occurred
 
-                # Log the completion.
-                logger.debug(f"Collection operation '{operation_name}' executed.")
-                # No need to handle 'output' or 'inplace' for these collection ops
+                # No need to handle 'output' or 'inplace' for collection ops currently defined
 
-            # Handle multi-signal operations (This block seems duplicated, check logic)
-            # Assuming the first 'elif "inputs" in step:' block was intended for collection results
-            # and this second one is for actual multi-signal operations.
+            # Handle multi-signal operations
             elif "inputs" in step:
                 if inplace:
                     raise ValueError("Inplace operations not supported for multi-signal steps")

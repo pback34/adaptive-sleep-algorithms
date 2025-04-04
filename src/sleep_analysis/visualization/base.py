@@ -468,6 +468,8 @@ class VisualizerBase(ABC):
                 
                 # 2. Convert data to numerical representation
                 numerical_data = data[col].map(category_to_num)
+                # Ensure dtype is float to handle potential NaNs correctly in plotting backend
+                numerical_data = numerical_data.astype(float) 
                 
                 # 3. Add plot kwargs specific to categorical line plot
                 cat_plot_kwargs = plot_kwargs.copy()

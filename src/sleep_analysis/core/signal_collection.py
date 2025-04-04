@@ -29,8 +29,31 @@ from .metadata_handler import MetadataHandler
 from ..signals.time_series_signal import TimeSeriesSignal # Added missing import
 from ..utils import str_to_enum # Added missing import
 
+import functools # Added for decorator
+import inspect # Added for __init_subclass__
+
+import inspect # Added for __init_subclass__
+
 # Initialize logger for the module
 logger = logging.getLogger(__name__)
+
+
+# --- Decorator Definition (Simple Function) ---
+def register_collection_operation(operation_name: str):
+    """
+    Decorator to mark a SignalCollection method as a registered collection operation.
+    Stores the operation name in the '_collection_op_name' attribute of the function.
+    """
+    def decorator(func: Callable):
+        setattr(func, '_collection_op_name', operation_name)
+        # Optional: Use functools.wraps if needed, but primarily for marking here
+        # @functools.wraps(func)
+        # def wrapper(*args, **kwargs):
+        #     return func(*args, **kwargs)
+        # setattr(wrapper, '_collection_op_name', operation_name)
+        # return wrapper
+        return func # Return the original function marked with the attribute
+    return decorator
 
 
 # Define standard rates: factors of 1000 Hz plus rates corresponding to multi-second periods
@@ -45,9 +68,14 @@ class SignalCollection:
     for all signals in the system, including imported signals, intermediate
     signals, and derived signals with base name indexing (e.g., 'ppg_0').
     """
-    # Registry for multi-signal operations
+    # Registry for multi-signal operations (used for operations creating new signals)
     multi_signal_registry: Dict[str, Tuple[Callable, Type[SignalData]]] = {}
-    
+    # Registry for collection-level operations (modifying collection state or signals within)
+    # Populated AFTER class definition below
+    collection_operation_registry: Dict[str, Callable] = {}
+
+    # REMOVED __init_subclass__ method
+
     def __init__(self, metadata: Optional[Dict[str, Any]] = None, metadata_handler: Optional[MetadataHandler] = None):
         """
         Initialize a SignalCollection instance.
@@ -656,6 +684,8 @@ class SignalCollection:
             logger.error(f"Error creating date_range for grid index: {e}", exc_info=True)
             return None
 
+    # Decorator now just marks the method
+    @register_collection_operation("generate_alignment_grid")
     def generate_alignment_grid(self, target_sample_rate: Optional[float] = None) -> 'SignalCollection':
         """
         Calculates and stores the alignment grid parameters for the collection.
@@ -726,6 +756,49 @@ class SignalCollection:
         logger.info(f"Alignment grid parameters calculated in {time.time() - start_time:.2f} seconds.")
         return self
 
+    # --- Collection Operation Dispatch ---
+
+    def apply_operation(self, operation_name: str, **parameters: Any) -> Any: # type: ignore
+        """
+        Applies a registered collection-level operation by name.
+
+        Looks up the operation in the `collection_operation_registry` and executes
+        the corresponding method on this instance, passing the provided parameters.
+
+        Args:
+            operation_name: The name of the operation to execute (must be registered).
+            **parameters: Keyword arguments to pass to the registered operation method.
+
+        Returns:
+            The result returned by the executed operation method (often `self` or `None`).
+
+        Raises:
+            ValueError: If the operation_name is not found in the registry.
+            Exception: If the underlying operation method raises an exception.
+        """
+        logger.info(f"Applying collection operation '{operation_name}' with parameters: {parameters}")
+        if operation_name not in self.collection_operation_registry:
+            logger.error(f"Collection operation '{operation_name}' not found in registry.")
+            raise ValueError(f"Collection operation '{operation_name}' not found.")
+
+        operation_method = self.collection_operation_registry[operation_name]
+
+        try:
+            # Call the registered method (which is bound to the instance implicitly via lookup)
+            # We pass 'self' because the registry stores the unbound method typically
+            # Correction: The registry stores the unbound function/method.
+            # We need to call it, passing 'self' as the first argument.
+            result = operation_method(self, **parameters)
+            logger.info(f"Successfully applied collection operation '{operation_name}'.")
+            return result
+        except Exception as e:
+            logger.error(f"Error executing collection operation '{operation_name}': {e}", exc_info=True)
+            # Re-raise the exception to be handled by the caller (e.g., WorkflowExecutor)
+            raise
+
+    # --- End Collection Operation Dispatch ---
+
+
     def get_signals_from_input_spec(self, input_spec: Union[str, Dict[str, Any], List[str], None] = None) -> List[SignalData]:
         """
         Get signals based on an input specification.
@@ -744,38 +817,52 @@ class SignalCollection:
         """
         return self.get_signals(input_spec=input_spec)
 
-    def apply_grid_alignment(self, method: str = 'nearest'):
+    @register_collection_operation("apply_grid_alignment")
+    def apply_grid_alignment(self, method: str = 'nearest', signals_to_align: Optional[List[str]] = None):
         """
-        Applies the pre-calculated grid alignment to ALL time-series signals in place.
+        Applies the pre-calculated grid alignment to specified signals in place
+        by calling the 'reindex_to_grid' operation on each signal.
 
         Modifies the internal data of TimeSeriesSignal objects to conform to the
-        grid_index calculated by a prior call to `generate_alignment_grid`. Records the
+        grid_index calculated by a prior call to align_signals. Records the
         operation in each signal's metadata.
 
         Args:
             method: The method to use for reindexing ('nearest', 'pad'/'ffill', 'backfill'/'bfill').
+            signals_to_align: Optional list of signal keys to align. If None, attempts
+                              to align all TimeSeriesSignal objects in the collection.
 
         Raises:
-            RuntimeError: If `generate_alignment_grid` has not been run successfully first.
-            ValueError: If an invalid alignment method is provided.
-            Exception: If alignment fails for any signal.
+            RuntimeError: If align_signals has not been run successfully first (no valid grid_index).
+            ValueError: If an invalid alignment method is provided or the operation fails.
         """
-        if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
-            logger.error("Cannot apply grid alignment: generate_alignment_grid must be run successfully first.")
-            raise RuntimeError("generate_alignment_grid must be run successfully before applying grid alignment.")
+        if not hasattr(self, 'grid_index') or self.grid_index is None or self.grid_index.empty:
+            logger.error("Cannot apply grid alignment: align_signals must be run successfully first.")
+            raise RuntimeError("align_signals must be run successfully before applying grid alignment.")
 
-        # Validate method
+        # Validate method (can keep the stricter validation if desired)
         allowed_methods = ['nearest', 'pad', 'ffill', 'backfill', 'bfill']
         if method not in allowed_methods:
-             raise ValueError(f"Invalid alignment method: {method}. Use one of {allowed_methods}")
+             # Decide whether to warn and default, or raise error
+             logger.warning(f"Alignment method '{method}' not in allowed list {allowed_methods}. Using 'nearest'.")
+             method = 'nearest'
+             # raise ValueError(f"Invalid alignment method: {method}. Use one of {allowed_methods}")
 
-        logger.info(f"Applying grid alignment in-place to all TimeSeriesSignals using method '{method}'...")
-        start_time = time.time()
+        logger.info(f"Applying grid alignment in-place to signals using method '{method}' by calling 'reindex_to_grid' operation...")
+        start_time = time.time() # Record start time
+        target_keys = signals_to_align if signals_to_align is not None else self.signals.keys()
+
         processed_count = 0
         skipped_count = 0
-        error_signals = []
+        error_signals = [] # Initialize list to track errors
 
-        for key, signal in self.signals.items():
+        for key in target_keys:
+            if key not in self.signals:
+                logger.warning(f"Signal key '{key}' specified for alignment not found.")
+                skipped_count += 1
+                continue
+
+            signal = self.signals[key]
             if isinstance(signal, TimeSeriesSignal):
                 try:
                     current_data = signal.get_data()
@@ -792,21 +879,26 @@ class SignalCollection:
                         grid_index=self.grid_index, # Pass the grid index
                         method=method              # Pass the method
                     )
+                    # apply_operation now handles metadata recording and sample rate update
+
                     logger.debug(f"Successfully applied 'reindex_to_grid' operation to signal '{key}'.")
                     processed_count += 1
                 except Exception as e:
                     logger.error(f"Failed to apply 'reindex_to_grid' operation to signal '{key}': {e}", exc_info=True)
-                    error_signals.append(key)
+                    warnings.warn(f"Failed to apply grid alignment to signal '{key}': {e}")
+                    error_signals.append(key) # Add key to error list
             else:
                  logger.debug(f"Skipping alignment for signal '{key}': not a TimeSeriesSignal.")
                  skipped_count += 1
 
-        logger.info(f"Grid alignment application finished in {time.time() - start_time:.2f} seconds. "
-                    f"Processed: {processed_count}, Skipped: {skipped_count}, Errors: {len(error_signals)}")
+        logger.info(f"Grid alignment application finished in {time.time() - start_time:.2f} seconds. " # Use start_time
+                    f"Processed: {processed_count}, Skipped: {skipped_count}, Errors: {len(error_signals)}") # Use error_signals
 
-        if error_signals:
-            raise RuntimeError(f"Failed to apply grid alignment to the following signals: {', '.join(error_signals)}")
+        if error_signals: # Check error_signals list
+            # Raise the error to be caught by apply_operation if called via workflow
+            raise RuntimeError(f"Failed to apply grid alignment to the following signals: {', '.join(error_signals)}") # Use error_signals
 
+    @register_collection_operation("combine_aligned_signals")
     def combine_aligned_signals(self) -> None:
         """
         Combines signals assuming they have already been aligned to the grid.
@@ -877,6 +969,7 @@ class SignalCollection:
         logger.info(f"Successfully combined {len(aligned_signal_dfs)} signals using concatenation "
                     f"in {time.time() - start_time:.2f} seconds. Stored shape: {combined_df.shape}")
 
+    @register_collection_operation("align_and_combine_signals")
     def align_and_combine_signals(self) -> None:
         """
         Aligns signals to the grid using merge_asof and combines them.
@@ -902,9 +995,11 @@ class SignalCollection:
             logger.warning("Grid index frequency is missing or invalid. Using default merge tolerance (1ms).")
             tolerance = pd.Timedelta(milliseconds=1)
         else:
-            tolerance = pd.Timedelta(nanoseconds=target_period.total_seconds() * 1e9 / 2)
+            # Add a small epsilon (1 nanosecond) to tolerance to include boundary points
+            tolerance_ns = target_period.total_seconds() * 1e9 / 2
+            tolerance = pd.Timedelta(nanoseconds=tolerance_ns + 1)
         self._merge_tolerance = tolerance # Store tolerance used
-        logger.debug(f"Using merge_asof tolerance: {self._merge_tolerance}")
+        logger.debug(f"Using merge_asof tolerance: {self._merge_tolerance} (includes epsilon)")
 
         # Prepare the target DataFrame for merge_asof
         target_df = pd.DataFrame({'timestamp': self.grid_index})
@@ -957,10 +1052,45 @@ class SignalCollection:
                 )
 
                 # Set the grid timestamp as index and select original columns
+                # --- Enhanced Debug Log for none_rate ---
+                if key == "none_rate":
+                    logger.info(f"--- DEBUG START: none_rate merge_asof ---")
+                    logger.info(f"Target DF (grid) head:\n{target_df.head()}")
+                    logger.info(f"Target DF TZ: {target_df['timestamp'].dt.tz}")
+                    logger.info(f"Source DF (none_rate data) head:\n{source_df.head()}")
+                    logger.info(f"Source DF TZ: {source_df['timestamp'].dt.tz}")
+                    logger.info(f"Tolerance: {tolerance}")
+
+                # Perform merge_asof
+                aligned_df = pd.merge_asof(
+                    target_df,
+                    source_df,
+                    on='timestamp',
+                    direction='nearest',
+                    tolerance=tolerance
+                )
+
+                if key == "none_rate":
+                    logger.info(f"Aligned DF (raw merge_asof result) head:\n{aligned_df.head()}")
+                    logger.info(f"Aligned DF non-NaN value counts:\n{aligned_df.notna().sum()}") # Show counts per column
+
+                # Set the grid timestamp as index and select original columns
                 aligned_df = aligned_df.set_index('timestamp')
-                original_cols = [col for col in signal_df.columns if col in aligned_df.columns]
-                aligned_signal_dfs[key] = aligned_df[original_cols]
-                logger.debug(f"Signal '{key}' aligned via merge_asof. Result shape: {aligned_signal_dfs[key].shape}")
+                original_cols = [col for col in signal_df.columns if col in aligned_df.columns] # Get original data columns ('value')
+
+                if key == "none_rate":
+                     logger.info(f"Aligned DF (indexed, original cols only) head:\n{aligned_df[original_cols].head()}")
+                     logger.info(f"NaN check result for 'none_rate': {aligned_df[original_cols].isnull().all().all()}")
+                     logger.info(f"Non-NaN count for 'none_rate' (original cols): {aligned_df[original_cols].notna().sum().sum()}")
+                     logger.info(f"--- DEBUG END: none_rate merge_asof ---")
+                # --- End Enhanced Debug Log ---
+
+                # Check if the resulting aligned data (original columns only) is all NaN
+                if aligned_df[original_cols].isnull().all().all():
+                    logger.warning(f"Signal '{key}' resulted in all NaN values after merge_asof alignment. Skipping inclusion in combined dataframe.")
+                else:
+                    aligned_signal_dfs[key] = aligned_df[original_cols]
+                    logger.debug(f"Signal '{key}' aligned via merge_asof. Result shape: {aligned_signal_dfs[key].shape}. Non-NaN values found.")
 
             except Exception as e:
                 logger.error(f"Error processing signal '{key}' with merge_asof: {e}", exc_info=True)
@@ -1087,335 +1217,115 @@ class SignalCollection:
             "tolerance": self._merge_tolerance # Include tolerance used (relevant for merge_asof)
         }
 
+    # --- Stored Combined Dataframe Access ---
 
-    # Refactor: Move core logic from get_combined_dataframe here
-    def _calculate_combined_dataframe(self) -> pd.DataFrame:
-         """Internal helper to perform the actual calculation of the combined dataframe."""
-         logger.debug("Executing _calculate_combined_dataframe logic...")
-
-         if not self.signals:
-             logger.warning("No signals to combine into DataFrame.")
-             return pd.DataFrame()
-
-         # --- Determine the index for the combined DataFrame ---
-         grid_index: Optional[pd.DatetimeIndex] = None
-         tolerance: Optional[pd.Timedelta] = None # Initialize tolerance
-
-         # Check if align_signals has run and set the grid_index attribute
-         if hasattr(self, 'grid_index') and isinstance(self.grid_index, pd.DatetimeIndex) and not self.grid_index.empty:
-             logger.debug(f"Using pre-calculated grid_index from align_signals with {len(self.grid_index)} points.")
-             grid_index = self.grid_index
-             # Get target period from grid frequency for tolerance calculation
-             target_period = pd.Timedelta(nanoseconds=grid_index.freq.nanos) if grid_index.freq else None
-             if target_period is None or target_period.total_seconds() <= 0:
-                  logger.warning("Grid index frequency is missing or invalid. Cannot calculate merge tolerance.")
-                  # Fallback to a small default tolerance? Or fail? Let's warn and use a default.
-                  tolerance = pd.Timedelta(milliseconds=1) # Small default tolerance
-             else:
-                  # Tolerance is half the grid period
-                  tolerance = pd.Timedelta(nanoseconds=target_period.total_seconds() * 1e9 / 2)
-             self._merge_tolerance = tolerance # Store the calculated tolerance
-             logger.debug(f"Calculated and stored merge tolerance: {self._merge_tolerance}")
-
-         else:
-             # Fallback: align_signals wasn't run or failed to create a grid index.
-             # Create index from unique timestamps of all signals.
-             logger.info("Grid index not found or empty. Creating index from unique timestamps of all signals.")
-             all_timestamps = set()
-             for key, signal in self.signals.items():
-                 if not isinstance(signal, TimeSeriesSignal):
-                     continue
-                 try:
-                     data = signal.get_data()
-                     if data is not None and isinstance(data, pd.DataFrame) and isinstance(data.index, pd.DatetimeIndex) and not data.empty:
-                         # Ensure timezone consistency before adding
-                         if data.index.tz is None:
-                              # Attempt to localize using collection timezone or UTC
-                              tz = getattr(self.metadata, 'timezone', 'UTC')
-                              try:
-                                  all_timestamps.update(data.index.tz_localize(tz))
-                              except Exception as tz_err:
-                                  logger.warning(f"Could not localize timestamps for signal {key} to {tz}: {tz_err}. Skipping.")
-                         else:
-                              all_timestamps.update(data.index)
-                 except Exception as e:
-                     logger.error(f"Error accessing data for signal {key} during timestamp collection: {e}")
-
-             if not all_timestamps:
-                 logger.warning("No timestamps found in any signal. Returning empty DataFrame.")
-                 return pd.DataFrame()
-
-             # Sort timestamps and ensure timezone consistency
-             sorted_timestamps = sorted(list(all_timestamps))
-             if sorted_timestamps:
-                  # Infer timezone from the first timestamp if possible
-                  common_tz = sorted_timestamps[0].tz
-                  grid_index = pd.DatetimeIndex(sorted_timestamps, name='timestamp', tz=common_tz)
-                  logger.info(f"Created grid_index with {len(grid_index)} unique timestamps (TZ: {common_tz})")
-             else:
-                  logger.warning("Timestamp collection resulted in empty list. Returning empty DataFrame.")
-                  return pd.DataFrame()
-             # Tolerance is not applicable in this fallback mode
-             tolerance = None
-             self._merge_tolerance = None # Ensure tolerance is None in fallback
-
-
-         # --- Create the combined DataFrame using the determined grid_index ---
-         # Prepare the target DataFrame for merge_asof
-         target_df = pd.DataFrame({'timestamp': grid_index})
-
-         # Dictionary to hold aligned dataframes for each signal before final concat
-         aligned_signal_dfs = {}
-
-         # --- Align each signal to the grid_index using merge_asof ---
-         for key, signal in self.signals.items():
-              if not isinstance(signal, TimeSeriesSignal):
-                  logger.debug(f"Skipping non-time-series signal: {key}")
-                  continue
-
-              try:
-                  signal_df = signal.get_data()
-                  if signal_df is None or not isinstance(signal_df, pd.DataFrame) or signal_df.empty:
-                      logger.warning(f"Signal {key} has no valid data, skipping.")
-                      continue
-                  if not isinstance(signal_df.index, pd.DatetimeIndex):
-                       logger.warning(f"Signal {key} data does not have a DatetimeIndex, skipping.")
-                       continue
-
-                  # Prepare source DataFrame for merge_asof
-                  source_df = signal_df.reset_index()
-                  # Rename index column to 'timestamp' if it's not already named that
-                  if source_df.columns[0] != 'timestamp':
-                       source_df = source_df.rename(columns={source_df.columns[0]: 'timestamp'})
-
-                  # Ensure timezone consistency for merge
-                  if source_df['timestamp'].dt.tz is None:
-                       source_df['timestamp'] = source_df['timestamp'].dt.tz_localize(grid_index.tz)
-                  else:
-                       source_df['timestamp'] = source_df['timestamp'].dt.tz_convert(grid_index.tz)
-
-                  # Sort by timestamp (required for merge_asof)
-                  source_df = source_df.sort_values('timestamp')
-
-                  # Perform merge_asof
-                  logger.debug(f"Aligning signal {key} using merge_asof (tolerance: {tolerance})")
-                  try:
-                      aligned_df = pd.merge_asof(
-                          target_df,
-                          source_df,
-                          on='timestamp',
-                          direction='nearest',
-                          tolerance=tolerance # Use calculated tolerance if grid is regular
-                      )
-                  except Exception as merge_err:
-                       logger.error(f"merge_asof failed for signal {key}: {merge_err}", exc_info=True)
-                       # Skip this signal but continue with others
-                       warnings.warn(f"Alignment failed for signal {key}: {merge_err}. Skipping.")
-                       continue # Skip to the next signal
-
-                  # Set the grid timestamp as index and select original columns
-                  aligned_df = aligned_df.set_index('timestamp')
-                  # Keep only the original data columns from the signal
-                  original_cols = [col for col in signal_df.columns if col in aligned_df.columns]
-                  aligned_signal_dfs[key] = aligned_df[original_cols]
-                  logger.debug(f"Signal {key} aligned. Result shape: {aligned_signal_dfs[key].shape}")
-
-              except Exception as e:
-                  logger.error(f"Error processing signal {key} for combined dataframe: {e}", exc_info=True)
-                  warnings.warn(f"Error processing signal {key}: {str(e)}")
-
-
-         # --- Combine aligned signals into the final DataFrame ---
-         if not aligned_signal_dfs:
-              logger.warning("No signals were successfully aligned. Returning empty DataFrame with grid index.")
-              # Return an empty DataFrame but preserve the grid index and potentially column structure if possible
-              if hasattr(self, 'metadata') and hasattr(self.metadata, 'index_config') and self.metadata.index_config:
-                   # Create empty multiindex columns if config exists
-                   empty_multi_idx = pd.MultiIndex(levels=[[]]*(len(self.metadata.index_config) + 1),
-                                                    codes=[[]]*(len(self.metadata.index_config) + 1),
-                                                    names=self.metadata.index_config + ['column'])
-                   return pd.DataFrame(index=grid_index, columns=empty_multi_idx)
-              else:
-                   # Return simple empty DataFrame with index
-                   return pd.DataFrame(index=grid_index)
-
-
-         # Use MultiIndex if configured
-         if hasattr(self.metadata, 'index_config') and self.metadata.index_config:
-             logger.info("Using MultiIndex for combined dataframe columns.")
-             # Create hierarchical columns
-             # combined_df = pd.concat(aligned_signal_dfs, axis=1, keys=aligned_signal_dfs.keys()) # Don't need this intermediate concat
-
-             # Construct the desired MultiIndex based on metadata
-             multi_index_tuples = []
-             final_columns_data = {} # Store data under the new tuple keys
-
-             for key, signal_aligned_df in aligned_signal_dfs.items():
-                  signal = self.signals[key] # Get original signal for metadata
-                  for col_name in signal_aligned_df.columns:
-                       # Create metadata values for multi-index levels
-                       metadata_values = []
-                       for field in self.metadata.index_config:
-                            value = getattr(signal.metadata, field, None)
-                            # Fallback for name or missing values
-                            if value is None:
-                                 value = key if field == 'name' else "N/A"
-                            # Convert enum to string representation
-                            if hasattr(value, 'name'):
-                                 value = value.name
-                            metadata_values.append(str(value)) # Ensure string conversion
-
-                       # Add the original column name as the last level
-                       metadata_values.append(col_name)
-                       tuple_key = tuple(metadata_values)
-                       multi_index_tuples.append(tuple_key)
-                       # Assign the data series to the new tuple key
-                       final_columns_data[tuple_key] = signal_aligned_df[col_name]
-
-             # Create the final DataFrame with the structured MultiIndex
-             if final_columns_data:
-                  multi_idx = pd.MultiIndex.from_tuples(
-                       multi_index_tuples,
-                       names=self.metadata.index_config + ['column']
-                  )
-                  # Create DataFrame from the dictionary using the grid_index
-                  combined_df = pd.DataFrame(final_columns_data, index=grid_index)
-                  combined_df.columns = multi_idx
-                  logger.debug(f"Applied MultiIndex. Final columns: {combined_df.columns.names}")
-             else:
-                  logger.warning("No data available to create MultiIndex columns.")
-                  # Create empty frame with index and MultiIndex columns structure
-                  # Ensure multi_index_tuples is defined even if empty
-                  if 'multi_index_tuples' not in locals():
-                       multi_index_tuples = [] # Initialize if it wasn't created
-                  empty_multi_idx = pd.MultiIndex.from_tuples(
-                       multi_index_tuples, # Use the (potentially empty) list
-                       names=self.metadata.index_config + ['column']
-                  )
-                  combined_df = pd.DataFrame(index=grid_index, columns=empty_multi_idx)
-
-         else:
-             # Simple column naming (key_colname)
-             logger.info("Using simple column names (key_colname) for combined dataframe.")
-             # Prepare data for simple concat (prefix columns)
-             simple_concat_dict = {}
-             for key, signal_aligned_df in aligned_signal_dfs.items():
-                  prefix = key
-                  # If signal has only one column, don't add suffix
-                  if len(signal_aligned_df.columns) == 1:
-                       simple_concat_dict[prefix] = signal_aligned_df.iloc[:, 0]
-                  else:
-                       for col in signal_aligned_df.columns:
-                            simple_concat_dict[f"{prefix}_{col}"] = signal_aligned_df[col]
-
-             # Check if simple_concat_dict is empty before creating DataFrame
-             if not simple_concat_dict:
-                  logger.warning("No data available for simple column concatenation.")
-                  combined_df = pd.DataFrame(index=grid_index) # Return empty frame with index
-             else:
-                  combined_df = pd.DataFrame(simple_concat_dict, index=grid_index)
-
-
-         # --- Final Cleanup and Logging ---
-         # Remove rows where *all* values are NaN (these are grid points with no nearby data from *any* signal)
-         # Check if dataframe is not empty before dropping NaN removal
-         if not combined_df.empty:
-             initial_rows = len(combined_df)
-             combined_df = combined_df.dropna(axis=0, how='all')
-             final_rows = len(combined_df)
-             logger.info(f"Removed {initial_rows - final_rows} rows with all NaN values.")
-         else:
-             final_rows = 0
-             logger.info("Combined dataframe was empty before NaN removal.")
-
-         # Log statistics
-         if final_rows > 0:
-             logger.info(f"Combined dataframe created with {final_rows} rows and {len(combined_df.columns)} columns.")
-             # Calculate data density based on non-null counts
-             non_null_counts = combined_df.count() # Count per column
-             total_cells = combined_df.size
-             total_non_null = non_null_counts.sum()
-             overall_density = (total_non_null / total_cells * 100) if total_cells > 0 else 0
-             min_density = (non_null_counts.min() / final_rows * 100) if final_rows > 0 else 0
-             max_density = (non_null_counts.max() / final_rows * 100) if final_rows > 0 else 0
-             mean_density = (non_null_counts.mean() / final_rows * 100) if final_rows > 0 and not non_null_counts.empty else 0
-
-             logger.info(f"Overall data density: {overall_density:.1f}%")
-             logger.info(f"Column data density: min={min_density:.1f}%, max={max_density:.1f}%, mean={mean_density:.1f}%")
-         else:
-             logger.warning("Combined dataframe is empty after removing all-NaN rows.")
-
-         return combined_df # Ensure dataframe is always returned
-
-    def generate_and_store_aligned_dataframe(self, force_recalculation: bool = False) -> None:
+    def get_stored_combined_dataframe(self) -> Optional[pd.DataFrame]:
         """
-        Generates the combined, aligned dataframe and stores it internally.
+        Returns the internally stored combined dataframe, if generated.
 
-        Uses the parameters calculated by align_signals (grid_index, target_rate, ref_time).
-        If the dataframe already exists and force_recalculation is False, does nothing.
-
-        Args:
-            force_recalculation: If True, recalculates even if it already exists.
-        """
-        if self._aligned_dataframe is not None and not force_recalculation:
-            logger.info("Aligned dataframe already exists. Skipping generation.")
-            return
-
-        # 1. Ensure alignment parameters exist
-        if not hasattr(self, 'grid_index') or self.grid_index is None or self.grid_index.empty:
-            logger.error("Cannot generate aligned dataframe: align_signals parameters not set or invalid.")
-            raise RuntimeError("align_signals must be run successfully before generating the aligned dataframe.")
-
-        logger.info("Generating and storing the aligned dataframe...")
-        # 2. Reuse the core logic from _calculate_combined_dataframe()
-        combined_df = self._calculate_combined_dataframe() # Call the refactored logic
-
-        # 3. Store the result and the parameters used
-        self._aligned_dataframe = combined_df
-        self._aligned_dataframe_params = {
-            "target_rate": self.target_rate,
-            "ref_time": self.ref_time,
-            "grid_index_size": len(self.grid_index),
-            "grid_start": self.grid_index.min(),
-            "grid_end": self.grid_index.max(),
-            "tolerance": self._merge_tolerance # Use the stored tolerance
-        }
-        logger.info(f"Stored aligned dataframe with shape {self._aligned_dataframe.shape}")
-
-    def get_stored_aligned_dataframe(self) -> Optional[pd.DataFrame]:
-        """Returns the internally stored aligned dataframe, if generated."""
-        if self._aligned_dataframe is None:
-             logger.warning("Stored aligned dataframe has not been generated yet.")
-        return self._aligned_dataframe
-
-    def get_aligned_dataframe_params(self) -> Optional[Dict[str, Any]]:
-         """Returns the parameters used to generate the stored aligned dataframe."""
-         if self._aligned_dataframe_params is None:
-              logger.warning("Stored aligned dataframe parameters are not available (dataframe not generated).")
-         return self._aligned_dataframe_params
-
-
-    def get_combined_dataframe(self) -> pd.DataFrame:
-        """
-        Generates and returns the combined dataframe ON THE FLY.
-
-        This method is for cases where you need the combined data immediately
-        without storing it persistently in the collection. It calls the internal
-        calculation helper.
+        This dataframe is the result of either `combine_aligned_signals` or
+        `align_and_combine_signals`.
 
         Returns:
-            pd.DataFrame: Combined dataframe with aligned signals.
+            The stored pandas DataFrame, or None if it hasn't been generated yet.
+        """ # Ensure closing triple quotes are present and correctly placed
+        if self._aligned_dataframe is None:
+             logger.debug("Stored combined dataframe has not been generated yet.")
+        return self._aligned_dataframe
+
+    def get_stored_combination_params(self) -> Optional[Dict[str, Any]]:
+         """
+         Returns the parameters used to generate the stored combined dataframe.
+
+         Returns:
+             A dictionary containing the parameters, or None if not generated yet.
+         """
+         if self._aligned_dataframe_params is None:
+              logger.debug("Stored combined dataframe parameters are not available (dataframe not generated).")
+         return self._aligned_dataframe_params
+
+    # --- Multi-Signal Operations ---
+
+    def apply_multi_signal_operation(self, operation_name: str, inputs: List[str],
+                                    parameters: Dict[str, Any] = None) -> SignalData:
         """
-        logger.info("Generating combined dataframe on the fly (not storing internally)...")
-        # Ensure alignment parameters are available if needed by the calculation method
-        if not hasattr(self, 'grid_index') or self.grid_index is None or self.grid_index.empty:
-             logger.warning("align_signals parameters not set. Calculation might fail or use defaults.")
-             # Depending on _calculate_combined_dataframe, might need to call align_signals here or raise.
-             # For now, assume _calculate handles missing grid index gracefully or align_signals was called.
+        Apply an operation that works on multiple signals.
 
-        return self._calculate_combined_dataframe()
+        Args:
+            operation_name: Name of the operation in the multi_signal_registry
+            inputs: List of signal keys to use as inputs
+            parameters: Parameters to pass to the operation
 
-    def apply_multi_signal_operation(self, operation_name: str, inputs: List[str], 
+        Returns:
+            The result signal instance
+
+        Raises:
+            ValueError: If the operation is not found or if any input signal
+                key specified in `inputs` does not exist in the collection.
+        """
+        parameters = parameters or {}
+        # Check if operation exists
+        if operation_name not in self.multi_signal_registry:
+            raise ValueError(f"Multi-signal operation '{operation_name}' not found")
+
+        func, output_class = self.multi_signal_registry[operation_name]
+
+        # Get all input signals
+        input_signals = []
+        for key in inputs:
+            try:
+                input_signals.append(self.get_signal(key))
+            except KeyError:
+                raise ValueError(f"Input signal '{key}' not found in collection")
+
+        # Apply the operation
+        result_data = func([s.get_data() for s in input_signals], parameters)
+
+        # Create metadata recording the operation and source signals
+        derived_from = []
+        for signal in input_signals:
+            operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
+            derived_from.append((signal.metadata.signal_id, operation_index))
+        # Create the output signal
+        operation_info = OperationInfo(operation_name, parameters)
+
+        output_metadata = {
+            "derived_from": derived_from,
+            "operations": [operation_info]
+        }
+
+        return output_class(data=result_data, metadata=output_metadata)
+
+    # --- Stored Combined Dataframe Access ---
+
+    def get_stored_combined_dataframe(self) -> Optional[pd.DataFrame]:
+        """
+        Returns the internally stored combined dataframe, if generated.
+
+        This dataframe is the result of either `combine_aligned_signals` or
+        `align_and_combine_signals`.
+
+        Returns:
+            The stored pandas DataFrame, or None if it hasn't been generated yet.
+        """
+        if self._aligned_dataframe is None:
+             logger.debug("Stored combined dataframe has not been generated yet.")
+        return self._aligned_dataframe
+
+    def get_stored_combination_params(self) -> Optional[Dict[str, Any]]:
+         """
+         Returns the parameters used to generate the stored combined dataframe.
+
+         Returns:
+             A dictionary containing the parameters, or None if not generated yet.
+         """
+         if self._aligned_dataframe_params is None:
+              logger.debug("Stored combined dataframe parameters are not available (dataframe not generated).")
+         return self._aligned_dataframe_params
+
+    # --- Multi-Signal Operations ---
+
+    def apply_multi_signal_operation(self, operation_name: str, inputs: List[str],
                                     parameters: Dict[str, Any] = None) -> SignalData:
         """
         Apply an operation that works on multiple signals.
@@ -1623,80 +1533,16 @@ class SignalCollection:
             
         return keys
 
-    def apply_grid_alignment(self, method: str = 'nearest', signals_to_align: Optional[List[str]] = None):
-        """
-        Applies the pre-calculated grid alignment to specified signals in place
-        by calling the 'reindex_to_grid' operation on each signal.
+# --- Populate the Collection Operation Registry ---
+# Iterate through the methods of the class *after* it's defined
+# and populate the registry based on the decorator attribute.
+for _method_name, _method_obj in inspect.getmembers(SignalCollection, predicate=inspect.isfunction):
+    if hasattr(_method_obj, '_collection_op_name'):
+        _op_name = getattr(_method_obj, '_collection_op_name')
+        if _op_name in SignalCollection.collection_operation_registry:
+             warnings.warn(f"Overwriting collection operation '{_op_name}' during registry population.")
+        SignalCollection.collection_operation_registry[_op_name] = _method_obj
+        logger.debug(f"Registered collection operation '{_op_name}' to method SignalCollection.{_method_name}")
 
-        Modifies the internal data of TimeSeriesSignal objects to conform to the
-        grid_index calculated by a prior call to align_signals. Records the
-        operation in each signal's metadata.
-
-        Args:
-            method: The method to use for reindexing ('nearest', 'pad'/'ffill', 'backfill'/'bfill').
-            signals_to_align: Optional list of signal keys to align. If None, attempts
-                              to align all TimeSeriesSignal objects in the collection.
-
-        Raises:
-            RuntimeError: If align_signals has not been run successfully first (no valid grid_index).
-            ValueError: If an invalid alignment method is provided or the operation fails.
-        """
-        if not hasattr(self, 'grid_index') or self.grid_index is None or self.grid_index.empty:
-            logger.error("Cannot apply grid alignment: align_signals must be run successfully first.")
-            raise RuntimeError("align_signals must be run successfully before applying grid alignment.")
-
-        # Validate method (can keep the stricter validation if desired)
-        allowed_methods = ['nearest', 'pad', 'ffill', 'backfill', 'bfill']
-        if method not in allowed_methods:
-             # Decide whether to warn and default, or raise error
-             logger.warning(f"Alignment method '{method}' not in allowed list {allowed_methods}. Using 'nearest'.")
-             method = 'nearest'
-             # raise ValueError(f"Invalid alignment method: {method}. Use one of {allowed_methods}")
-
-        logger.info(f"Applying grid alignment in-place to signals using method '{method}' by calling 'reindex_to_grid' operation...")
-        target_keys = signals_to_align if signals_to_align is not None else self.signals.keys()
-
-        processed_count = 0
-        skipped_count = 0
-        error_count = 0
-
-        for key in target_keys:
-            if key not in self.signals:
-                logger.warning(f"Signal key '{key}' specified for alignment not found.")
-                skipped_count += 1
-                continue
-
-            signal = self.signals[key]
-            if isinstance(signal, TimeSeriesSignal):
-                try:
-                    current_data = signal.get_data()
-                    if current_data is None or current_data.empty:
-                        logger.warning(f"Skipping alignment for signal '{key}': data is None or empty.")
-                        skipped_count += 1
-                        continue
-
-                    # Call apply_operation to handle reindexing and metadata
-                    logger.debug(f"Calling apply_operation('reindex_to_grid') for signal '{key}'...")
-                    signal.apply_operation(
-                        'reindex_to_grid',
-                        inplace=True,
-                        grid_index=self.grid_index, # Pass the grid index
-                        method=method              # Pass the method
-                    )
-                    # apply_operation now handles metadata recording and sample rate update
-
-                    logger.debug(f"Successfully applied 'reindex_to_grid' operation to signal '{key}'.")
-                    processed_count += 1
-                except Exception as e:
-                    logger.error(f"Failed to apply 'reindex_to_grid' operation to signal '{key}': {e}", exc_info=True)
-                    warnings.warn(f"Failed to apply grid alignment to signal '{key}': {e}")
-                    error_count += 1
-            else:
-                 logger.debug(f"Skipping alignment for signal '{key}': not a TimeSeriesSignal.")
-                 skipped_count += 1
-
-        logger.info(f"Grid alignment application finished in {time.time() - start_time:.2f} seconds. "
-                    f"Processed: {processed_count}, Skipped: {skipped_count}, Errors: {len(error_signals)}")
-
-        if error_signals:
-            raise RuntimeError(f"Failed to apply grid alignment to the following signals: {', '.join(error_signals)}")
+# Clean up temporary variables from the global scope of the module
+del _method_name, _method_obj, _op_name

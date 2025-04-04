@@ -175,23 +175,33 @@ class PlotlyVisualizer(VisualizerBase):
             num_to_category = y_axis_mapping
             tickvals = sorted(list(num_to_category.keys())) # Ensure ticks are sorted
             ticktext = [num_to_category[i] for i in tickvals]
-            figure.update_yaxes(tickvals=tickvals, ticktext=ticktext)
+            # Explicitly set y-axis range for categorical data
+            y_range = [min(tickvals) - 0.5, max(tickvals) + 0.5] # Add padding
+            figure.update_yaxes(tickvals=tickvals, ticktext=ticktext, range=y_range) # Add range here
 
             # Adjust hover template for categorical data
             # Create hover text mapping numbers back to categories
-            category_names = [num_to_category.get(val, 'Unknown') for val in y_data]
+            # Ensure y_data is treated correctly, handling potential NaNs before mapping
+            category_names = [num_to_category.get(val, 'NaN') if pd.notna(val) else 'NaN' for val in y_data] # Handle NaNs
             hover_template = '<b>Time</b>: %{x}<br><b>Stage</b>: %{customdata}<extra></extra>'
-            figure.update_traces(customdata=category_names, hovertemplate=hover_template)
+            # Update the specific trace added earlier
+            figure.data[-1].customdata = category_names # Update the last added trace
+            figure.data[-1].hovertemplate = hover_template
         elif params.get('hover_text'):
              # Default hover text for numerical data
-             figure.update_traces(
-                 hovertext=params['hover_text'],
-                 hoverinfo='text'
-             )
+             # Update the specific trace added earlier
+             figure.data[-1].hovertext = params['hover_text']
+             figure.data[-1].hoverinfo = 'text'
+             # figure.update_traces( # Keep old code commented for reference if needed
+             #     hovertext=params['hover_text'],
+             #     hoverinfo='text'
+             # )
         else:
              # Default hover template for numerical data if no specific text provided
              hover_template = '<b>Time</b>: %{x}<br><b>Value</b>: %{y}<extra></extra>'
-             figure.update_traces(hovertemplate=hover_template)
+             # Update the specific trace added earlier
+             figure.data[-1].hovertemplate = hover_template
+             # figure.update_traces(hovertemplate=hover_template) # Keep old code commented
         
         return trace
     

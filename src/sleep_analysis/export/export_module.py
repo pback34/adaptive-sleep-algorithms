@@ -391,17 +391,17 @@ class ExportModule:
             
             # Store combined dataframe if requested
             if include_combined:
-                logger = logging.getLogger(__name__) # Get logger
+                logger = logging.getLogger(__name__)
                 logger.info("Including combined dataframe in HDF5 export.")
-                # Use the new helper method to get the dataframe
-                combined_df = self._get_combined_dataframe_for_export()
+                # Retrieve the stored combined dataframe
+                combined_df = self.collection.get_stored_combined_dataframe()
                 if combined_df is not None and not combined_df.empty:
-                    logger.debug(f"Storing combined dataframe (shape: {combined_df.shape}) to HDF5 key 'combined'.")
+                    logger.info(f"Storing combined dataframe (shape: {combined_df.shape}) to HDF5 key 'combined'.")
                     store["combined"] = combined_df
                 elif combined_df is None:
-                     logger.error("Failed to retrieve or generate combined dataframe for HDF5 export. Skipping.")
+                     logger.warning("Stored combined dataframe not found or generation failed. Skipping combined HDF5 storage.")
                 else: # combined_df is empty
-                     logger.warning("Combined dataframe is empty. Skipping storage in HDF5 file.")
+                     logger.warning("Stored combined dataframe is empty. Skipping storage in HDF5 file.")
                      # Optionally store an empty dataframe? store["combined"] = pd.DataFrame()
             logger.info(f"DataFrames stored in HDF5 file: {h5_file}")
 
@@ -414,97 +414,3 @@ class ExportModule:
             # Use dumps with default=str to handle any remaining non-serializable objects
             metadata_json = json.dumps(metadata, default=str)
             f.create_dataset("metadata", data=metadata_json)
-
-    # This method might be redundant now if combined export relies solely on get_stored_combined_dataframe
-    # Keeping it for now in case it's used elsewhere, but review if it can be removed.
-    def _get_filtered_combined_dataframe(self) -> pd.DataFrame:
-        """
-        Get a combined dataframe with temporary signals filtered out.
-
-        Returns:
-            A DataFrame with all non-temporary signals combined.
-        """
-        import logging
-        from ..core import SignalCollection # Ensure SignalCollection is imported
-        from ..core.metadata_handler import MetadataHandler # Import MetadataHandler
-
-        logger = logging.getLogger(__name__)
-
-        # Determine the handler to use for the temporary collection
-        # Prefer the handler from the original collection if it exists
-        # Otherwise, try getting from the first signal, or create a new default
-        handler_to_use = None
-        if hasattr(self.collection, 'handler') and self.collection.handler:
-            handler_to_use = self.collection.handler
-            logger.debug("Using handler from original collection for temp collection.")
-        elif self.collection.signals:
-            # Try getting handler from the first signal
-            first_signal = next(iter(self.collection.signals.values()), None)
-            if first_signal and hasattr(first_signal, 'handler') and first_signal.handler:
-                handler_to_use = first_signal.handler
-                logger.debug("Using handler from first signal for temp collection.")
-            else:
-                logger.warning("Could not get handler from first signal, creating new default handler.")
-                handler_to_use = MetadataHandler()
-        else:
-            # No signals in collection, create a new default handler
-            logger.debug("Original collection has no signals, creating new default handler for temp collection.")
-            handler_to_use = MetadataHandler()
-
-        # Create a temporary collection containing only non-temporary signals
-        # Initialize with copies of essential attributes from the original collection
-        logger.debug(f"Initializing temporary collection for export with handler: {type(handler_to_use).__name__}")
-        temp_collection = SignalCollection(metadata=asdict(self.collection.metadata), # Use asdict for clean copy
-                                           metadata_handler=handler_to_use) # Use determined handler
-
-        # Explicitly copy alignment parameters if they exist on the original collection
-        # This ensures the temp collection uses the same grid as calculated previously
-        if hasattr(self.collection, 'target_rate'):
-            temp_collection.target_rate = self.collection.target_rate
-            logger.debug(f"Copied target_rate ({temp_collection.target_rate}) to temp collection.")
-        if hasattr(self.collection, 'ref_time'):
-            temp_collection.ref_time = self.collection.ref_time
-            logger.debug(f"Copied ref_time ({temp_collection.ref_time}) to temp collection.")
-        if hasattr(self.collection, 'grid_index'):
-            temp_collection.grid_index = self.collection.grid_index
-            logger.debug(f"Copied grid_index ({len(temp_collection.grid_index)} points) to temp collection.")
-
-        # Ensure index config is copied (already handled by asdict if part of CollectionMetadata)
-        # Redundant check for safety:
-        if hasattr(self.collection.metadata, 'index_config') and not temp_collection.metadata.index_config:
-             temp_collection.metadata.index_config = list(self.collection.metadata.index_config)
-             logger.debug(f"Copied index_config ({temp_collection.metadata.index_config}) to temp collection metadata.")
-        else:
-             temp_collection.metadata.index_config = [] # Default if not set
-
-        non_temporary_signals_count = 0
-        for key, signal in self.collection.signals.items():
-            # Check if 'temporary' attribute exists and is True
-            is_temporary = getattr(signal.metadata, 'temporary', False)
-            if not is_temporary:
-                # Add a reference to the non-temporary signal
-                # Using reference is fine as get_combined_dataframe doesn't modify signals
-                temp_collection.add_signal(key, signal)
-                non_temporary_signals_count += 1
-            else:
-                 logger.debug(f"Excluding temporary signal '{key}' from combined export.")
-
-        if non_temporary_signals_count == 0:
-            logger.warning("No non-temporary signals found for combined export.")
-            return pd.DataFrame() # Return empty DataFrame if no signals to combine
-
-        # Generate the combined dataframe from the temporary collection
-        # This inherently excludes temporary signals because they were never added
-        logger.info(f"Calling get_combined_dataframe on temporary collection with {non_temporary_signals_count} signals.")
-        combined_df = temp_collection.get_combined_dataframe()
-
-        # Check if the combined dataframe is valid before logging dimensions
-        # get_combined_dataframe should now always return a DataFrame
-        if combined_df.empty:
-            logger.warning("get_combined_dataframe returned an empty DataFrame.")
-            # Proceed with the empty DataFrame, export functions will handle it
-        else:
-            logger.debug(f"Generated combined dataframe for export with {len(combined_df)} rows and {len(combined_df.columns)} columns.")
-
-
-        return combined_df

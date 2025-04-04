@@ -9,6 +9,10 @@
 default_input_timezone: "America/New_York" # Assume source files are EST unless overridden
 target_timezone: "system" # Standardize all timestamps to the system's local timezone
 
+# Collection-level settings (applied before import/steps)
+collection_settings:
+  index_config: ["signal_type", "sensor_model", "body_position", "name"]
+
 import:
   # Heart Rate data from Polar H10 - using MergingImporter
   - signal_type: "heart_rate"
@@ -135,20 +139,22 @@ steps:
   - type: collection
     operation: "apply_grid_alignment"
     parameters:
-      method: "nearest" # Use 'nearest' neighbor for alignment
+      method: "nearest" # Method used by _reindex_to_grid_logic
 
-  # Step 3: Combine the now-aligned signals using concatenation and store the result
+  # Step 3: Combine the modified (snapped) signals using outer join + reindex
+  # This reads the modified signals and creates the final combined dataframe.
   - type: collection
-    operation: "combine_aligned_signals"
-    parameters: {} # No parameters needed for this operation
+    operation: "combine_snapped_signals_outer_join"
+    parameters: {} # No parameters needed
 
 # Export section - defines the output formats and location
-# The exporter will now retrieve the dataframe stored by combine_aligned_signals
+# The exporter will now retrieve the dataframe stored by align_and_combine_signals
+# index_config moved to collection_settings
 export:
   formats: ["csv"]
   output_dir: "results/polar_data"
   include_combined: true
-  index_config: ["signal_type", "sensor_model", "body_position", "name"]
+  # index_config: ["signal_type", "sensor_model", "body_position", "name"] # Moved to collection_settings
 
 # Visualization section - creates plots of selected signals
 visualization:
