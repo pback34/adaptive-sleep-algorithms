@@ -12,6 +12,7 @@ from typing import List, Dict, Any, Optional, Union
 from dataclasses import asdict
 import pickle
 import warnings
+import logging # Ensure logging is imported
 
 from ..core import SignalCollection, SignalData, SignalMetadata, CollectionMetadata
 
@@ -161,6 +162,41 @@ class ExportModule:
         }
         
         return metadata
+
+    def _get_combined_dataframe_for_export(self) -> Optional[pd.DataFrame]:
+        """
+        Retrieves the combined dataframe, prioritizing the stored version.
+
+        Tries to get the dataframe stored by generate_and_store_aligned_dataframe.
+        If not found, falls back to generating it on the fly using get_combined_dataframe.
+
+        Returns:
+            The combined pandas DataFrame, or None if it cannot be retrieved or generated.
+        """
+        logger = logging.getLogger(__name__) # Get logger inside method
+        logger.debug("Attempting to retrieve combined dataframe for export...")
+        # 1. Try to get the stored version first
+        combined_df = self.collection.get_stored_aligned_dataframe()
+
+        if combined_df is not None:
+            logger.info("Using pre-generated stored aligned dataframe for export.")
+            if combined_df.empty:
+                 logger.warning("Stored aligned dataframe is empty.")
+                 # Return the empty dataframe, let the calling export method handle it
+            return combined_df
+        else:
+            # 2. Fallback: Stored version not found, generate on the fly
+            logger.info("Stored aligned dataframe not found. Generating combined dataframe on the fly for export...")
+            try:
+                combined_df = self.collection.get_combined_dataframe()
+                if combined_df is None or combined_df.empty:
+                     logger.warning("On-the-fly generation resulted in an empty or None combined dataframe.")
+                     return None # Return None if generation fails or yields empty
+                logger.info("Successfully generated combined dataframe on the fly.")
+                return combined_df
+            except Exception as e:
+                logger.error(f"Error generating combined dataframe on the fly during export: {e}", exc_info=True)
+                return None # Return None if generation fails
     
     def _export_excel(self, output_dir: str, include_combined: bool) -> None:
         """
@@ -208,20 +244,31 @@ class ExportModule:
             metadata_df.to_excel(writer, sheet_name="Metadata")
         
         if include_combined:
+            logger = logging.getLogger(__name__) # Get logger
+            logger.info("Including combined dataframe in Excel export.")
             combined_file = os.path.join(output_dir, "combined.xlsx")
-            # Filter out temporary signals from the combined dataframe
-            combined_df = self._get_filtered_combined_dataframe()
-            if not combined_df.empty:
-                combined_df = self._format_timestamp(combined_df)
+            # Use the new helper method to get the dataframe
+            combined_df = self._get_combined_dataframe_for_export()
+
+            if combined_df is not None and not combined_df.empty:
+                logger.debug(f"Writing combined dataframe (shape: {combined_df.shape}) to Excel file {combined_file}.")
+                # Format timestamp before writing
+                combined_df_formatted = self._format_timestamp(combined_df.copy()) # Work on copy
+
                 # Excel doesn't support timezone-aware datetimes, remove timezone
-                if 'timestamp' in combined_df.columns and pd.api.types.is_datetime64_any_dtype(combined_df['timestamp']):
-                    if combined_df['timestamp'].dt.tz is not None:
-                        combined_df['timestamp'] = combined_df['timestamp'].dt.tz_localize(None)
+                if 'timestamp' in combined_df_formatted.columns and pd.api.types.is_datetime64_any_dtype(combined_df_formatted['timestamp']):
+                    if combined_df_formatted['timestamp'].dt.tz is not None:
+                        logger.debug("Removing timezone information for Excel export.")
+                        combined_df_formatted['timestamp'] = combined_df_formatted['timestamp'].dt.tz_localize(None)
 
                 # Ensure no NaN rows are included and index is properly handled
-                combined_df.to_excel(combined_file, na_rep='', index=False) # Use index=False as timestamp is a column
-            else:
-                warnings.warn("No data available for combined export")
+                combined_df_formatted.to_excel(combined_file, na_rep='', index=False) # Use index=False as timestamp is a column
+                logger.info(f"Successfully exported combined data to {combined_file}")
+            elif combined_df is None:
+                 logger.error("Failed to retrieve or generate combined dataframe for Excel export. Skipping.")
+            else: # combined_df is empty
+                 logger.warning("Combined dataframe is empty. Skipping export of combined Excel file.")
+                 warnings.warn("Combined dataframe is empty. Skipping export of combined Excel file.")
     
     def _export_csv(self, output_dir: str, include_combined: bool) -> None:
         """
@@ -280,12 +327,13 @@ class ExportModule:
         # Export combined dataframe
         if include_combined:
             combined_file = os.path.join(output_dir, "combined.csv")
-            logger.info(f"Generating combined dataframe for export to {combined_file}")
-            
-            combined_df = self._get_filtered_combined_dataframe()
-            
-            if not combined_df.empty:
-                logger.info(f"Combined dataframe has {len(combined_df)} rows and {len(combined_df.columns)} columns")
+            logger.info(f"Attempting to export combined dataframe to {combined_file}")
+
+            # Use the new helper method to get the dataframe
+            combined_df = self._get_combined_dataframe_for_export()
+
+            if combined_df is not None and not combined_df.empty:
+                logger.info(f"Combined dataframe retrieved/generated with {len(combined_df)} rows and {len(combined_df.columns)} columns")
 
                 # Check if columns are MultiIndex
                 if isinstance(combined_df.columns, pd.MultiIndex):
@@ -296,16 +344,18 @@ class ExportModule:
                 else:
                     logger.debug("Exporting combined CSV with standard columns.")
                     # Format the timestamp to be a column for standard export
-                    combined_formatted = self._format_timestamp(combined_df)
-                    logger.debug(f"Combined export timestamp column dtype: {combined_formatted.iloc[:, 0].dtype}")
-                    sample_time = combined_formatted.iloc[0, 0] if len(combined_formatted) > 0 else None
+                    combined_formatted = self._format_timestamp(combined_df.copy()) # Work on copy
+                    logger.debug(f"Combined export timestamp column dtype: {combined_formatted['timestamp'].dtype}")
+                    sample_time = combined_formatted['timestamp'].iloc[0] if len(combined_formatted) > 0 else None
                     logger.debug(f"Combined sample timestamp before export: {sample_time}")
                     # Use pandas native date_format
-                    combined_formatted.to_csv(combined_file, date_format='%Y-%m-%d %H:%M:%S.%f', na_rep='')
+                    combined_formatted.to_csv(combined_file, date_format='%Y-%m-%d %H:%M:%S.%f', na_rep='', index=False) # index=False as timestamp is a column
                     logger.info(f"Exported combined dataframe with standard columns and {len(combined_formatted)} rows to {combined_file}")
-            else:
-                logger.warning("No data available for combined export")
-                warnings.warn("No data available for combined export")
+            elif combined_df is None:
+                 logger.error("Failed to retrieve or generate combined dataframe for CSV export. Skipping.")
+            else: # combined_df is empty
+                logger.warning("Combined dataframe is empty. Skipping export of combined CSV file.")
+                warnings.warn("Combined dataframe is empty. Skipping export of combined CSV file.")
     
     def _export_pickle(self, output_dir: str, include_combined: bool) -> None:
         """
@@ -330,9 +380,19 @@ class ExportModule:
         
         # Add combined dataframe if requested
         if include_combined:
-            export_data["combined"] = self._get_filtered_combined_dataframe()
-        
+            logger = logging.getLogger(__name__) # Get logger
+            logger.info("Including combined dataframe in Pickle export.")
+            # Use the new helper method to get the dataframe
+            combined_df = self._get_combined_dataframe_for_export()
+            if combined_df is not None: # Include even if empty, as None indicates failure
+                 logger.debug(f"Adding combined dataframe (shape: {combined_df.shape}) to Pickle export.")
+                 export_data["combined"] = combined_df
+            else:
+                 logger.error("Failed to retrieve or generate combined dataframe for Pickle export. Skipping.")
+                 export_data["combined"] = None # Explicitly set to None if failed
+
         # Save to pickle file
+        logger.info(f"Saving export data to Pickle file: {pickle_file}")
         with open(pickle_file, 'wb') as f:
             pickle.dump(export_data, f)
     
@@ -364,11 +424,22 @@ class ExportModule:
             
             # Store combined dataframe if requested
             if include_combined:
-                combined_df = self._get_filtered_combined_dataframe()
-                if not combined_df.empty:
+                logger = logging.getLogger(__name__) # Get logger
+                logger.info("Including combined dataframe in HDF5 export.")
+                # Use the new helper method to get the dataframe
+                combined_df = self._get_combined_dataframe_for_export()
+                if combined_df is not None and not combined_df.empty:
+                    logger.debug(f"Storing combined dataframe (shape: {combined_df.shape}) to HDF5 key 'combined'.")
                     store["combined"] = combined_df
-        
+                elif combined_df is None:
+                     logger.error("Failed to retrieve or generate combined dataframe for HDF5 export. Skipping.")
+                else: # combined_df is empty
+                     logger.warning("Combined dataframe is empty. Skipping storage in HDF5 file.")
+                     # Optionally store an empty dataframe? store["combined"] = pd.DataFrame()
+            logger.info(f"DataFrames stored in HDF5 file: {h5_file}")
+
         # Store metadata separately (since HDFStore is only for DataFrames)
+        logger.debug(f"Storing metadata in HDF5 file: {h5_file}")
         with h5py.File(h5_file, 'a') as f:
             # Convert metadata to JSON string and store
             # metadata is already serialized by _serialize_metadata
