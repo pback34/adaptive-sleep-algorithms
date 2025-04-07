@@ -111,13 +111,40 @@ import:
     base_name: "hr_polar" # Signals will be named hr_polar_0, hr_polar_1, etc.
 
 steps:
-  # Align all time-series signals to a common grid (calculates alignment parameters)
+  # --- Alignment and Combination Workflow ---
+  # Option 1: Modify signals in-place then combine (useful if intermediate aligned signals are needed)
+  # Step 1.1: Calculate alignment grid parameters
   - type: collection
-    operation: align_signals
-    # parameters:
-    #   target_sample_rate: 100 # Optional: force a specific rate
+    operation: "generate_alignment_grid"
+    parameters:
+      target_sample_rate: 10.0 # Optional: Specify target rate (Hz). If omitted, uses max standard rate <= highest signal rate.
 
-  # Apply a filter to a specific signal
+  # Step 1.2: Apply the calculated alignment grid to all time-series signals in place
+  - type: collection
+    operation: "apply_grid_alignment"
+    parameters:
+      method: "nearest" # Method used by the underlying 'reindex_to_grid' signal operation
+
+  # Step 1.3: Combine the modified (aligned) signals using outer join + reindex
+  # This reads the modified signals and creates the final combined dataframe.
+  - type: collection
+    operation: "combine_aligned_signals"
+    parameters: {} # No parameters needed
+
+  # Option 2: Align and combine original signals using merge_asof (doesn't modify signals)
+  # Step 2.1: Calculate alignment grid parameters (same as Step 1.1)
+  # - type: collection
+  #   operation: "generate_alignment_grid"
+  #   parameters:
+  #     target_sample_rate: 10.0
+
+  # Step 2.2: Align original signals to grid using merge_asof and combine
+  # - type: collection
+  #   operation: "align_and_combine_signals"
+  #   parameters: {} # No parameters needed
+
+  # --- Other Processing Steps ---
+  # Apply a filter to a specific signal (using the key assigned during import/merging)
   - type: signal
     input: "hr_polar_merged_0"
     operation: "filter_lowpass"
@@ -242,12 +269,33 @@ The framework employs a robust strategy for handling timestamps and timezones:
 
 ### Signal Alignment and Combined DataFrames
 
--   **`align_signals` Step**: This collection-level operation (run via the `steps` section) **calculates** alignment parameters (`target_rate`, `ref_time`, `grid_index`) based on all time-series signals present. It determines a common sampling grid but **does not modify** the signals themselves. The calculated parameters are stored on the `SignalCollection` instance.
--   **`apply_grid_alignment` Step**: This collection-level operation **applies** the previously calculated grid alignment to the specified signals (or all time-series signals if none specified) **in place**. It modifies the internal data of each `TimeSeriesSignal` by calling its `reindex_to_grid` operation, which uses the collection's `grid_index` and a specified method (e.g., 'nearest', 'ffill'). The operation is recorded in each signal's metadata.
--   **`generate_and_store_aligned_dataframe` Step**: This collection-level operation generates the combined, aligned dataframe using the parameters from `align_signals` and **stores it persistently** within the `SignalCollection` instance. This avoids recalculating the potentially large dataframe multiple times (e.g., for export and visualization). The stored dataframe can be accessed programmatically via `collection.get_stored_aligned_dataframe()`.
--   **`get_combined_dataframe()`**: This method generates and returns the combined dataframe **on the fly** each time it's called. It uses the alignment parameters from `align_signals` if available. This is used internally by the `ExportModule` when `include_combined: true` if the dataframe hasn't been pre-generated and stored.
-    *   Alignment uses `pandas.merge_asof` with `direction='nearest'` and a tolerance (half the grid period, if a regular grid exists) to align each signal's data points to the common grid index. This method avoids simple resampling and preserves original values by finding the nearest data point within the tolerance window.
-    *   The resulting DataFrame can have simple columns (`key_colname`) or a `pandas.MultiIndex` if `index_config` is set in the `export` section.
+The framework provides flexible options for aligning time-series signals to a common time grid and generating a combined DataFrame suitable for export or further analysis. Alignment parameters are calculated once and stored on the `SignalCollection`. Two main combination strategies are available:
+
+1.  **In-Place Alignment + Combination**:
+    *   **`generate_alignment_grid`**: (Collection Operation) Calculates the common `target_rate`, `ref_time`, and `grid_index` based on all time-series signals. Stores these parameters on the collection instance but does *not* modify the signals.
+    *   **`apply_grid_alignment`**: (Collection Operation) Modifies signals *in place*. It iterates through specified (or all) `TimeSeriesSignal` objects and calls their `apply_operation('reindex_to_grid', inplace=True, ...)` method, passing the stored `grid_index` and an alignment `method` (e.g., 'nearest'). This snaps the signal's data points to the grid, potentially making the signal's index sparse if points don't align perfectly or if NaN rows are dropped by `reindex_to_grid`. The operation is recorded in each signal's metadata.
+    *   **`combine_aligned_signals`**: (Collection Operation) Assumes signals have been modified by `apply_grid_alignment`. It performs an `outer join` on the (potentially sparse) data of the modified signals and then `reindex`es the result to the full `grid_index` calculated earlier. This creates the final combined DataFrame with NaNs where signals didn't have data at a specific grid point. The result is stored internally in the collection.
+
+2.  **`merge_asof` Alignment + Combination**:
+    *   **`generate_alignment_grid`**: (Collection Operation) Same as above, calculates and stores alignment parameters.
+    *   **`align_and_combine_signals`**: (Collection Operation) Aligns signals using `pandas.merge_asof`. For each signal, it merges its *original* data with the `grid_index` using `direction='nearest'` and a calculated `tolerance` (half the grid period). This finds the closest original data point for each grid timestamp within the tolerance window. The results for all signals are then concatenated. This method does *not* modify the original signals in place. The result is stored internally in the collection.
+
+**Choosing a Strategy**:
+
+*   Use **In-Place Alignment + Combination** (`apply_grid_alignment` + `combine_aligned_signals`) if you need the individual signals to be modified to conform strictly to the grid *before* combining, or if you need to access these modified intermediate signals.
+*   Use **`merge_asof` Alignment + Combination** (`align_and_combine_signals`) if you want to preserve the original signal data and perform alignment only during the combination step, finding the nearest original value for each grid point. This is often preferred for preserving original measurements.
+
+**Accessing the Result**:
+
+*   Both combination strategies store the resulting combined DataFrame internally within the `SignalCollection`.
+*   This stored DataFrame is automatically used by the `ExportModule` when `include_combined: true` is set in the `export` section of the workflow.
+*   Programmatically, you can access it via `collection.get_stored_combined_dataframe()`.
+*   The parameters used for generation can be accessed via `collection.get_stored_combination_params()`.
+
+**Combined DataFrame Structure**:
+
+*   The resulting DataFrame will have the calculated `grid_index` as its index.
+*   Columns can be simple (`key_colname`) or a `pandas.MultiIndex` if `index_config` is set in the `collection_settings` section of the workflow (e.g., `index_config: ["signal_type", "name"]`).
 
 ### Metadata Management
 
@@ -362,4 +410,42 @@ dashboard = visualizer.visualize_collection(
     layout="vertical"
 )
 visualizer.save(dashboard, "dashboard.html")
+```
+
+## Contributing and Development
+
+This section provides guidance for developers looking to contribute to or modify the framework.
+
+### Coding Guidelines
+
+All contributions must adhere to the rules outlined in `docs/coding_guidelines.md`. Please review this document before making changes to ensure consistency and maintainability. Key principles include favoring declarative design, using common utilities, and respecting signal encapsulation.
+
+### Adding Operations
+
+-   **Signal Operations**: To add a new processing step for a specific signal type (e.g., `TimeSeriesSignal`, `PPGSignal`):
+    1.  Define the core logic as a Python function or an instance method within the signal class.
+    2.  **Instance Methods**: If implementing as a method (preferred for core functionality), ensure it handles `inplace` logic and returns the correct signal instance. The `apply_operation` method will find and call it directly.
+    3.  **Registered Functions**: If implementing as a standalone function (useful for optional or plugin-like operations):
+        *   The function should typically accept `data_list: List[pd.DataFrame]` and `parameters: Dict[str, Any]` and return a `pd.DataFrame`.
+        *   Register it with the appropriate signal class using the `@SignalClass.register("operation_name", output_class=...)` decorator. `output_class` specifies the type of `SignalData` the operation produces.
+    4.  The operation can then be invoked via `signal.apply_operation("operation_name", ...)` or used in workflow `steps`.
+-   **Collection Operations**: To add operations that act on the `SignalCollection` itself (e.g., alignment, combination):
+    1.  Implement the logic as a method within the `SignalCollection` class.
+    2.  Decorate the method with `@register_collection_operation("operation_name")`.
+    3.  The operation can then be invoked via `collection.apply_operation("operation_name", ...)` or used in workflow `steps` with `type: collection`.
+
+### Metadata Management
+
+-   The framework automatically manages metadata updates when operations are applied correctly through the `apply_operation` methods of `SignalData` and `SignalCollection`.
+-   `MetadataHandler` ensures consistent metadata creation and updates.
+-   `SignalMetadata.operations` tracks the history of applied operations.
+-   `SignalMetadata.derived_from` links new signals created by non-inplace operations back to their source signals.
+-   Directly modifying `signal._data` bypasses this crucial metadata tracking and should be avoided. Refer to Rule 6 and Rule 7 in the coding guidelines.
+
+### Running Tests
+
+Ensure all tests pass before submitting changes. Run the test suite using `pytest` from the project root directory:
+
+```bash
+pytest
 ```
