@@ -178,9 +178,18 @@ def test_simple_multiindex_to_csv(temp_output_dir, sample_multiindex_df, logger)
 
 def test_collection_multiindex_export(temp_output_dir, signal_collection_with_multiindex, logger):
     """Test exporting a SignalCollection with MultiIndex to CSV."""
-    # Get the combined DataFrame
-    combined_df = signal_collection_with_multiindex.get_combined_dataframe()
-    
+    # Generate alignment grid first
+    signal_collection_with_multiindex.generate_alignment_grid()
+
+    # Generate and store the combined dataframe first
+    signal_collection_with_multiindex.combine_aligned_signals() # Or align_and_combine_signals if that's the intended workflow
+
+    # Get the stored combined DataFrame
+    combined_df = signal_collection_with_multiindex.get_stored_combined_dataframe()
+
+    # Check if dataframe was generated
+    assert combined_df is not None, "Combined dataframe should have been generated and stored."
+
     # Log the combined DataFrame structure
     logger.debug("Combined DataFrame structure before export:")
     logger.debug(f"Shape: {combined_df.shape}")
@@ -326,10 +335,19 @@ def test_export_functions_multiindex(temp_output_dir, signal_collection_with_mul
     """Test the export functions specifically for MultiIndex handling."""
     # Initialize the exporter
     exporter = ExportModule(signal_collection_with_multiindex)
-    
-    # Get the combined DataFrame directly
-    combined_df = signal_collection_with_multiindex.get_combined_dataframe()
-    
+
+    # Generate alignment grid first
+    signal_collection_with_multiindex.generate_alignment_grid()
+
+    # Generate and store the combined dataframe first
+    signal_collection_with_multiindex.combine_aligned_signals() # Or align_and_combine_signals if that's the intended workflow
+
+    # Get the stored combined DataFrame
+    combined_df = signal_collection_with_multiindex.get_stored_combined_dataframe()
+
+    # Check if dataframe was generated
+    assert combined_df is not None, "Combined dataframe should have been generated and stored."
+
     # Log the structure of the combined DataFrame
     logger.debug("Combined DataFrame structure before export:")
     logger.debug(f"Shape: {combined_df.shape}")

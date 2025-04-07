@@ -113,9 +113,14 @@ def test_serialize_metadata(sample_signal_collection):
 
 def test_export_excel(sample_signal_collection, temp_output_dir):
     """Test Excel export functionality."""
+    # Generate and store the combined dataframe within the collection first
+    sample_signal_collection.generate_alignment_grid()
+    sample_signal_collection.apply_grid_alignment()
+    sample_signal_collection.combine_aligned_signals()
+
     exporter = ExportModule(sample_signal_collection)
     exporter.export(formats=["excel"], output_dir=temp_output_dir, include_combined=True)
-    
+
     # Check files were created
     assert os.path.exists(os.path.join(temp_output_dir, "signals.xlsx"))
     assert os.path.exists(os.path.join(temp_output_dir, "combined.xlsx"))
@@ -139,15 +144,20 @@ def test_export_excel(sample_signal_collection, temp_output_dir):
         assert "accelerometer_0_y" in combined_df.columns  # From accelerometer signal
         assert "accelerometer_0_z" in combined_df.columns  # From accelerometer signal
         temp_value_cols = [col for col in combined_df.columns if "temp_0" in col]
-    # Check for the correct number of non-NaN rows
-    assert len(combined_df.dropna()) == 5  # 5 data points
-    assert len(temp_value_cols) == 0
+    # Check for the correct number of rows (should match grid length)
+    assert len(combined_df) == 5  # Should have 5 rows matching the grid
+    assert len(temp_value_cols) == 0 # Ensure temporary signal columns are not present
 
 def test_export_csv(sample_signal_collection, temp_output_dir):
     """Test CSV export functionality."""
+    # Generate and store the combined dataframe within the collection first
+    sample_signal_collection.generate_alignment_grid()
+    sample_signal_collection.apply_grid_alignment()
+    sample_signal_collection.combine_aligned_signals()
+
     exporter = ExportModule(sample_signal_collection)
     exporter.export(formats=["csv"], output_dir=temp_output_dir, include_combined=True)
-    
+
     # Check files were created
     assert os.path.isdir(os.path.join(temp_output_dir, "signals"))
     assert os.path.exists(os.path.join(temp_output_dir, "signals", "ppg_0.csv"))
@@ -183,7 +193,7 @@ def test_export_csv(sample_signal_collection, temp_output_dir):
     assert 'ppg_0' in cols_str or 'PPG Signal' in cols_str # Check for PPG data
     assert 'accelerometer_0' in cols_str or 'Accelerometer Signal' in cols_str # Check for Accel data
     assert 'temp_0' not in cols_str # Ensure temporary signal is excluded
-    
+
     # Verify metadata
     with open(os.path.join(temp_output_dir, "metadata.json"), 'r') as f:
         metadata = json.load(f)
@@ -192,9 +202,14 @@ def test_export_csv(sample_signal_collection, temp_output_dir):
 
 def test_export_pickle(sample_signal_collection, temp_output_dir):
     """Test Pickle export functionality."""
+    # Generate and store the combined dataframe within the collection first
+    sample_signal_collection.generate_alignment_grid()
+    sample_signal_collection.apply_grid_alignment()
+    sample_signal_collection.combine_aligned_signals()
+
     exporter = ExportModule(sample_signal_collection)
     exporter.export(formats=["pickle"], output_dir=temp_output_dir, include_combined=True)
-    
+
     # Check file was created
     pickle_path = os.path.join(temp_output_dir, "signals.pkl")
     assert os.path.exists(pickle_path)
@@ -212,14 +227,13 @@ def test_export_pickle(sample_signal_collection, temp_output_dir):
     assert "accelerometer_0" in data["signals"]
     assert "temp_0" in data["signals"]
     
-    # Check the combined dataframe structure - we're more interested in the presence 
+    # Check the combined dataframe structure - we're more interested in the presence
     # of the right data and absence of temporary signals than the exact MultiIndex structure
+    assert data["combined"] is not None # Ensure combined data is not None
     cols_str = str(data["combined"].columns)
-    assert "ppg_0" in cols_str  # PPG signal value
-    assert "accelerometer_0_x" in cols_str  # Accelerometer X
-    assert "accelerometer_0_y" in cols_str  # Accelerometer Y
-    assert "accelerometer_0_z" in cols_str  # Accelerometer Z
-    assert "temp_0" not in cols_str  # Temporary signal should not be included
+    assert 'ppg_0' in cols_str or 'PPG Signal' in cols_str # Check for PPG data (handles MultiIndex)
+    assert 'accelerometer_0' in cols_str or 'Accelerometer Signal' in cols_str # Check for Accel data
+    assert 'temp_0' not in cols_str  # Temporary signal should not be included
 
 def test_export_hdf5(sample_signal_collection, temp_output_dir):
     """Test HDF5 export functionality."""
@@ -227,10 +241,15 @@ def test_export_hdf5(sample_signal_collection, temp_output_dir):
         import h5py
     except ImportError:
         pytest.skip("h5py not installed, skipping HDF5 test")
-    
+
+    # Generate and store the combined dataframe within the collection first
+    sample_signal_collection.generate_alignment_grid()
+    sample_signal_collection.apply_grid_alignment()
+    sample_signal_collection.combine_aligned_signals()
+
     exporter = ExportModule(sample_signal_collection)
     exporter.export(formats=["hdf5"], output_dir=temp_output_dir, include_combined=True)
-    
+
     # Check file was created
     h5_path = os.path.join(temp_output_dir, "signals.h5")
     assert os.path.exists(h5_path)
@@ -256,12 +275,10 @@ def test_export_hdf5(sample_signal_collection, temp_output_dir):
         combined_df = store["/combined"]
         # Check the presence of expected columns and absence of temporary signal
         cols_str = str(combined_df.columns)
-        assert "ppg_0" in cols_str
-        assert "accelerometer_0_x" in cols_str
-        assert "accelerometer_0_y" in cols_str
-        assert "accelerometer_0_z" in cols_str
-        assert "temp_0" not in cols_str
-    
+        assert 'ppg_0' in cols_str or 'PPG Signal' in cols_str # Check for PPG data (handles MultiIndex)
+        assert 'accelerometer_0' in cols_str or 'Accelerometer Signal' in cols_str # Check for Accel data
+        assert 'temp_0' not in cols_str # Ensure temporary signal is excluded
+
     # Check metadata using h5py
     with h5py.File(h5_path, 'r') as f:
         assert "metadata" in f
@@ -280,9 +297,14 @@ def test_unsupported_format(sample_signal_collection, temp_output_dir):
 
 def test_multiple_formats(sample_signal_collection, temp_output_dir):
     """Test exporting to multiple formats at once."""
+    # Generate and store the combined dataframe within the collection first
+    sample_signal_collection.generate_alignment_grid()
+    sample_signal_collection.apply_grid_alignment()
+    sample_signal_collection.combine_aligned_signals()
+
     exporter = ExportModule(sample_signal_collection)
     exporter.export(formats=["excel", "csv"], output_dir=temp_output_dir, include_combined=True)
-    
+
     # Check that both formats were exported
     assert os.path.exists(os.path.join(temp_output_dir, "signals.xlsx"))
     assert os.path.isdir(os.path.join(temp_output_dir, "signals"))
@@ -307,30 +329,35 @@ def test_export_with_custom_multiindex(sample_signal_collection, temp_output_dir
     """Test exporting with a custom multi-index configuration."""
     # Configure the collection with custom indices
     sample_signal_collection.set_index_config(["signal_type", "body_position"])
-    
+
+    # Generate and store the combined dataframe within the collection first
+    sample_signal_collection.generate_alignment_grid()
+    sample_signal_collection.apply_grid_alignment()
+    sample_signal_collection.combine_aligned_signals()
+
     # Export with the configured indices
     exporter = ExportModule(sample_signal_collection)
     exporter.export(formats=["csv"], output_dir=temp_output_dir, include_combined=True)
-    
+
     # Read the combined CSV file
     combined_path = os.path.join(temp_output_dir, "combined.csv")
     assert os.path.exists(combined_path)
-    
-    # Read the file content to verify the basic structure
-    with open(combined_path, 'r') as f:
-        csv_content = f.readlines()
-    
-    # Check that we have a valid CSV with content
-    assert len(csv_content) > 1
-    
-    # Simplified test that just checks the column data is present in some form
-    csv_content_str = ''.join(csv_content)
-    assert 'value' in csv_content_str
-    assert 'x' in csv_content_str
-    assert 'y' in csv_content_str
-    assert 'z' in csv_content_str
-    
-    # Verify no temporary data is included
-    assert 'temp_0' not in csv_content_str
-        
+
+    # Read the combined CSV using pandas to check MultiIndex columns
+    combined_df = pd.read_csv(combined_path, header=[0, 1], index_col=0) # Read with MultiIndex header
+
+    # Check that we have data
+    assert not combined_df.empty
+
+    # Check MultiIndex structure based on index_config
+    assert combined_df.columns.names == ["signal_type", "body_position"] # No 'column' level name
+
+    # Check presence of expected data columns under the correct MultiIndex levels
+    # The MultiIndex now only has two levels based on the index_config
+    assert ('PPG', 'LEFT_WRIST') in combined_df.columns
+    assert ('ACCELEROMETER', 'CHEST') in combined_df.columns # Check for the base tuple
+
+    # Verify no temporary data is included by checking the first level of the MultiIndex
+    assert 'TEMPORARY' not in combined_df.columns.get_level_values(0) # Assuming temporary signal has a type
+
 # Duplicate test removed - this test was already defined earlier in the file

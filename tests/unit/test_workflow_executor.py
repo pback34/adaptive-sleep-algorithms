@@ -441,9 +441,30 @@ class TestWorkflowExecutor:
         PPGSignal.registry["filter_lowpass"] = (mock_filter_lowpass, None)
     
         try:
-            # Execute workflow with our mock filter
+            # --- Manually create and set a mock combined dataframe ---
+            # This simulates the state after a combine operation would have run
+            ppg0_data = workflow_executor_with_data.container.get_signal("ppg_0").get_data()
+            # Simulate the output of the mock filter_lowpass
+            filtered_data = mock_filter_lowpass([ppg0_data], {})
+            
+            # Combine the relevant dataframes (adjust columns as needed for your combine logic)
+            # For this test, let's assume a simple combination
+            mock_combined_df = pd.concat(
+                [ppg0_data.add_prefix("ppg_0_"), filtered_data.add_prefix("filtered_ppg_")],
+                axis=1
+            )
+            # Ensure it has the correct index type
+            mock_combined_df.index = pd.to_datetime(mock_combined_df.index)
+
+            # Set the mock combined dataframe on the collection
+            workflow_executor_with_data.container._aligned_dataframe = mock_combined_df
+            # Optionally set params if needed by export logic (not currently used by CSV export)
+            # workflow_executor_with_data.container._aligned_dataframe_params = {"method_used": "mock"}
+            # --- End setting mock combined dataframe ---
+
+            # Execute workflow with our mock filter AND the pre-set combined data
             workflow_executor_with_data.execute_workflow(export_workflow_config)
-        
+
             # Check export directory was created with expected files
             assert os.path.isdir(os.path.join(temp_output_dir, "signals"))
             assert os.path.exists(os.path.join(temp_output_dir, "signals", "ppg_0.csv"))

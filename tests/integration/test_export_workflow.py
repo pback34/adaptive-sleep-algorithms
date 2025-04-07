@@ -20,12 +20,12 @@ def temp_csv_file():
     # Create temporary directory
     temp_dir = tempfile.mkdtemp()
     
-    # Create CSV file with sample data
+    # Create CSV file with sample data - Use 'value' as source column name
     data = pd.DataFrame({
         "timestamp": pd.date_range(start="2023-01-01", periods=100, freq="1s"),
-        "ppg_value": list(range(100))  # Changed to match PolarCSVImporter's expected column
+        "ppg_value": list(range(100))  # Use 'ppg_value' to match importer config {"value": "ppg_value"}
     })
-    csv_path = os.path.join(temp_dir, "polar_sample_01.csv")  # Changed to match PolarCSVImporter's expected pattern
+    csv_path = os.path.join(temp_dir, "polar_sample_01.csv")
     data.to_csv(csv_path, index=False)
     
     yield csv_path
@@ -69,8 +69,13 @@ def test_full_workflow(temp_csv_file, temp_output_dir):
     temp_signal = filtered_signal.apply_operation("filter_lowpass", cutoff=2.0)
     temp_signal.metadata.temporary = True
     collection.add_signal("ppg_temp", temp_signal)
-    
-    # Step 5: Export all signals
+
+    # Step 5: Generate the combined dataframe BEFORE exporting
+    # These steps populate collection._aligned_dataframe
+    collection.generate_alignment_grid() # Calculate alignment parameters
+    collection.align_and_combine_signals() # Align using merge_asof and combine
+
+    # Step 6: Export all signals (now including the generated combined data)
     exporter = ExportModule(collection)
     exporter.export(
         formats=["csv", "excel"],

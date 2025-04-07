@@ -144,7 +144,7 @@ steps:
   # Step 3: Combine the modified (snapped) signals using outer join + reindex
   # This reads the modified signals and creates the final combined dataframe.
   - type: collection
-    operation: "combine_snapped_signals_outer_join"
+    operation: "combine_aligned_signals"
     parameters: {} # No parameters needed
 
 # Export section - defines the output formats and location

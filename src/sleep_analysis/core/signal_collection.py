@@ -896,6 +896,8 @@ class SignalCollection:
 
         if error_signals: # Check error_signals list
             # Raise the error to be caught by apply_operation if called via workflow
+            raise RuntimeError(f"Failed to apply grid alignment to the following signals: {', '.join(error_signals)}")
+
     @register_collection_operation("align_and_combine_signals")
     def align_and_combine_signals(self) -> None:
         """
@@ -934,8 +936,14 @@ class SignalCollection:
         aligned_signal_dfs = {}
         error_signals = []
 
-        # --- Align each signal to the grid_index using merge_asof ---
+        # --- Align each non-temporary signal to the grid_index using merge_asof ---
         for key, signal in self.signals.items():
+            # --- Skip temporary signals ---
+            if signal.metadata.temporary:
+                logger.debug(f"Skipping temporary signal '{key}' for combined export.")
+                continue
+            # --- End skip ---
+
             if not isinstance(signal, TimeSeriesSignal):
                 logger.debug(f"Skipping non-time-series signal: {key}")
                 continue
@@ -1081,9 +1089,11 @@ class SignalCollection:
                     final_columns_data[tuple_key] = signal_aligned_df[col_name]
 
             if final_columns_data:
+                # Add 'column' to the names list to match the structure of multi_index_tuples
+                level_names = self.metadata.index_config + ['column']
                 multi_idx = pd.MultiIndex.from_tuples(
                     multi_index_tuples,
-                    names=self.metadata.index_config + ['column']
+                    names=level_names
                 )
                 combined_df = pd.DataFrame(final_columns_data, index=grid_index)
                 # Ensure columns are assigned correctly, especially if final_columns_data was empty
@@ -1091,10 +1101,12 @@ class SignalCollection:
                      combined_df.columns = multi_idx
                 else: # Handle case where data is empty but index/columns structure is needed
                      combined_df = pd.DataFrame(index=grid_index, columns=multi_idx)
-                logger.debug(f"Applied MultiIndex. Final columns: {combined_df.columns.names}")
+                logger.debug(f"Applied MultiIndex. Final level names: {combined_df.columns.names}")
             else:
                 logger.warning("No data available to create MultiIndex columns.")
-                empty_multi_idx = pd.MultiIndex.from_tuples([], names=self.metadata.index_config + ['column'])
+                # Add 'column' to the names list for the empty MultiIndex as well
+                level_names = self.metadata.index_config + ['column']
+                empty_multi_idx = pd.MultiIndex.from_tuples([], names=level_names)
                 combined_df = pd.DataFrame(index=grid_index, columns=empty_multi_idx)
         else:
             logger.info("Using simple column names (key_colname) for combined dataframe.")
@@ -1197,10 +1209,16 @@ class SignalCollection:
         logger.info("Combining in-place snapped signals using outer join and reindexing...")
         start_time = time.time()
 
-        # --- Collect Modified Signal DataFrames ---
+        # --- Collect Modified Signal DataFrames (excluding temporary) ---
         snapped_signal_dfs = {}
         error_signals = []
         for key, signal in self.signals.items():
+            # --- Skip temporary signals ---
+            if signal.metadata.temporary:
+                logger.debug(f"Skipping temporary signal '{key}' for combined export.")
+                continue
+            # --- End skip ---
+
             if isinstance(signal, TimeSeriesSignal):
                 try:
                     signal_df = signal.get_data() # Get the modified data
