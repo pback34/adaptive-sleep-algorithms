@@ -8,6 +8,7 @@ and collections, including signal types, operation history, and provenance.
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Tuple
 import datetime
+import pandas as pd
 
 from sleep_analysis.signal_types import SignalType, SensorType, SensorModel, BodyPosition, Unit
 from sleep_analysis import __version__
@@ -37,6 +38,12 @@ class SignalMetadata:
     sensor_info: Optional[Dict[str, Any]] = None  # Additional sensor details
     source_files: List[str] = field(default_factory=list)  # List of file paths contributing to the signal
     merged: bool = False  # Flag indicating if this signal was merged from multiple sources
+    # --- FeatureSignal Specific Metadata ---
+    epoch_window_length: Optional[pd.Timedelta] = None # Duration of epochs used for features
+    epoch_step_size: Optional[pd.Timedelta] = None # Step between epochs used for features
+    feature_names: List[str] = field(default_factory=list) # List of feature column names
+    source_signal_keys: List[str] = field(default_factory=list) # Keys of source signals from collection
+    # --- End FeatureSignal Specific ---
     framework_version: str = __version__  # Framework version used to process the signal
 
 @dataclass

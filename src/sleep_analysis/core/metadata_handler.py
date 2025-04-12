@@ -56,10 +56,22 @@ class MetadataHandler:
         metadata_dict.update(kwargs)
         
         # Filter out any keys that are not valid for SignalMetadata
+        # Need to import pandas here if not already imported globally
+        import pandas as pd
         from dataclasses import fields
         valid_fields = {f.name for f in fields(SignalMetadata)}
-        filtered_dict = {k: v for k, v in metadata_dict.items() if k in valid_fields}
-        
+        filtered_dict = {}
+        for k, v in metadata_dict.items():
+            if k in valid_fields:
+                # Special handling for Timedelta conversion if needed (e.g., from string)
+                if k in ['epoch_window_length', 'epoch_step_size'] and isinstance(v, str):
+                    try:
+                        filtered_dict[k] = pd.Timedelta(v)
+                    except ValueError:
+                        raise ValueError(f"Invalid format for {k}: '{v}'. Use pandas Timedelta string format (e.g., '30s', '5m').")
+                else:
+                    filtered_dict[k] = v
+
         # Create the metadata instance
         metadata = SignalMetadata(**filtered_dict)
         

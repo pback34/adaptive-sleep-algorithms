@@ -147,14 +147,60 @@ steps:
     operation: "combine_aligned_signals"
     parameters: {} # No parameters needed
 
+  # --- Feature Extraction Steps ---
+  # Prerequisite: generate_alignment_grid and apply_grid_alignment must have run
+
+  # Step 4: Compute basic statistics for Heart Rate signals
+  - type: multi_signal # Assuming feature ops are registered in multi_signal_registry
+    operation: "feature_statistics"
+    inputs: ["hr"] # Use base name to get all HR signals
+    parameters:
+      window_length: "30s"
+      step_size: "10s"
+      aggregations: ["mean", "std", "min", "max"]
+    output: "hr_features" # Base name for HR feature signals
+
+  # Step 5: Compute basic statistics for Accelerometer Magnitude signals
+  - type: multi_signal
+    operation: "feature_statistics"
+    inputs: ["accel_magnitude"] # Use base name
+    parameters:
+      window_length: "30s"
+      step_size: "10s"
+      aggregations: ["mean", "std"]
+    output: "accel_mag_features"
+
+  # Step 6: Compute basic statistics for Accelerometer Angle signals (e.g., pitch/roll)
+  # Assuming 'accel_angle' contains columns like 'pitch', 'roll'
+  - type: multi_signal
+    operation: "feature_statistics"
+    inputs: ["accel_angle"] # Use base name
+    parameters:
+      window_length: "30s"
+      step_size: "10s"
+      aggregations: ["mean", "std"] # Apply to pitch, roll etc.
+    output: "accel_angle_features"
+
+  # Step 7: Combine all generated feature signals into a single matrix
+  - type: collection
+    operation: "combine_features"
+    inputs: ["hr_features", "accel_mag_features", "accel_angle_features"] # Use base names of feature signals
+    output: "final_features" # Key for the combined feature matrix
+
 # Export section - defines the output formats and location
-# The exporter will now retrieve the dataframe stored by align_and_combine_signals
+# The exporter will now retrieve the dataframe stored by combine_aligned_signals
 # index_config moved to collection_settings
 export:
-  formats: ["csv"]
-  output_dir: "results/polar_data"
-  include_combined: true
-  # index_config: ["signal_type", "sensor_model", "body_position", "name"] # Moved to collection_settings
+  # Export the combined aligned time-series data
+  - formats: ["csv"]
+    output_dir: "results/polar_data/aligned_timeseries"
+    include_combined: true # Exports the result of combine_aligned_signals
+
+  # Export the final combined feature matrix
+  - formats: ["csv"]
+    output_dir: "results/polar_data/features"
+    signals: ["final_features"] # Specify the key of the FeatureSignal to export
+    # include_combined: false # Default or explicitly false when exporting specific signals
 
 # Visualization section - creates plots of selected signals
 visualization:
@@ -206,13 +252,24 @@ visualization:
     signals: ["hr", "accel_magnitude", "accel_angle", "sleep_stage_0"] # Added sleep_stage_0
     layout: vertical
     title: "All Signals Overview - Linked X-Axes"
-    output: "results/visualizations/all_signals_overview.html"
+    output: "results/visualizations/all_signals_overview-plotly.html"
     backend: plotly
     parameters:
       link_x_axes: true  # Ensure x-axes are linked across all subplots
-      downsample: 20000 # Limit each subplot to max 20,000 points for performance
+      # downsample: 20000 # Limit each subplot to max 20,000 points for performance
       # width: 1200
       # height: 1800  # Taller to accommodate all subplots
       strict: false
-
+  - type: time_series
+    signals: ["hr", "accel_magnitude", "accel_angle", "sleep_stage_0"] # Added sleep_stage_0
+    layout: vertical
+    title: "All Signals Overview - Linked X-Axes"
+    output: "results/visualizations/all_signals_overview-bokeh.html"
+    backend: bokeh
+    parameters:
+      link_x_axes: true  # Ensure x-axes are linked across all subplots
+      # downsample: 20000 # Limit each subplot to max 20,000 points for performance
+      # width: 1200
+      # height: 1800  # Taller to accommodate all subplots
+      strict: false
 # Removed standalone hypnogram plot configuration

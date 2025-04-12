@@ -98,7 +98,15 @@ class SignalData(ABC):
         for field in ['temporary', 'merged']:
             if field not in metadata_kwargs:
                 metadata_kwargs[field] = False
-                
+
+        # Initialize feature-specific defaults if not provided
+        for field in ['feature_names', 'source_signal_keys']:
+             if field not in metadata_kwargs:
+                  metadata_kwargs[field] = []
+        for field in ['epoch_window_length', 'epoch_step_size']:
+             if field not in metadata_kwargs:
+                  metadata_kwargs[field] = None
+
         # Use the handler to create the metadata
         self.metadata = self.handler.initialize_metadata(**metadata_kwargs)
         

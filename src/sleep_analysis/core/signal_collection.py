@@ -26,8 +26,9 @@ from .metadata import SignalMetadata, CollectionMetadata, OperationInfo
 from .signal_data import SignalData
 from ..signal_types import SignalType, SensorType, SensorModel, BodyPosition
 from .metadata_handler import MetadataHandler
-from ..signals.time_series_signal import TimeSeriesSignal # Added missing import
-from ..utils import str_to_enum # Added missing import
+from ..signals.time_series_signal import TimeSeriesSignal
+from ..signals.feature_signal import FeatureSignal # Added import for FeatureSignal
+from ..utils import str_to_enum
 
 import functools # Added for decorator
 import inspect # Added for __init_subclass__
@@ -1336,18 +1337,83 @@ class SignalCollection:
 
         func, output_class = self.multi_signal_registry[operation_name]
 
-        # Get all input signals
+        # --- Check for grid_index prerequisite for feature extraction ---
+        # We assume operations starting with "feature_" require the grid index
+        grid_index = None
+        if operation_name.startswith("feature_"):
+             if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
+                  logger.error(f"Cannot execute feature operation '{operation_name}': "
+                               f"generate_alignment_grid must be run successfully first.")
+                  raise RuntimeError(f"generate_alignment_grid must be run successfully before feature operation '{operation_name}'.")
+             grid_index = self.grid_index
+             logger.debug(f"Passing grid_index (size: {len(grid_index)}) to feature operation '{operation_name}'.")
+        # --- End grid_index check ---
+
+
+        # --- Resolve input keys (handle base names) ---
+        resolved_keys = []
+        for key_spec in inputs:
+            # Check if key_spec is an exact key
+            if key_spec in self.signals:
+                resolved_keys.append(key_spec)
+            else:
+                # Assume it's a base name and find matching indexed keys
+                found_match = False
+                for existing_key in self.signals.keys():
+                    if existing_key.startswith(f"{key_spec}_") and existing_key[len(key_spec)+1:].isdigit():
+                        resolved_keys.append(existing_key)
+                        found_match = True
+                if not found_match:
+                    # If it's not an exact key and not a base name with matches, raise error
+                    raise ValueError(f"Input specification '{key_spec}' does not match any existing signal key or base name in the collection.")
+        
+        if not resolved_keys:
+             raise ValueError(f"Input specification {inputs} resolved to an empty list of signal keys.")
+        logger.debug(f"Resolved input specification {inputs} to keys: {resolved_keys}")
+
+        # Get all input signals using resolved keys
         input_signals = []
-        for key in inputs:
-            try:
+        current_key_being_processed = None # For error reporting
+        try:
+            for key in resolved_keys:
+                current_key_being_processed = key # Track the key for accurate error message
                 input_signals.append(self.get_signal(key))
-            except KeyError:
-                raise ValueError(f"Input signal '{key}' not found in collection")
+        except KeyError:
+            # This part should ideally not be reached if resolution logic is correct, but keep for safety
+            logger.error(f"Internal error: Resolved key '{current_key_being_processed}' not found during signal retrieval.")
+            raise ValueError(f"Input signal key '{current_key_being_processed}' (resolved from {inputs}) not found in collection") # Corrected error message
 
-        # Apply the operation
-        result_data = func([s.get_data() for s in input_signals], parameters)
+        # Apply the operation, passing grid_index if required
+        if operation_name.startswith("feature_"):
+             # Feature functions expect List[SignalData], grid_index, parameters
+             result_signal = func(input_signals, grid_index, parameters) # func returns the full FeatureSignal
+        else:
+             # Other multi-signal ops might expect List[DataFrame], parameters
+             # This part needs refinement if other multi-signal ops exist
+             logger.warning(f"Executing non-feature multi-signal operation '{operation_name}'. "
+                            f"Assuming signature func(List[DataFrame], parameters).")
+             result_data = func([s.get_data() for s in input_signals], parameters)
+             # Need to construct the output signal manually for non-feature ops
+             derived_from = []
+             for signal in input_signals:
+                 operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
+                 derived_from.append((signal.metadata.signal_id, operation_index))
+             operation_info = OperationInfo(operation_name, parameters)
+             output_metadata = {
+                 "derived_from": derived_from,
+                 "operations": [operation_info]
+                 # Add other necessary metadata fields for the specific output_class
+             }
+             # Ensure output_class is correctly determined
+             if not issubclass(output_class, SignalData):
+                  raise TypeError(f"Registered output class for '{operation_name}' is not a SignalData subclass.")
+             result_signal = output_class(data=result_data, metadata=output_metadata)
 
-        # Create metadata recording the operation and source signals
+
+        # --- Return the resulting signal ---
+        # Metadata (derived_from, operations) should be set correctly within the
+        # feature function wrapper (like compute_feature_statistics) or manually above.
+        return result_signal
         derived_from = []
         for signal in input_signals:
             operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
@@ -1412,21 +1478,64 @@ class SignalCollection:
         # Check if operation exists
         if operation_name not in self.multi_signal_registry:
             raise ValueError(f"Multi-signal operation '{operation_name}' not found")
-            
+
         func, output_class = self.multi_signal_registry[operation_name]
-        
+
+        # --- Check for grid_index prerequisite for feature extraction ---
+        # We assume operations starting with "feature_" require the grid index
+        grid_index = None
+        if operation_name.startswith("feature_"):
+             if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
+                  logger.error(f"Cannot execute feature operation '{operation_name}': "
+                               f"generate_alignment_grid must be run successfully first.")
+                  raise RuntimeError(f"generate_alignment_grid must be run successfully before feature operation '{operation_name}'.")
+             grid_index = self.grid_index
+             logger.debug(f"Passing grid_index (size: {len(grid_index)}) to feature operation '{operation_name}'.")
+        # --- End grid_index check ---
+
+
         # Get all input signals
         input_signals = []
         for key in inputs:
             try:
+                current_key_being_processed = key # Track the key for accurate error message
                 input_signals.append(self.get_signal(key))
             except KeyError:
-                raise ValueError(f"Input signal '{key}' not found in collection")
-        
-        # Apply the operation
-        result_data = func([s.get_data() for s in input_signals], parameters)
-        
-        # Create metadata recording the operation and source signals
+                # This part should ideally not be reached if resolution logic is correct, but keep for safety
+                logger.error(f"Internal error: Resolved key '{current_key_being_processed}' not found during signal retrieval.")
+                raise ValueError(f"Input signal key '{current_key_being_processed}' (resolved from {inputs}) not found in collection") # Corrected error message
+
+        # Apply the operation, passing grid_index if required
+        if operation_name.startswith("feature_"):
+             # Feature functions expect List[SignalData], grid_index, parameters
+             result_signal = func(input_signals, grid_index, parameters) # func returns the full FeatureSignal
+        else:
+             # Other multi-signal ops might expect List[DataFrame], parameters
+             # This part needs refinement if other multi-signal ops exist
+             logger.warning(f"Executing non-feature multi-signal operation '{operation_name}'. "
+                            f"Assuming signature func(List[DataFrame], parameters).")
+             result_data = func([s.get_data() for s in input_signals], parameters)
+             # Need to construct the output signal manually for non-feature ops
+             derived_from = []
+             for signal in input_signals:
+                 operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
+                 derived_from.append((signal.metadata.signal_id, operation_index))
+             operation_info = OperationInfo(operation_name, parameters)
+             output_metadata = {
+                 "derived_from": derived_from,
+                 "operations": [operation_info]
+                 # Add other necessary metadata fields for the specific output_class
+             }
+             # Ensure output_class is correctly determined
+             if not issubclass(output_class, SignalData):
+                  raise TypeError(f"Registered output class for '{operation_name}' is not a SignalData subclass.")
+             result_signal = output_class(data=result_data, metadata=output_metadata)
+
+
+        # --- Return the resulting signal ---
+        # Metadata (derived_from, operations) should be set correctly within the
+        # feature function wrapper (like compute_feature_statistics) or manually above.
+        return result_signal
         derived_from = []
         for signal in input_signals:
             operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
@@ -1609,6 +1718,21 @@ for _method_name, _method_obj in inspect.getmembers(SignalCollection, predicate=
              warnings.warn(f"Overwriting collection operation '{_op_name}' during registry population.")
         SignalCollection.collection_operation_registry[_op_name] = _method_obj
         logger.debug(f"Registered collection operation '{_op_name}' to method SignalCollection.{_method_name}")
+
+# --- Register Multi-Signal Operations ---
+# Import the feature extraction functions
+try:
+    from ..operations.feature_extraction import compute_feature_statistics #, compute_feature_correlation # Add others later
+    from ..signals.feature_signal import FeatureSignal
+
+    SignalCollection.multi_signal_registry.update({
+        "feature_statistics": (compute_feature_statistics, FeatureSignal),
+        # "feature_correlation": (compute_feature_correlation, FeatureSignal), # Uncomment when implemented
+    })
+    logger.debug("Registered multi-signal feature operations.")
+except ImportError as e:
+    logger.warning(f"Could not import or register feature operations: {e}")
+
 
 # Clean up temporary variables from the global scope of the module
 del _method_name, _method_obj, _op_name

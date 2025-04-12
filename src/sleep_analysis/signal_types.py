@@ -14,7 +14,7 @@ class SignalType(Enum):
     EEG_SLEEP_STAGE = "EEG Sleep Stage"
     MAGNITUDE = "Magnitude"
     ANGLE = "Angle"
-    FEATURES = "Features"
+    FEATURES = "Features" # Added for epoch-based features
     # Additional signal types can be added as needed
 
 class SensorType(Enum):

@@ -121,12 +121,41 @@ def run_workflow():
         if args.output_dir:
             logger.debug(f"Overriding output directory to {args.output_dir}")
             
-            # Override export output directory
-            if "export" in workflow_config:
-                workflow_config["export"]["output_dir"] = args.output_dir
-            
-            # Override visualization output paths
-            if "visualization" in workflow_config:
+            # Override export output directories
+            if "export" in workflow_config and isinstance(workflow_config["export"], list):
+                for export_config in workflow_config["export"]:
+                    if isinstance(export_config, dict):
+                        # Construct new output path preserving potential subdirs from original path
+                        original_path = export_config.get("output_dir", "")
+                        filename = "" # Default if no original path
+                        subdirs = ""
+                        if original_path:
+                            # Try to preserve subdirectories relative to the original base
+                            # This logic assumes the original output_dir might have structure like "base/subdir"
+                            # We want the new path to be "args.output_dir/subdir"
+                            try:
+                                # Find the first path separator to identify the base part
+                                base_part, rest = original_path.split(os.sep, 1)
+                                subdirs = rest
+                            except ValueError:
+                                # No separator found, assume it's just a base directory name
+                                subdirs = "" # No subdirs to preserve
+
+                        # Construct the new path under the CLI-specified output directory
+                        if subdirs:
+                             export_config["output_dir"] = os.path.join(args.output_dir, subdirs)
+                        else:
+                             # If no subdirs or original path was simple, just use the output_dir
+                             # We might need a default name if original_path was empty/missing
+                             # For now, let's just put it directly in args.output_dir
+                             # A better approach might involve generating a unique name if needed
+                             export_config["output_dir"] = args.output_dir
+                        logger.debug(f"Updated export output_dir to: {export_config['output_dir']}")
+                    else:
+                        logger.warning(f"Item in 'export' list is not a dictionary: {export_config}")
+
+            # Override visualization output paths (existing logic seems okay for list)
+            if "visualization" in workflow_config and isinstance(workflow_config["visualization"], list):
                 for vis_config in workflow_config["visualization"]:
                     if "output" in vis_config:
                         original_path = vis_config["output"]
