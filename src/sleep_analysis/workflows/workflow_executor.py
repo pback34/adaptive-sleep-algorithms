@@ -203,6 +203,19 @@ class WorkflowExecutor:
                         self._handle_error(e, operation_name=f"collection.{operation_name}")
                         return # Stop processing this step
 
+                # --- Special handling for summarize_signals parameters ---
+                elif operation_name == "summarize_signals":
+                    try:
+                        # Extract specific parameters for summarize_signals
+                        fields = parameters.get("fields_to_include") # None if not present
+                        print_flag = parameters.get("print_summary", True) # Default True
+                        # Call directly with extracted params
+                        self.container.summarize_signals(fields_to_include=fields, print_summary=print_flag)
+                        logger.info(f"Successfully executed collection operation '{operation_name}' directly.")
+                    except Exception as e:
+                        self._handle_error(e, operation_name=f"collection.{operation_name}")
+                        return # Stop processing this step
+
                 # --- Fallback to Generic apply_operation for other collection ops ---
                 else:
                     try:
@@ -214,7 +227,7 @@ class WorkflowExecutor:
                         self._handle_error(e, operation_name=f"collection.{operation_name}")
                         return # Stop processing this step
 
-                # No need to handle 'output' or 'inplace' for collection ops currently defined
+                # No need to handle 'output' or 'inplace' for collection ops currently defined (except summarize)
 
             # Handle multi-signal operations
             elif "inputs" in step:
@@ -502,7 +515,8 @@ class WorkflowExecutor:
                 export_params = {
                     "formats": config_item["formats"],
                     "output_dir": config_item["output_dir"],
-                    "include_combined": config_item.get("include_combined", False)
+                    "include_combined": config_item.get("include_combined", False),
+                    "include_summary": config_item.get("include_summary", False) # Add include_summary flag
                 }
 
                 # Only add signals parameter if it exists in the config

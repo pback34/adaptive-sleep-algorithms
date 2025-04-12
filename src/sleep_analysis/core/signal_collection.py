@@ -14,12 +14,14 @@ import logging
 import time
 import os
 import glob
-from dataclasses import fields
+from dataclasses import fields, dataclass # Added dataclass
+from datetime import datetime # Added datetime
 from typing import Dict, List, Any, Optional, Type, Tuple, Callable, Union
 
 # Third-party imports
 import pandas as pd
 import numpy as np
+from enum import Enum # Added import
 
 # Local application imports
 from .metadata import SignalMetadata, CollectionMetadata, OperationInfo
@@ -115,6 +117,10 @@ class SignalCollection:
         self.ref_time: Optional[pd.Timestamp] = None
         self.grid_index: Optional[pd.DatetimeIndex] = None
         self._alignment_params_calculated: bool = False # Flag indicating if grid params are set
+
+        # Attributes for storing the summary dataframe
+        self._summary_dataframe: Optional[pd.DataFrame] = None
+        self._summary_dataframe_params: Optional[Dict[str, Any]] = None
 
     def add_signal(self, key: str, signal: SignalData) -> None:
         """
@@ -1400,38 +1406,88 @@ class SignalCollection:
             # Optionally create an empty FeatureSignal? For now, just return.
             return
 
-        # --- Concatenate DataFrames ---
-        try:
-            dataframes_to_concat = [s.get_data() for s in input_signals]
-            combined_data = pd.concat(dataframes_to_concat, axis=1)
+        # --- Prepare DataFrames and MultiIndex ---
+        combined_data: Optional[pd.DataFrame] = None
+        all_feature_columns_data = {} # Stores {MultiIndexTuple: Series}
+        multi_index_tuples = []
+        final_index = first_index # Use the index of the first signal as the target
 
-            # Check for duplicate column names (shouldn't happen with prefixing, but good practice)
-            if combined_data.columns.duplicated().any():
-                duplicates = combined_data.columns[combined_data.columns.duplicated()].tolist()
-                logger.warning(f"Duplicate column names found after combining features: {duplicates}. Consider renaming features during extraction.")
-                # Optionally rename duplicates: combined_data.columns = pd.io.parsers.base_parser.maybe_convert_usecols(combined_data.columns)
+        # Use collection's index_config if available
+        use_multi_index = hasattr(self.metadata, 'index_config') and self.metadata.index_config
+        level_names = (self.metadata.index_config + ['feature']) if use_multi_index else ['feature']
 
-        except Exception as e:
-            logger.error(f"Error concatenating feature dataframes: {e}", exc_info=True)
-            raise TypeError(f"Failed to concatenate feature dataframes: {e}") from e
+        for signal in input_signals:
+            signal_data = signal.get_data()
+            # Align index before processing columns (important if indices weren't identical)
+            # Use outer join alignment to preserve all time points
+            aligned_data = signal_data.reindex(final_index.union(signal_data.index))
+            if final_index is None: # Should not happen after first signal, but safety check
+                 final_index = aligned_data.index
+            else:
+                 final_index = final_index.union(aligned_data.index) # Keep track of the union of all indices
+
+            for feature_col_name in aligned_data.columns:
+                if use_multi_index:
+                    # Build the multi-index tuple using source signal metadata
+                    metadata_values = []
+                    for field in self.metadata.index_config:
+                        value = getattr(signal.metadata, field, None)
+                        # Use the signal's key (name) as fallback if name field is None
+                        value = signal.metadata.name if value is None and field == 'name' else value
+                        value = "N/A" if value is None else value
+                        # Convert enums etc.
+                        value = value.name if hasattr(value, 'name') and isinstance(value, Enum) else str(value)
+                        metadata_values.append(value)
+                    # Add the base feature name as the last level
+                    metadata_values.append(feature_col_name)
+                    tuple_key = tuple(metadata_values)
+                else:
+                    # Use simple column name (signal_key + feature_name)
+                    tuple_key = f"{signal.metadata.name}_{feature_col_name}" # This becomes the flat column name
+
+                multi_index_tuples.append(tuple_key)
+                all_feature_columns_data[tuple_key] = aligned_data[feature_col_name]
+
+        # --- Create Combined DataFrame ---
+        if not all_feature_columns_data:
+             logger.warning("No feature data collected to combine.")
+             # Create an empty DataFrame with the final index
+             combined_data = pd.DataFrame(index=final_index)
+             # Assign empty MultiIndex columns if needed
+             if use_multi_index:
+                  empty_multi_idx = pd.MultiIndex.from_tuples([], names=level_names)
+                  combined_data.columns = empty_multi_idx
+        else:
+             # Create the DataFrame from the collected Series
+             combined_data = pd.DataFrame(all_feature_columns_data, index=final_index)
+             # Assign MultiIndex columns if configured
+             if use_multi_index:
+                  multi_idx = pd.MultiIndex.from_tuples(multi_index_tuples, names=level_names)
+                  # Ensure columns match the created MultiIndex
+                  combined_data = combined_data[list(all_feature_columns_data.keys())] # Ensure order
+                  combined_data.columns = multi_idx
+             # Sort columns for consistency (optional but recommended)
+             combined_data = combined_data.sort_index(axis=1)
+             # Drop rows that are all NaN (result of outer join alignment)
+             combined_data = combined_data.dropna(axis=0, how='all')
+
 
         # --- Create Metadata for Combined Signal ---
-        # Assume epoch parameters are consistent (validated by index check)
         first_signal_meta = input_signals[0].metadata
-        combined_metadata = {
+        combined_metadata_dict = {
             "name": output,
-            "signal_type": SignalType.FEATURES,
+            "signal_type": SignalType.FEATURES, # Explicitly set type
             "derived_from": input_signal_ids_ops,
-            "operations": [OperationInfo("combine_features", {"inputs": resolved_keys, "output": output})], # Use resolved keys
-            "epoch_window_length": first_signal_meta.epoch_window_length,
-            "epoch_step_size": first_signal_meta.epoch_step_size,
-            "feature_names": list(combined_data.columns),
-            "source_signal_keys": resolved_keys, # Store the resolved keys used as input
-            # Inherit other relevant fields? Maybe not necessary.
+            "operations": [OperationInfo("combine_features", {"inputs": resolved_keys, "output": output})],
+            "epoch_window_length": first_signal_meta.epoch_window_length, # Assume consistent
+            "epoch_step_size": first_signal_meta.epoch_step_size, # Assume consistent
+            "feature_names": list(combined_data.columns) if not use_multi_index else [], # Store flat names only if not MultiIndex
+            "source_signal_keys": resolved_keys,
+            # Add other relevant fields if necessary
         }
 
         # --- Create and Add Combined FeatureSignal ---
-        combined_signal = FeatureSignal(data=combined_data, metadata=combined_metadata, handler=self.metadata_handler)
+        combined_signal = FeatureSignal(data=combined_data, metadata=combined_metadata_dict, handler=self.metadata_handler)
         self.add_signal(output, combined_signal)
 
         logger.info(f"Successfully combined {len(resolved_keys)} feature signals into '{output}' "
@@ -1537,14 +1593,37 @@ class SignalCollection:
              result_signal = output_class(data=result_data, metadata=output_metadata)
 
 
+        # --- Metadata Propagation for FeatureSignals from single input ---
+        # If the result is a FeatureSignal derived from a single input signal,
+        # copy relevant identifying metadata (from index_config) from the input
+        # to the output feature signal's metadata.
+        if isinstance(result_signal, FeatureSignal) and len(input_signals) == 1:
+            input_signal = input_signals[0]
+            if hasattr(self.metadata, 'index_config') and self.metadata.index_config:
+                logger.debug(f"Propagating metadata fields {self.metadata.index_config} from input '{input_signal.metadata.name}' to output FeatureSignal.")
+                fields_to_copy = self.metadata.index_config
+                for field_name in fields_to_copy:
+                    if hasattr(input_signal.metadata, field_name):
+                        value_to_copy = getattr(input_signal.metadata, field_name)
+                        # Only copy if the field exists on the output metadata object
+                        # and potentially only if it's None (optional, safer to just copy)
+                        if hasattr(result_signal.metadata, field_name):
+                             setattr(result_signal.metadata, field_name, value_to_copy)
+                        else:
+                             logger.warning(f"Metadata field '{field_name}' from index_config not found on FeatureSignal metadata. Cannot propagate.")
+                    else:
+                         logger.warning(f"Metadata field '{field_name}' from index_config not found on input signal '{input_signal.metadata.name}'. Cannot propagate.")
+
         # --- Return the resulting signal ---
         # Metadata (derived_from, operations) should be set correctly within the
         # feature function wrapper (like compute_feature_statistics) or manually above.
+        # Identifying metadata is potentially added above.
         return result_signal
-        derived_from = []
-        for signal in input_signals:
-            operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
-            derived_from.append((signal.metadata.signal_id, operation_index))
+        # --- This block below seems like dead code after the return, removing it ---
+        # derived_from = []
+        # for signal in input_signals:
+        #     operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
+        #     derived_from.append((signal.metadata.signal_id, operation_index)) # Also comment/remove this line
         # Create the output signal
         operation_info = OperationInfo(operation_name, parameters)
 
@@ -1834,6 +1913,127 @@ class SignalCollection:
             current_index += 1
             
         return keys
+
+    @register_collection_operation("summarize_signals")
+    def summarize_signals(self, fields_to_include: Optional[List[str]] = None, print_summary: bool = True) -> Optional[pd.DataFrame]:
+        """
+        Generates a summary table of signals, stores it, and optionally prints a formatted version.
+
+        Args:
+            fields_to_include: A list of metadata field names to include as columns.
+                               If None, a default set is used.
+            print_summary: If True, prints a formatted version of the summary table to the console.
+
+        Returns:
+            A pandas DataFrame containing the raw summary data, or None if the collection is empty.
+            The generated DataFrame is also stored in `self._summary_dataframe`.
+        """
+        if not self.signals:
+            logger.info("Signal collection is empty. No summary to generate.")
+            self._summary_dataframe = None # Ensure it's None if empty
+            self._summary_dataframe_params = None
+            if print_summary:
+                print("Signal collection is empty.")
+            return None
+
+        default_fields = [
+            'signal_type', 'name', 'sensor_type', 'sensor_model',
+            'body_position', 'sample_rate', 'start_time', 'end_time',
+            'source_files_count', 'operations_count', 'temporary', 'data_shape'
+        ]
+        # Add feature-specific fields to defaults if any FeatureSignals exist
+        if any(isinstance(s, FeatureSignal) for s in self.signals.values()):
+             default_fields.extend(['epoch_window_length', 'epoch_step_size', 'feature_names_count'])
+
+        # Use provided fields or the default set
+        fields_for_summary = fields_to_include if fields_to_include is not None else default_fields
+        logger.debug(f"Generating summary with fields: {fields_for_summary}")
+
+        summary_data = []
+        valid_metadata_fields = {f.name for f in fields(SignalMetadata)}
+
+        for key, signal in self.signals.items():
+            row_data = {'key': key} # Start with the collection key
+
+            for field in fields_for_summary:
+                value = None
+                try:
+                    # --- Get Raw Value ---
+                    if field == 'source_files_count':
+                        value = len(signal.metadata.source_files) if signal.metadata.source_files else 0
+                    elif field == 'operations_count':
+                        value = len(signal.metadata.operations) if signal.metadata.operations else 0
+                    elif field == 'feature_names_count':
+                         if hasattr(signal.metadata, 'feature_names'):
+                              value = len(signal.metadata.feature_names) if signal.metadata.feature_names else 0
+                         else: value = None # Store None if field doesn't exist
+                    elif field == 'data_shape':
+                         try:
+                              data = signal.get_data()
+                              # Store shape tuple directly if available
+                              value = data.shape if hasattr(data, 'shape') else None
+                         except Exception:
+                              value = None # Store None if error getting data
+                    elif field in valid_metadata_fields:
+                        value = getattr(signal.metadata, field, None)
+                    else:
+                         value = None # Field not valid or not found
+
+                    row_data[field] = value # Store the raw value (or None)
+
+                except Exception as e:
+                    logger.warning(f"Error accessing raw field '{field}' for signal '{key}': {e}")
+                    row_data[field] = None # Store None on error
+
+            summary_data.append(row_data)
+
+        # --- Create Raw DataFrame for Storage ---
+        raw_summary_df = pd.DataFrame(summary_data)
+
+        # Reorder columns to have 'key' first, then the requested fields
+        cols_order = ['key'] + [f for f in fields_for_summary if f in raw_summary_df.columns]
+        raw_summary_df = raw_summary_df[cols_order]
+
+        # Set key as index and sort
+        raw_summary_df = raw_summary_df.set_index('key').sort_index()
+
+        # --- Store Raw DataFrame and Parameters ---
+        self._summary_dataframe = raw_summary_df.copy()
+        self._summary_dataframe_params = {'fields_to_include': fields_for_summary, 'print_summary': print_summary}
+        logger.info(f"Stored signal summary DataFrame with shape {self._summary_dataframe.shape}")
+
+        # --- Handle Printing (Formatted Version) ---
+        if print_summary:
+            # Create a formatted copy for printing
+            formatted_summary_df = raw_summary_df.copy()
+            for col in formatted_summary_df.columns:
+                # Apply formatting similar to the original logic
+                formatted_values = []
+                for val in formatted_summary_df[col]:
+                    if isinstance(val, Enum):
+                        formatted_values.append(val.name)
+                    elif isinstance(val, (pd.Timestamp, datetime)):
+                        formatted_values.append(val.strftime('%Y-%m-%d %H:%M:%S %Z') if pd.notna(val) else 'N/A')
+                    elif isinstance(val, pd.Timedelta):
+                         formatted_values.append(str(val))
+                    elif isinstance(val, (list, tuple, dict)):
+                         formatted_values.append(len(val)) # Represent by length
+                    elif isinstance(val, tuple) and col == 'data_shape': # Handle shape tuple specifically
+                         formatted_values.append(str(val))
+                    elif pd.isna(val):
+                        formatted_values.append('N/A')
+                    else:
+                        formatted_values.append(val) # Keep other types as is for printing
+                formatted_summary_df[col] = formatted_values
+
+            print("\n--- Signal Collection Summary ---")
+            # Use to_string to prevent truncation
+            print(formatted_summary_df.to_string())
+            print("-------------------------------\n")
+
+        # Return the raw DataFrame
+        return self._summary_dataframe
+
 
 # --- Populate the Collection Operation Registry ---
 # Iterate through the methods of the class *after* it's defined

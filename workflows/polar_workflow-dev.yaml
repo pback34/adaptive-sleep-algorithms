@@ -187,8 +187,17 @@ steps:
     inputs: ["hr_features", "accel_mag_features", "accel_angle_features"] # Use base names of feature signals
     output: "final_features" # Key for the combined feature matrix
 
+  # Step 8: Generate and store a summary of all signals in the collection
+  - type: collection
+    operation: "summarize_signals"
+    parameters:
+      # Optional: Specify exact fields to include in the stored summary DataFrame
+      # fields_to_include: ["signal_type", "name", "sample_rate", "data_shape"]
+      # Optional: Control printing of the formatted summary to console (default is true)
+      print_summary: true
+
 # Export section - defines the output formats and location
-# The exporter will now retrieve the dataframe stored by combine_aligned_signals
+# The exporter can retrieve the combined dataframe and/or the summary dataframe
 # index_config moved to collection_settings
 export:
   # Export the combined aligned time-series data
@@ -201,6 +210,17 @@ export:
     output_dir: "results/polar_data/features"
     signals: ["final_features"] # Specify the key of the FeatureSignal to export
     # include_combined: false # Default or explicitly false when exporting specific signals
+
+  # Export all individual non-temporary signals to CSV
+  - formats: ["csv"]
+    output_dir: "results/polar_data/individual_signals"
+    # No 'signals' or 'include_combined' means export all individuals
+
+  # Example: Export the combined dataframe AND the summary table
+  - formats: ["csv", "excel"]
+    output_dir: "results/polar_data/combined_and_summary"
+    include_combined: true
+    include_summary: true # Add this flag to export the summary table
 
 # Visualization section - creates plots of selected signals
 visualization:

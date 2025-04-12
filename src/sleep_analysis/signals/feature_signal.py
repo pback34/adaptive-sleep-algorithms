@@ -55,13 +55,20 @@ class FeatureSignal(SignalData):
         if missing_meta:
             raise ValueError(f"Missing required metadata fields for FeatureSignal: {missing_meta}")
 
-        # Validate feature_names match DataFrame columns
-        if 'feature_names' in temp_metadata and isinstance(temp_metadata['feature_names'], list):
-             if set(temp_metadata['feature_names']) != set(data.columns):
-                  raise ValueError(f"Metadata 'feature_names' {temp_metadata['feature_names']} do not match DataFrame columns {list(data.columns)}")
+        # Validate feature_names match DataFrame columns, *unless* columns are MultiIndex
+        if not isinstance(data.columns, pd.MultiIndex):
+            if 'feature_names' in temp_metadata and isinstance(temp_metadata['feature_names'], list):
+                # Check if the set of feature names matches the set of column names
+                if set(temp_metadata['feature_names']) != set(data.columns):
+                    raise ValueError(f"Metadata 'feature_names' {temp_metadata['feature_names']} do not match DataFrame columns {list(data.columns)}")
+            else:
+                # If feature_names wasn't provided correctly or is not a list, derive it from columns
+                temp_metadata['feature_names'] = list(data.columns)
         else:
-             # If feature_names wasn't provided correctly, derive it (though the check above should catch it)
-             temp_metadata['feature_names'] = list(data.columns)
+            # If columns are MultiIndex, feature_names metadata is expected to be empty or not used for this validation
+            # Ensure feature_names is an empty list in metadata if columns are MultiIndex
+            if 'feature_names' not in temp_metadata or temp_metadata['feature_names']:
+                 temp_metadata['feature_names'] = []
 
 
         # Call parent initializer AFTER validation
