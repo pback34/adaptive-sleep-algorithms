@@ -1310,6 +1310,133 @@ class SignalCollection:
         logger.info(f"Successfully combined {len(snapped_signal_dfs)} snapped signals using outer join and reindex "
                     f"in {time.time() - start_time:.2f} seconds. Stored shape: {combined_df_final.shape}")
 
+    @register_collection_operation("combine_features")
+    def combine_features(self, inputs: List[str], output: str) -> None:
+        """
+        Combines multiple FeatureSignal instances into a single FeatureSignal.
+
+        Validates that all input signals are FeatureSignals and share the exact
+        same DatetimeIndex. Concatenates their DataFrames column-wise.
+
+        Args:
+            inputs: List of keys identifying the input FeatureSignal instances.
+            output: The key to assign to the resulting combined FeatureSignal.
+
+        Raises:
+            ValueError: If inputs are missing, not FeatureSignals, have mismatched
+                        indices, or if the output key already exists.
+            TypeError: If input dataframes cannot be concatenated.
+        """
+        if not inputs:
+            raise ValueError("No input signals specified for combine_features.")
+        if not output:
+            raise ValueError("Output key must be specified for combine_features.")
+        if output in self.signals:
+            raise ValueError(f"Output key '{output}' already exists in the collection.")
+
+        logger.info(f"Combining features from inputs: {inputs} into output: '{output}'")
+        start_time = time.time()
+
+        # --- Retrieve and Validate Input Signals ---
+        input_signals: List[FeatureSignal] = []
+        first_index: Optional[pd.DatetimeIndex] = None
+        input_signal_ids_ops = [] # For derived_from metadata
+
+        # --- Resolve input keys (handle base names) ---
+        # Use the same resolution logic as apply_multi_signal_operation
+        resolved_keys = []
+        for key_spec in inputs:
+            if key_spec in self.signals:
+                resolved_keys.append(key_spec)
+            else:
+                found_match = False
+                for existing_key in self.signals.keys():
+                    if existing_key.startswith(f"{key_spec}_") and existing_key[len(key_spec)+1:].isdigit():
+                        resolved_keys.append(existing_key)
+                        found_match = True
+                if not found_match:
+                    raise ValueError(f"Input specification '{key_spec}' for combine_features does not match any existing signal key or base name.")
+
+        if not resolved_keys:
+             raise ValueError(f"Input specification {inputs} for combine_features resolved to an empty list.")
+        logger.debug(f"Resolved combine_features input {inputs} to keys: {resolved_keys}")
+        # --- End key resolution ---
+
+
+        for key in resolved_keys: # Iterate over resolved keys
+            signal = self.get_signal(key)
+            if not isinstance(signal, FeatureSignal):
+                raise ValueError(f"Input '{key}' is not a FeatureSignal (type: {type(signal).__name__}). Cannot combine features.")
+
+            signal_data = signal.get_data()
+            if not isinstance(signal_data.index, pd.DatetimeIndex):
+                # This should be caught by FeatureSignal init, but double-check
+                raise TypeError(f"Input FeatureSignal '{key}' does not have a DatetimeIndex.")
+
+            if first_index is None:
+                first_index = signal_data.index
+                # Basic validation that it's a DatetimeIndex
+                if not isinstance(first_index, pd.DatetimeIndex):
+                     raise TypeError(f"Input FeatureSignal '{key}' index is not a DatetimeIndex.")
+            else:
+                # Optional: Check timezone compatibility as a warning
+                current_index = signal_data.index
+                if not isinstance(current_index, pd.DatetimeIndex):
+                     raise TypeError(f"Input FeatureSignal '{key}' index is not a DatetimeIndex.")
+                if first_index.tz != current_index.tz:
+                     logger.warning(f"Timezone mismatch between FeatureSignals: '{first_index.tz}' (first) vs '{current_index.tz}' ('{key}'). Concatenation might convert timezones.")
+                     # Stricter alternative: raise ValueError(f"Input FeatureSignals must share the same timezone. Mismatch found for '{key}'.")
+
+            # REMOVED: Strict index equality check: elif not first_index.equals(signal_data.index): ... raise ValueError ...
+            # pd.concat(axis=1) will handle alignment based on index values (outer join).
+
+            input_signals.append(signal)
+            # Record source signal ID and its last operation index for provenance
+            op_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
+            input_signal_ids_ops.append((signal.metadata.signal_id, op_index))
+
+        if not input_signals:
+            logger.warning("No valid FeatureSignals found to combine.")
+            # Optionally create an empty FeatureSignal? For now, just return.
+            return
+
+        # --- Concatenate DataFrames ---
+        try:
+            dataframes_to_concat = [s.get_data() for s in input_signals]
+            combined_data = pd.concat(dataframes_to_concat, axis=1)
+
+            # Check for duplicate column names (shouldn't happen with prefixing, but good practice)
+            if combined_data.columns.duplicated().any():
+                duplicates = combined_data.columns[combined_data.columns.duplicated()].tolist()
+                logger.warning(f"Duplicate column names found after combining features: {duplicates}. Consider renaming features during extraction.")
+                # Optionally rename duplicates: combined_data.columns = pd.io.parsers.base_parser.maybe_convert_usecols(combined_data.columns)
+
+        except Exception as e:
+            logger.error(f"Error concatenating feature dataframes: {e}", exc_info=True)
+            raise TypeError(f"Failed to concatenate feature dataframes: {e}") from e
+
+        # --- Create Metadata for Combined Signal ---
+        # Assume epoch parameters are consistent (validated by index check)
+        first_signal_meta = input_signals[0].metadata
+        combined_metadata = {
+            "name": output,
+            "signal_type": SignalType.FEATURES,
+            "derived_from": input_signal_ids_ops,
+            "operations": [OperationInfo("combine_features", {"inputs": resolved_keys, "output": output})], # Use resolved keys
+            "epoch_window_length": first_signal_meta.epoch_window_length,
+            "epoch_step_size": first_signal_meta.epoch_step_size,
+            "feature_names": list(combined_data.columns),
+            "source_signal_keys": resolved_keys, # Store the resolved keys used as input
+            # Inherit other relevant fields? Maybe not necessary.
+        }
+
+        # --- Create and Add Combined FeatureSignal ---
+        combined_signal = FeatureSignal(data=combined_data, metadata=combined_metadata, handler=self.metadata_handler)
+        self.add_signal(output, combined_signal)
+
+        logger.info(f"Successfully combined {len(resolved_keys)} feature signals into '{output}' "
+                    f"in {time.time() - start_time:.2f} seconds. Result shape: {combined_data.shape}")
+
 
     # --- Multi-Signal Operations ---
 

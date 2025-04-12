@@ -182,16 +182,37 @@ class WorkflowExecutor:
                         warnings.warn(error_msg + " Skipping step.")
                         return # Skip this step
 
-                # --- Call the generic apply_operation method ---
-                try:
-                    # Pass the operation name and parameters directly
-                    # The container (SignalCollection) now handles the dispatch
-                    result = self.container.apply_operation(operation_name, **parameters)
-                    # Logging is handled within apply_operation and the method itself
-                except Exception as e:
-                    # Let _handle_error manage logging/raising based on strict_validation
-                    self._handle_error(e, operation_name=f"collection.{operation_name}")
-                    return # Stop processing this step if an error occurred
+                # --- Specific Handling for Operations with Top-Level Args ---
+                if operation_name == "combine_features":
+                    # Extract inputs and output directly from the step definition
+                    inputs = step.get("inputs")
+                    output = step.get("output")
+                    if inputs is None or output is None:
+                        # Raise error if required args are missing in the YAML step itself
+                        self._handle_error(
+                            ValueError(f"Collection operation '{operation_name}' requires 'inputs' and 'output' to be defined in the workflow step."),
+                            operation_name=f"collection.{operation_name}"
+                        )
+                        return # Stop processing this step
+
+                    try:
+                        # Call the method directly with extracted arguments
+                        self.container.combine_features(inputs=inputs, output=output)
+                        logger.info(f"Successfully executed collection operation '{operation_name}' directly.")
+                    except Exception as e:
+                        self._handle_error(e, operation_name=f"collection.{operation_name}")
+                        return # Stop processing this step
+
+                # --- Fallback to Generic apply_operation for other collection ops ---
+                else:
+                    try:
+                        # Pass parameters from the 'parameters' key in YAML
+                        result = self.container.apply_operation(operation_name, **parameters)
+                        # Logging is handled within apply_operation and the method itself
+                    except Exception as e:
+                        # Let _handle_error manage logging/raising based on strict_validation
+                        self._handle_error(e, operation_name=f"collection.{operation_name}")
+                        return # Stop processing this step
 
                 # No need to handle 'output' or 'inplace' for collection ops currently defined
 
@@ -204,13 +225,21 @@ class WorkflowExecutor:
                 signal_ids = []
                 for input_spec in step["inputs"]:
                     signals = self.container.get_signals_from_input_spec(input_spec)
-                    if not signals and self.strict_validation:
-                        raise ValueError(f"No signals found for input specifier '{input_spec}'")
-                    signal_ids.extend([s.metadata.signal_id for s in signals])
-                
+                    if not signals:
+                         # If no signals found, handle based on strict_validation
+                         if self.strict_validation:
+                              raise ValueError(f"No signals found for input specifier '{input_spec}' in multi_signal step '{operation_name}'")
+                         else:
+                              warnings.warn(f"No signals found for input specifier '{input_spec}' in multi_signal step '{operation_name}'. Skipping this input.")
+                              continue # Skip to the next input_spec in the list
+
+                    # Extend the list with the signal KEYS (stored in metadata.name)
+                    signal_ids.extend([s.metadata.name for s in signals if s.metadata.name is not None]) # Use name (key)
+
                 if not signal_ids:
+                    # This check now happens after processing all input_specs
                     if self.strict_validation:
-                        raise ValueError(f"No input signals found for operation '{operation_name}'")
+                        raise ValueError(f"No valid input signals resolved for operation '{operation_name}' after processing all input specifiers.")
                     else:
                         warnings.warn(f"No input signals found for operation '{operation_name}', skipping")
                         return
@@ -432,37 +461,64 @@ class WorkflowExecutor:
                     
             except Exception as e:
                 self._handle_error(e)
-    
-    def _process_export_section(self, export_config: Dict[str, Any]):
+
+    def _process_export_section(self, export_config: List[Dict[str, Any]]):
         """
         Process the export section of a workflow.
-        
+
         Args:
-            export_config: Dictionary with export configuration
+            export_config: List of dictionaries, each containing an export configuration.
         """
-        # Validate required fields
-        required_fields = ["formats", "output_dir"]
-        missing_fields = [f for f in required_fields if f not in export_config]
-        if missing_fields:
-            raise ValueError(f"Export configuration missing required fields: {missing_fields}")
-            
         try:
             from ..export import ExportModule
         except ImportError:
             raise ImportError("ExportModule not found. Make sure the export module is available.")
-            
-        # Set index configuration if provided
-        if "index_config" in export_config:
-            self.container.set_index_config(export_config["index_config"])
-            
-        # Create and use exporter
+
+        # Instantiate the exporter once, as it holds the collection reference
         exporter = ExportModule(self.container)
-        exporter.export(
-            formats=export_config["formats"],
-            output_dir=export_config["output_dir"],
-            include_combined=export_config.get("include_combined", False)
-        )
-    
+
+        # Iterate through each export configuration in the list
+        for config_item in export_config:
+            # Validate required fields for each item in the list
+            required_fields = ["formats", "output_dir"]
+            missing_fields = [f for f in required_fields if f not in config_item]
+            if missing_fields:
+                logger.error(f"Export configuration item missing required fields: {missing_fields}. Item: {config_item}")
+                raise ValueError(f"Export configuration item missing required fields: {missing_fields}")
+
+            # Set index configuration if provided for this specific export
+            if "index_config" in config_item:
+                try:
+                    self.container.set_index_config(config_item["index_config"])
+                    logger.debug(f"Temporarily set index_config for export to {config_item['output_dir']}")
+                except ValueError as e:
+                    logger.error(f"Invalid index_config in export item {config_item}: {e}")
+                    raise  # Re-raise error
+
+            # Call exporter's export method for the current configuration item
+            logger.info(f"Executing export task to: {config_item['output_dir']}")
+            try:
+                # Extract parameters that match the ExportModule.export signature
+                export_params = {
+                    "formats": config_item["formats"],
+                    "output_dir": config_item["output_dir"],
+                    "include_combined": config_item.get("include_combined", False)
+                }
+
+                # Only add signals parameter if it exists in the config
+                if "signals" in config_item:
+                    export_params["signals"] = config_item["signals"]
+
+                # Call export with the properly constructed parameters
+                exporter.export(**export_params)
+            except Exception as e:
+                logger.error(f"Error during export task for {config_item['output_dir']}: {e}", exc_info=True)
+                if self.strict_validation:
+                    raise RuntimeError(f"Export task failed for {config_item['output_dir']}") from e
+                else:
+                    warnings.warn(f"Export task failed for {config_item['output_dir']}: {e}")
+
+
     def _process_visualization_section(self, vis_specs: List[Dict[str, Any]]):
         """
         Process the visualization section of a workflow.

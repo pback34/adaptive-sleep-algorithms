@@ -96,24 +96,25 @@ class MetadataHandler:
     
     def set_name(self, metadata: SignalMetadata, name: Optional[str] = None, key: Optional[str] = None) -> None:
         """
-        Set the 'name' field using a fallback strategy.
-        
+        Set the 'name' field using a fallback strategy. Prioritizes key if provided.
+
         Args:
             metadata: The metadata instance to update
-            name: Explicit name to set (highest priority)
-            key: Collection key to use if name not provided
+            name: Explicit name to set (used only if key is not provided)
+            key: Collection key to use (highest priority)
         """
-        # If metadata already has a name, preserve it unless explicit name is provided
-        if metadata.name is not None and name is None:
-            return
-            
-        if name:
-            metadata.name = name
-        elif key:
+        # --- MODIFIED LOGIC ---
+        if key:
+            # If key is provided, it represents the signal's identity in the collection. Use it.
             metadata.name = key
-        elif not metadata.name:  # Only set if not already set
-            # Fallback to using signal_id prefix
+        elif name:
+            # If no key, but explicit name is given, use that.
+            metadata.name = name
+        elif not metadata.name:
+            # If no key and no explicit name, and name isn't already set, fallback to signal_id.
             metadata.name = f"signal_{metadata.signal_id[:8]}"
+        # If key is None, name is None, and metadata.name already exists, we do nothing (preserve existing name).
+        # --- END MODIFIED LOGIC ---
     
     def record_operation(self, metadata: SignalMetadata, operation_name: str, parameters: Dict[str, Any]) -> None:
         """
