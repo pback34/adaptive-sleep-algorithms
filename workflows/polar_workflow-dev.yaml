@@ -181,13 +181,29 @@ steps:
       aggregations: ["mean", "std"] # Apply to pitch, roll etc.
     output: "accel_angle_features"
 
-  # Step 7: Combine all generated feature signals into a single matrix
+  # Step 7: Compute features for Sleep Stage signals
+  # NOTE: feature_statistics currently calculates numeric stats (mean, std).
+  # Applying this to categorical sleep stages might not be ideal.
+  # Consider implementing a dedicated feature operation (e.g., mode, stage fractions).
+  - type: multi_signal
+    operation: "feature_statistics"
+    inputs: ["sleep_stage"] # Use base name for EnchantedWave_SleepStage
+    parameters:
+      window_length: "30s" # Must match other feature steps for combination
+      step_size: "10s"     # Must match other feature steps for combination
+      # Aggregations like 'mean', 'std' on stage numbers might not be meaningful.
+      # Mode calculation would require changes to feature_statistics.
+      # For now, let's use default aggregations, expecting potential NaNs or less useful results for 'stage'.
+      aggregations: ["mean", "std"] # Example: Keep default, review output
+    output: "sleep_stage_features"
+
+  # Step 8: Combine all generated feature signals into a single matrix
   - type: collection
     operation: "combine_features"
-    inputs: ["hr_features", "accel_mag_features", "accel_angle_features"] # Use base names of feature signals
+    inputs: ["hr_features", "accel_mag_features", "accel_angle_features", "sleep_stage_features"] # Added sleep_stage_features
     output: "final_features" # Key for the combined feature matrix
 
-  # Step 8: Generate and store a summary of all signals in the collection
+  # Step 9: Generate and store a summary of all signals in the collection
   - type: collection
     operation: "summarize_signals"
     parameters:

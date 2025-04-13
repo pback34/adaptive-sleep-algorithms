@@ -24,12 +24,17 @@ import numpy as np
 from enum import Enum # Added import
 
 # Local application imports
-from .metadata import SignalMetadata, CollectionMetadata, OperationInfo
+# Updated metadata imports
+from .metadata import TimeSeriesMetadata, FeatureMetadata, CollectionMetadata, OperationInfo, FeatureType
 from .signal_data import SignalData
-from ..signal_types import SignalType, SensorType, SensorModel, BodyPosition
+# Updated signal_types import
+from ..signal_types import SignalType, SensorType, SensorModel, BodyPosition, Unit
 from .metadata_handler import MetadataHandler
 from ..signals.time_series_signal import TimeSeriesSignal
-from ..signals.feature_signal import FeatureSignal # Added import for FeatureSignal
+# Import Feature from its new location
+from ..features.feature import Feature
+# Removed FeatureSignal import as Feature is now used
+# from ..signals.feature_signal import FeatureSignal
 from ..utils import str_to_enum
 
 import functools # Added for decorator
@@ -87,8 +92,10 @@ class SignalCollection:
             metadata: Optional dictionary with collection-level metadata
             metadata_handler: Optional metadata handler, will create one if not provided
         """
-        self.signals: Dict[str, SignalData] = {}
-        
+        # Initialize separate dictionaries for time series signals and features
+        self.time_series_signals: Dict[str, TimeSeriesSignal] = {}
+        self.features: Dict[str, Feature] = {}
+
         # Initialize the metadata handler
         self.metadata_handler = metadata_handler or MetadataHandler()
         
@@ -118,37 +125,49 @@ class SignalCollection:
         self.grid_index: Optional[pd.DatetimeIndex] = None
         self._alignment_params_calculated: bool = False # Flag indicating if grid params are set
 
+        # Epoch grid parameters calculated by generate_epoch_grid
+        self.epoch_grid_index: Optional[pd.DatetimeIndex] = None
+        self.global_epoch_window_length: Optional[pd.Timedelta] = None
+        self.global_epoch_step_size: Optional[pd.Timedelta] = None
+        self._epoch_grid_calculated: bool = False # Flag indicating if epoch grid params are set
+
         # Attributes for storing the summary dataframe
         self._summary_dataframe: Optional[pd.DataFrame] = None
         self._summary_dataframe_params: Optional[Dict[str, Any]] = None
 
-    def add_signal(self, key: str, signal: SignalData) -> None:
+        # Attribute for storing the combined feature matrix
+        self._combined_feature_matrix: Optional[pd.DataFrame] = None
+
+    def add_time_series_signal(self, key: str, signal: TimeSeriesSignal) -> None:
         """
-        Add a signal to the collection with the specified key.
-        
+        Add a TimeSeriesSignal to the collection.
+
         Args:
-            key: Unique identifier for the signal in this collection
-            signal: The signal instance to add
-        
+            key: Unique identifier for the signal in this collection.
+            signal: The TimeSeriesSignal instance to add.
+
         Raises:
-            ValueError: If a signal with the given key already exists or signal_id conflicts
+            ValueError: If a signal with the given key already exists in time_series_signals
+                        or if the input is not a TimeSeriesSignal.
+            TypeError: If signal is not a TimeSeriesSignal instance.
         """
-        if key in self.signals:
-            raise ValueError(f"Signal with key '{key}' already exists in the collection")
-        # Check for signal_id uniqueness
-        existing_ids = {s.metadata.signal_id for s in self.signals.values()}
+        if not isinstance(signal, TimeSeriesSignal):
+            raise TypeError(f"Signal provided for key '{key}' is not a TimeSeriesSignal (type: {type(signal).__name__}).")
+        if key in self.time_series_signals:
+            raise ValueError(f"TimeSeriesSignal with key '{key}' already exists in the collection.")
+
+        # Check for signal_id uniqueness across *all* signals (time series and features)
+        existing_ids = {s.metadata.signal_id for s in self.time_series_signals.values()} | \
+                       {f.metadata.feature_id for f in self.features.values()} # Check feature IDs too
         if signal.metadata.signal_id in existing_ids:
-            # If ID conflict, generate a new one and log a warning
             new_id = str(uuid.uuid4())
-            logger.warning(f"Signal ID '{signal.metadata.signal_id}' conflicts with existing signal. Assigning new ID: {new_id}")
+            logger.warning(f"TimeSeriesSignal ID '{signal.metadata.signal_id}' conflicts with an existing signal/feature ID. Assigning new ID: {new_id}")
             signal.metadata.signal_id = new_id
 
-        # Validate that time series signals have a proper timestamp index and matching timezone
-        if isinstance(signal, TimeSeriesSignal):
-            self._validate_timestamp_index(signal) # Checks for DatetimeIndex
-
+        # Validate timestamp index and timezone
+        self._validate_timestamp_index(signal) # Checks for DatetimeIndex
+        try:
             # Optional: Validate timezone consistency
-            try:
                 signal_tz = signal.get_data().index.tz
                 collection_tz_str = self.metadata.timezone # The string name from collection metadata
 
@@ -177,416 +196,442 @@ class SignalCollection:
                      # Optionally raise ValueError("Signal timezone mismatch")
                 # No warning if both are None or if string representations match
 
-            except AttributeError:
-                 logger.warning(f"Could not access index or timezone for signal '{key}' during validation.")
-            except Exception as val_err:
-                 logger.error(f"Error during timezone validation for signal '{key}': {val_err}", exc_info=True)
-
+        except AttributeError:
+            logger.warning(f"Could not access index or timezone for signal '{key}' during validation.")
+        except Exception as val_err:
+            logger.error(f"Error during timezone validation for signal '{key}': {val_err}", exc_info=True)
 
         # Set the signal's name to the key if not already set
-        # This ensures consistency between standalone signals and collection signals
         if signal.handler:
-            # Use the signal's existing handler
             signal.handler.set_name(signal.metadata, key=key)
         else:
-            # Use the collection's handler if the signal doesn't have one
             signal.handler = self.metadata_handler
             signal.handler.set_name(signal.metadata, key=key)
-            
-        self.signals[key] = signal
-    
-    def add_signal_with_base_name(self, base_name: str, signal: SignalData) -> str:
+
+        self.time_series_signals[key] = signal
+
+    def add_feature(self, key: str, feature: Feature) -> None:
         """
-        Add a signal with a base name, appending an index if needed.
-        
+        Add a Feature object to the collection.
+
         Args:
-            base_name: Base name for the signal (e.g., "ppg").
-            signal: The signal instance to add.
-        
-        Returns:
-            The key assigned to the signal (e.g., "ppg_0").
-        
+            key: Unique identifier for the feature set in this collection.
+            feature: The Feature instance to add.
+
         Raises:
-            ValueError: If the signal cannot be added due to invalid input.
+            ValueError: If a feature with the given key already exists.
+            TypeError: If feature is not a Feature instance.
+        """
+        if not isinstance(feature, Feature):
+            raise TypeError(f"Object provided for key '{key}' is not a Feature (type: {type(feature).__name__}).")
+        if key in self.features:
+            raise ValueError(f"Feature with key '{key}' already exists in the collection.")
+
+        # Check for feature_id uniqueness across *all* signals/features
+        existing_ids = {s.metadata.signal_id for s in self.time_series_signals.values()} | \
+                       {f.metadata.feature_id for f in self.features.values()}
+        if feature.metadata.feature_id in existing_ids:
+            new_id = str(uuid.uuid4())
+            logger.warning(f"Feature ID '{feature.metadata.feature_id}' conflicts with an existing signal/feature ID. Assigning new ID: {new_id}")
+            feature.metadata.feature_id = new_id
+
+        # Set the feature's name to the key if not already set
+        if feature.handler:
+            feature.handler.set_name(feature.metadata, key=key) # Assuming handler can handle FeatureMetadata
+        else:
+            feature.handler = self.metadata_handler
+            feature.handler.set_name(feature.metadata, key=key) # Assuming handler can handle FeatureMetadata
+
+        self.features[key] = feature
+
+    def add_signal_with_base_name(self, base_name: str, signal: Union[TimeSeriesSignal, Feature]) -> str:
+        """
+        Add a TimeSeriesSignal or Feature with a base name, appending an index if needed.
+
+        Args:
+            base_name: Base name for the signal/feature (e.g., "ppg", "hr_stats").
+            signal: The TimeSeriesSignal or Feature instance to add.
+
+        Returns:
+            The key assigned to the signal/feature (e.g., "ppg_0", "hr_stats_1").
+
+        Raises:
+            ValueError: If the base name is empty.
+            TypeError: If signal is not a TimeSeriesSignal or Feature.
         """
         if not base_name:
             raise ValueError("Base name cannot be empty")
+
+        target_dict = None
+        if isinstance(signal, TimeSeriesSignal):
+            target_dict = self.time_series_signals
+        elif isinstance(signal, Feature):
+            target_dict = self.features
+        else:
+            raise TypeError(f"Input must be a TimeSeriesSignal or Feature, got {type(signal).__name__}")
+
         index = 0
         while True:
             key = f"{base_name}_{index}"
-            if key not in self.signals:
-                self.signals[key] = signal
+            if key not in target_dict:
+                # Use the appropriate add method
+                if isinstance(signal, TimeSeriesSignal):
+                    self.add_time_series_signal(key, signal)
+                else: # Must be Feature
+                    self.add_feature(key, signal)
                 return key
             index += 1
-    
-    def get_signal(self, key: str) -> SignalData:
+
+    def get_time_series_signal(self, key: str) -> TimeSeriesSignal:
+        """Retrieve a TimeSeriesSignal by its key."""
+        if key not in self.time_series_signals:
+            raise KeyError(f"No TimeSeriesSignal with key '{key}' found in the collection.")
+        return self.time_series_signals[key]
+
+    def get_feature(self, key: str) -> Feature:
+        """Retrieve a Feature object by its key."""
+        if key not in self.features:
+            raise KeyError(f"No Feature with key '{key}' found in the collection.")
+        return self.features[key]
+
+    def get_signal(self, key: str) -> Union[TimeSeriesSignal, Feature]:
         """
-        Retrieve a signal by its key.
-        
+        Retrieve a TimeSeriesSignal or Feature by its key.
+
+        Checks both time_series_signals and features dictionaries.
+
         Args:
-            key: The key used when adding the signal
-        
+            key: The key used when adding the signal or feature.
+
         Returns:
-            The requested signal instance
-        
+            The requested TimeSeriesSignal or Feature instance.
+
         Raises:
-            KeyError: If no signal exists with the specified key
+            KeyError: If no signal or feature exists with the specified key.
         """
-        if key not in self.signals:
-            raise KeyError(f"No signal with key '{key}' found in the collection")
-        return self.signals[key]
-    
+        if key in self.time_series_signals:
+            return self.time_series_signals[key]
+        elif key in self.features:
+            return self.features[key]
+        else:
+            raise KeyError(f"No TimeSeriesSignal or Feature with key '{key}' found in the collection.")
+
     def get_signals(self, input_spec: Union[str, Dict[str, Any], List[str], None] = None,
                    signal_type: Union[SignalType, str, None] = None,
+                   feature_type: Union[FeatureType, str, None] = None, # Added feature_type filter
                    criteria: Dict[str, Any] = None,
-                   base_name: str = None) -> List[SignalData]:
+                   base_name: str = None) -> List[Union[TimeSeriesSignal, Feature]]:
         """
-        Retrieve signals based on flexible criteria.
-        
-        This method consolidates multiple signal retrieval methods into a single
-        flexible interface. You can specify one or more filtering criteria.
-        
+        Retrieve TimeSeriesSignals and/or Features based on flexible criteria.
+
+        Searches both `time_series_signals` and `features` containers.
+
         Args:
             input_spec: Can be:
-                        - String ID or base name ("ppg", "ppg_0")
-                        - Dictionary with criteria
+                        - String ID or base name ("ppg", "ppg_0", "hr_stats_0")
+                        - Dictionary with criteria/base_name
                         - List of string IDs or base names
-            signal_type: A SignalType enum value or string name to filter by
-            criteria: Dictionary of metadata field/value pairs to match
-            base_name: Base name to filter signals (e.g., "ppg" returns "ppg_0", "ppg_1")
-        
+            signal_type: A SignalType enum/string to filter TimeSeriesSignals.
+            feature_type: A FeatureType enum/string to filter Features.
+            criteria: Dictionary of metadata field/value pairs to match (searches
+                      both TimeSeriesMetadata and FeatureMetadata).
+            base_name: Base name to filter signals/features (e.g., "ppg", "hr_stats").
+
         Returns:
-            List of matching SignalData instances
-        
-        Examples:
-            # Get all signals of type PPG
-            collection.get_signals(signal_type=SignalType.PPG)
-            
-            # Get all signals with base name "ppg"
-            collection.get_signals(base_name="ppg")
-            
-            # Get signals matching specific criteria
-            collection.get_signals(criteria={"sensor_type": SensorType.WRIST})
-            
-            # Get signals using flexible input specifier
-            collection.get_signals(input_spec=["ppg_0", "ecg_1"])
-            collection.get_signals(input_spec={"base_name": "ppg",
-                                              "criteria": {"sensor_model": SensorModel.POLAR}})
+            List of matching TimeSeriesSignal and/or Feature instances.
         """
-        result = []
-        # Process signal_type parameter if provided
+        results = []
+        search_space = {**self.time_series_signals, **self.features} # Combine both dicts for searching
+
+        # --- Prepare Criteria ---
+        processed_criteria = criteria.copy() if criteria else {}
+
+        # Add signal_type to criteria if provided
         if signal_type is not None:
-            # Convert string to enum if needed
-            if isinstance(signal_type, str):
-                signal_type = str_to_enum(signal_type, SignalType)
-            
-            # Create or update criteria dict with signal_type
-            if criteria is None:
-                criteria = {"signal_type": signal_type}
-            else:
-                criteria = criteria.copy()
-                criteria["signal_type"] = signal_type
-        
-        # Process input_spec parameter if provided
+            st = str_to_enum(signal_type, SignalType) if isinstance(signal_type, str) else signal_type
+            processed_criteria["signal_type"] = st
+
+        # Add feature_type to criteria if provided
+        if feature_type is not None:
+            ft = str_to_enum(feature_type, FeatureType) if isinstance(feature_type, str) else feature_type
+            processed_criteria["feature_type"] = ft
+
+        # --- Process input_spec ---
         if input_spec is not None:
             if isinstance(input_spec, dict):
-                # Dictionary specification with criteria and/or base_name
+                # Dictionary spec: extract base_name and merge criteria
                 if "base_name" in input_spec:
                     base_name = input_spec["base_name"]
-                
                 if "criteria" in input_spec:
-                    # Process criteria from input_spec
-                    spec_criteria = input_spec["criteria"]
-                    processed_criteria = {}
-                    
-                    # Convert string enum values to actual enums
-                    for key, value in spec_criteria.items():
-                        if isinstance(value, str):
-                            if key == "signal_type":
-                                processed_criteria[key] = str_to_enum(value, SignalType)
-                            elif key == "sensor_type":
-                                processed_criteria[key] = str_to_enum(value, SensorType)
-                            elif key == "sensor_model":
-                                processed_criteria[key] = str_to_enum(value, SensorModel)
-                            elif key == "body_position":
-                                processed_criteria[key] = str_to_enum(value, BodyPosition)
-                            else:
-                                processed_criteria[key] = value
-                        else:
-                            processed_criteria[key] = value
-                    
-                    # Merge with existing criteria if any
-                    if criteria is None:
-                        criteria = processed_criteria
-                    else:
-                        criteria.update(processed_criteria)
-            
+                    spec_criteria = self._process_enum_criteria(input_spec["criteria"])
+                    processed_criteria.update(spec_criteria)
+
             elif isinstance(input_spec, list):
-                # List of keys or base names
-                signals = []
-                for spec in input_spec:
-                    signals.extend(self.get_signals(input_spec=spec, 
-                                                  signal_type=signal_type,
-                                                  criteria=criteria,
-                                                  base_name=base_name))
-                return signals
-                
+                # List spec: recursively call get_signals for each item
+                for spec_item in input_spec:
+                    # Pass down existing filters
+                    results.extend(self.get_signals(input_spec=spec_item,
+                                                   signal_type=signal_type,
+                                                   feature_type=feature_type,
+                                                   criteria=criteria, # Pass original criteria dict
+                                                   base_name=base_name)) # Pass original base_name
+                # Deduplicate results based on object ID
+                return list({id(s): s for s in results}.values())
+
+            else: # String spec
+                spec_str = str(input_spec)
+                # Check if it's an exact key
+                if spec_str in search_space:
+                    signal = search_space[spec_str]
+                    if self._matches_criteria(signal, processed_criteria):
+                        return [signal]
+                    else:
+                        return [] # Key found but doesn't match criteria
+                # If not an exact key, treat it as a base name
+                else:
+                    base_name = spec_str
+
+        # --- Apply Filtering (Base Name and Criteria) ---
+        if base_name:
+            # Filter by base name first
+            filtered_signals = []
+            for key, signal in search_space.items():
+                 # Check if key matches the base name pattern (e.g., "basename_0")
+                 if key.startswith(f"{base_name}_") and key[len(base_name)+1:].isdigit():
+                      filtered_signals.append(signal)
+        else:
+            # If no base name, start with all signals/features
+            filtered_signals = list(search_space.values())
+
+        # Apply criteria filtering
+        final_results = [s for s in filtered_signals if self._matches_criteria(s, processed_criteria)]
+
+        # Deduplicate final results
+        return list({id(s): s for s in final_results}.values())
+
+    def _process_enum_criteria(self, criteria_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Helper to convert string enum values in criteria to Enum objects."""
+        processed = {}
+        enum_map = {
+            "signal_type": SignalType,
+            "sensor_type": SensorType,
+            "sensor_model": SensorModel,
+            "body_position": BodyPosition,
+            "feature_type": FeatureType,
+            # Add other enum fields here if needed
+        }
+        for key, value in criteria_dict.items():
+            if key in enum_map and isinstance(value, str):
+                try:
+                    processed[key] = str_to_enum(value, enum_map[key])
+                except ValueError:
+                    logger.warning(f"Invalid enum value '{value}' for criteria key '{key}'. Keeping as string.")
+                    processed[key] = value # Keep original string if conversion fails
             else:
-                # String specifier (key or base name)
-                spec_str = input_spec
-                
-                # Check if this is a specific key
-                if spec_str in self.signals:
-                    signal = self.signals[spec_str]
-                    
-                    # Apply additional filters if provided
-                    if self._matches_criteria(signal, criteria):
-                        result.append(signal)
-                    return result
-                    
-                # Check if this is an indexed name (contains underscore and ends with number)
-                if "_" in spec_str and spec_str.split("_")[-1].isdigit():
-                    # This is an indexed name, get the specific signal if it exists
-                    if spec_str in self.signals:
-                        signal = self.signals[spec_str]
-                        if self._matches_criteria(signal, criteria):
-                            result.append(signal)
-                    return result
-                    
-                # Treat as base name
-                base_name = spec_str
-        
-        # Now apply all filtering
-        # Start with all signals if we haven't yet built a result list
-        if not result:
-            # Special case: if base_name is provided, only include signals with that base name
-            if base_name:
-                for key, signal in self.signals.items():
-                    if key.startswith(f"{base_name}_") and key[len(base_name)+1:].isdigit():
-                        if self._matches_criteria(signal, criteria):
-                            result.append(signal)
-            else:
-                # Otherwise, start with all signals and filter by criteria
-                for signal in self.signals.values():
-                    if self._matches_criteria(signal, criteria):
-                        result.append(signal)
-        
-        return result
-    
-    def _matches_criteria(self, signal: SignalData, criteria: Dict[str, Any]) -> bool:
-        """
-        Check if a signal matches all the criteria.
-        
-        Args:
-            signal: The signal to check
-            criteria: Dictionary of metadata field/value pairs to match
-            
-        Returns:
-            True if the signal matches all criteria, False otherwise
-        """
+                processed[key] = value
+        return processed
+
+
+    def _matches_criteria(self, signal: Union[TimeSeriesSignal, Feature], criteria: Dict[str, Any]) -> bool:
+        """Check if a TimeSeriesSignal or Feature matches all criteria."""
         if not criteria:
             return True
+
+        metadata_obj = signal.metadata # Get the correct metadata object
+
         for key, value in criteria.items():
-            # Handle nested fields (e.g., "sensor_info.device_id")
-            if "." in key:
+            # Handle nested fields (e.g., "sensor_info.device_id") - applies only to TimeSeriesMetadata
+            if "." in key and isinstance(metadata_obj, TimeSeriesMetadata):
                 parts = key.split(".", 1)
                 container_name, field_name = parts
-                # Get the container
-                if hasattr(signal.metadata, container_name):
-                    container = getattr(signal.metadata, container_name)
-                    # Check if container is a dict and has the field
+                if hasattr(metadata_obj, container_name):
+                    container = getattr(metadata_obj, container_name)
                     if isinstance(container, dict) and field_name in container:
                         if container[field_name] != value:
                             return False
-                    else:
-                        return False
-                else:
-                    return False
-            
+                    else: return False # Container not dict or field missing
+                else: return False # Container attribute missing
             # Handle standard fields
-            elif hasattr(signal.metadata, key):
-                if getattr(signal.metadata, key) != value:
+            elif hasattr(metadata_obj, key):
+                if getattr(metadata_obj, key) != value:
                     return False
-            else:
+            else: # Field doesn't exist on this metadata type
                 return False
-        
         return True
-    
-    def update_signal_metadata(self, signal: SignalData, metadata_spec: Dict[str, Any]) -> None:
-        """
-        Update a signal's metadata with values from a specification.
-        
-        Args:
-            signal: The signal to update
-            metadata_spec: Dictionary containing metadata values to update
-        """
-        # Process any enum fields first
+
+    def update_time_series_metadata(self, signal: TimeSeriesSignal, metadata_spec: Dict[str, Any]) -> None:
+        """Update a TimeSeriesSignal's metadata."""
+        if not isinstance(signal, TimeSeriesSignal):
+             raise TypeError(f"Expected TimeSeriesSignal, got {type(signal).__name__}")
+
+        # Process enum fields specifically for TimeSeriesMetadata
         processed_metadata = {}
-        
-        # Update enum fields
-        if "signal_type" in metadata_spec and isinstance(metadata_spec["signal_type"], str):
-            from ..signal_types import SignalType
-            processed_metadata["signal_type"] = str_to_enum(metadata_spec["signal_type"], SignalType)
-            
-        if "sensor_type" in metadata_spec and isinstance(metadata_spec["sensor_type"], str):
-            processed_metadata["sensor_type"] = str_to_enum(metadata_spec["sensor_type"], SensorType)
-            
-        if "sensor_model" in metadata_spec and isinstance(metadata_spec["sensor_model"], str):
-            processed_metadata["sensor_model"] = str_to_enum(metadata_spec["sensor_model"], SensorModel)
-            
-        if "body_position" in metadata_spec and isinstance(metadata_spec["body_position"], str):
-            processed_metadata["body_position"] = str_to_enum(metadata_spec["body_position"], BodyPosition)
-        
+        enum_map = {
+            "signal_type": SignalType, "sensor_type": SensorType,
+            "sensor_model": SensorModel, "body_position": BodyPosition, "units": Unit
+        }
+        for field, enum_cls in enum_map.items():
+            if field in metadata_spec and isinstance(metadata_spec[field], str):
+                try:
+                    processed_metadata[field] = str_to_enum(metadata_spec[field], enum_cls)
+                except ValueError:
+                     logger.warning(f"Invalid enum value '{metadata_spec[field]}' for field '{field}'. Skipping update.")
+
         # Handle sensor_info separately
         if "sensor_info" in metadata_spec and isinstance(metadata_spec["sensor_info"], dict):
-            # Initialize sensor_info if needed
             if signal.metadata.sensor_info is None:
                 signal.metadata.sensor_info = {}
             signal.metadata.sensor_info.update(metadata_spec["sensor_info"])
-        
-        # Add other fields to the processed metadata
-        for field in ["name", "sample_rate", "units", "start_time", "end_time"]:
-            if field in metadata_spec:
-                processed_metadata[field] = metadata_spec[field]
-        
-        # Use the metadata handler to update the signal's metadata
-        if hasattr(signal, 'handler') and signal.handler:
-            # Use the signal's existing handler
-            signal.handler.update_metadata(signal.metadata, **processed_metadata)
-        else:
-            # Use the collection's handler if the signal doesn't have one
-            signal.handler = self.metadata_handler
-            signal.handler.update_metadata(signal.metadata, **processed_metadata)
-    
-    
-    def set_index_config(self, index_fields: List[str]) -> None:
-        """
-        Configure the multi-index fields for dataframe exports.
-        
-        Args:
-            index_fields: List of metadata field names to use as index levels.
-        
-        Raises:
-            ValueError: If any field is not a valid SignalMetadata attribute.
-        """
-        valid_fields = {f.name for f in fields(SignalMetadata)}
-        if not all(f in valid_fields for f in index_fields):
-            raise ValueError(f"Invalid index fields: {set(index_fields) - valid_fields}")
-        self.metadata.index_config = index_fields
-    
-   
-    def _validate_timestamp_index(self, signal: SignalData) -> None:
-        """
-        Validate that a signal has a proper timestamp index.
-        
-        Args:
-            signal: The signal to validate
-            
-        Raises:
-            ValueError: If the signal doesn't have a DatetimeIndex
-        """
-        logger = logging.getLogger(__name__)
-        data = signal.get_data()
-        if isinstance(data, pd.DataFrame):
-            if not isinstance(data.index, pd.DatetimeIndex):
-                logger.error(f"Signal {signal.metadata.signal_id} doesn't have a DatetimeIndex")
-                raise ValueError(f"All time series signals must have a DatetimeIndex")
-    
-    def get_target_sample_rate(self, user_specified=None):
-        """
-        Determine the target sample rate for alignment.
-        
-        Args:
-            user_specified (float, optional): User-defined target rate in Hz.
-        
-        Returns:
-            float: The target sample rate in Hz.
-        """
-        if user_specified is not None:
-            return user_specified
 
-        # Calculate max rate using the float value from get_sampling_rate()
+        # Add other valid TimeSeriesMetadata fields
+        valid_fields = {f.name for f in fields(TimeSeriesMetadata)}
+        for field in valid_fields:
+            if field in metadata_spec and field not in processed_metadata and field != "sensor_info":
+                processed_metadata[field] = metadata_spec[field]
+
+        # Use the metadata handler to update
+        handler = signal.handler or self.metadata_handler
+        handler.update_metadata(signal.metadata, **processed_metadata)
+
+    def update_feature_metadata(self, feature: Feature, metadata_spec: Dict[str, Any]) -> None:
+        """Update a Feature's metadata."""
+        if not isinstance(feature, Feature):
+             raise TypeError(f"Expected Feature, got {type(feature).__name__}")
+
+        processed_metadata = {}
+        # Process FeatureType enum
+        if "feature_type" in metadata_spec and isinstance(metadata_spec["feature_type"], str):
+             try:
+                  processed_metadata["feature_type"] = str_to_enum(metadata_spec["feature_type"], FeatureType)
+             except ValueError:
+                  logger.warning(f"Invalid enum value '{metadata_spec['feature_type']}' for field 'feature_type'. Skipping update.")
+
+        # Add other valid FeatureMetadata fields
+        valid_fields = {f.name for f in fields(FeatureMetadata)}
+        for field in valid_fields:
+            if field in metadata_spec and field not in processed_metadata:
+                 # Special handling for timedeltas if provided as strings
+                 if field in ['epoch_window_length', 'epoch_step_size'] and isinstance(metadata_spec[field], str):
+                      try:
+                           processed_metadata[field] = pd.Timedelta(metadata_spec[field])
+                      except ValueError:
+                           logger.warning(f"Invalid timedelta format '{metadata_spec[field]}' for field '{field}'. Skipping update.")
+                 else:
+                      processed_metadata[field] = metadata_spec[field]
+
+        # Use the metadata handler to update
+        handler = feature.handler or self.metadata_handler
+        handler.update_metadata(feature.metadata, **processed_metadata) # Assumes handler works with FeatureMetadata
+
+
+    def set_index_config(self, index_fields: List[str]) -> None:
+        """Configure the multi-index fields for combined *time-series* exports."""
+        valid_fields = {f.name for f in fields(TimeSeriesMetadata)}
+        invalid = [f for f in index_fields if f not in valid_fields]
+        if invalid:
+            raise ValueError(f"Invalid index_config fields (must be TimeSeriesMetadata attributes): {invalid}")
+        self.metadata.index_config = index_fields
+        logger.info(f"Set time-series index_config to: {index_fields}")
+
+    def set_feature_index_config(self, index_fields: List[str]) -> None:
+        """Configure the multi-index fields for combined *feature* matrix exports."""
+        # Fields can come from FeatureMetadata or propagated TimeSeriesMetadata fields
+        valid_feature_fields = {f.name for f in fields(FeatureMetadata)}
+        # Allow fields potentially propagated from TimeSeriesMetadata as well
+        # This check is less strict here; the combine_features step validates access
+        # valid_ts_fields = {f.name for f in fields(TimeSeriesMetadata)}
+        # all_possible_fields = valid_feature_fields.union(valid_ts_fields)
+        # invalid = [f for f in index_fields if f not in all_possible_fields]
+        # if invalid:
+        #     raise ValueError(f"Invalid feature_index_config fields: {invalid}")
+        self.metadata.feature_index_config = index_fields
+        logger.info(f"Set feature_index_config to: {index_fields}")
+
+
+    def _validate_timestamp_index(self, signal: TimeSeriesSignal) -> None:
+        """Validate that a TimeSeriesSignal has a proper DatetimeIndex."""
+        # logger = logging.getLogger(__name__) # Logger already defined at module level
+        if not isinstance(signal, TimeSeriesSignal):
+             # This check might be redundant if called from add_time_series_signal, but safe
+             logger.warning(f"Attempted to validate timestamp index on non-TimeSeriesSignal: {signal.metadata.name}")
+             return
+        try:
+            data = signal.get_data()
+            if data is None:
+                 logger.warning(f"Signal {signal.metadata.name} has None data. Cannot validate index.")
+                 return # Allow None data
+            if isinstance(data, pd.DataFrame):
+                if not isinstance(data.index, pd.DatetimeIndex):
+                    logger.error(f"Signal {signal.metadata.name} (ID: {signal.metadata.signal_id}) doesn't have a DatetimeIndex.")
+                    raise ValueError(f"TimeSeriesSignal '{signal.metadata.name}' must have a DatetimeIndex.")
+            # else: Allow non-DataFrame data? Current signals are DataFrame based.
+        except Exception as e:
+             logger.error(f"Error validating timestamp index for signal {signal.metadata.name}: {e}", exc_info=True)
+             raise ValueError(f"Failed to validate timestamp index for signal '{signal.metadata.name}'.") from e
+
+    def get_target_sample_rate(self, user_specified=None):
+        """Determine the target sample rate for time-series alignment."""
+        if user_specified is not None:
+            return float(user_specified) # Ensure float
+
+        # Calculate max rate only from TimeSeriesSignals
         valid_rates = [
-            s.get_sampling_rate() for s in self.signals.values()
-            if isinstance(s, TimeSeriesSignal) and s.get_sampling_rate() is not None and s.get_sampling_rate() > 0
+            s.get_sampling_rate() for s in self.time_series_signals.values() # Use time_series_signals
+            if s.get_sampling_rate() is not None and s.get_sampling_rate() > 0
         ]
 
         if not valid_rates:
-             # If no valid rates, default to 100 Hz
+             logger.warning("No valid positive sampling rates found in TimeSeriesSignals. Defaulting target rate to 100 Hz.")
              return 100.0
 
         max_rate = max(valid_rates)
 
-        # If max_rate is still 0 or less (shouldn't happen with filter), default to 100 Hz
-        if max_rate <= 0:
-             logger.warning("No valid positive sampling rates found. Defaulting target rate to 100 Hz.") # Added logger
+        if max_rate <= 0: # Should not happen with filter > 0
+             logger.warning("Max sampling rate is not positive. Defaulting target rate to 100 Hz.")
              return 100.0
 
-        # Find the largest standard rate <= the maximum rate found in the signals
+        # Find the largest standard rate <= the maximum rate found
         valid_standard_rates = [r for r in STANDARD_RATES if r <= max_rate]
-        chosen_rate = max(valid_standard_rates) if valid_standard_rates else min(STANDARD_RATES) # Fallback to lowest standard rate
-        logger.info(f"Determined target sample rate: {chosen_rate} Hz (based on max signal rate {max_rate:.4f} Hz)") # Added logger
+        chosen_rate = max(valid_standard_rates) if valid_standard_rates else min(STANDARD_RATES)
+        logger.info(f"Determined target sample rate: {chosen_rate} Hz (based on max TimeSeriesSignal rate {max_rate:.4f} Hz)")
         return chosen_rate
-        # Removed redundant except block as it was outside the try
 
 
     def get_nearest_standard_rate(self, rate):
-        """
-        Find the nearest standard rate to a given sample rate.
-
-        Args:
-            rate (float): The signal's sample rate in Hz.
-
-        Returns:
-            float: The closest rate from STANDARD_RATES.
-        """
-        logger = logging.getLogger(__name__)
-
-        # Consolidated the check for invalid rate
+        """Find the nearest standard rate to a given sample rate."""
+        # logger = logging.getLogger(__name__) # Logger already defined
         if rate is None or rate <= 0:
             logger.warning(f"Invalid rate ({rate}) provided to get_nearest_standard_rate. Returning default rate 1 Hz.")
-            return 1.0 # Default to 1 Hz if rate is invalid
+            return 1.0
 
-        # Find the rate in STANDARD_RATES that minimizes the absolute difference
         nearest_rate = min(STANDARD_RATES, key=lambda r: abs(r - rate))
         logger.debug(f"Nearest standard rate to {rate:.4f} Hz is {nearest_rate} Hz.")
         return nearest_rate
 
     def get_reference_time(self, target_period: pd.Timedelta) -> pd.Timestamp:
-        """
-        Compute the reference timestamp for the grid alignment.
-
-        Finds the earliest timestamp across all time-series signals and aligns
-        it to the grid defined by the target_period, ensuring a consistent
-        starting point relative to the Unix epoch (1970-01-01).
-        
-        Args:
-            target_period (pd.Timedelta): The period corresponding to the target sample rate.
-        
-        Returns:
-            pd.Timestamp: The reference time aligned to the grid.
-        """
-        logger = logging.getLogger(__name__)
+        """Compute the reference timestamp for grid alignment based on TimeSeriesSignals."""
+        # logger = logging.getLogger(__name__) # Logger already defined
 
         min_times = []
-        for signal in self.signals.values():
-             if isinstance(signal, TimeSeriesSignal):
+        # Iterate only over time_series_signals
+        for signal in self.time_series_signals.values():
+             try:
                  data = signal.get_data()
                  if data is not None and isinstance(data.index, pd.DatetimeIndex) and not data.empty:
                      min_times.append(data.index.min())
+             except Exception as e:
+                  logger.warning(f"Could not get start time for signal {signal.metadata.name}: {e}")
 
         if not min_times:
-            logger.warning("No valid timestamps found in signals. Using default reference time 1970-01-01.")
-            return pd.Timestamp("1970-01-01", tz='UTC') # Ensure timezone consistency
+            logger.warning("No valid timestamps found in TimeSeriesSignals. Using default reference time 1970-01-01 UTC.")
+            return pd.Timestamp("1970-01-01", tz='UTC')
 
-        # Use the overall earliest time across all signals
         min_time = min(min_times)
-        logger.debug(f"Earliest timestamp found across signals: {min_time}")
+        logger.debug(f"Earliest timestamp found across TimeSeriesSignals: {min_time}")
 
         # Ensure reference time is timezone-aware if min_time is
         epoch = pd.Timestamp("1970-01-01", tz=min_time.tz)
 
-        # Calculate the offset from the epoch in nanoseconds for precision
         delta_ns = (min_time - epoch).total_seconds() * 1e9
         target_period_ns = target_period.total_seconds() * 1e9
 
@@ -594,34 +639,15 @@ class SignalCollection:
              logger.error("Target period is zero, cannot calculate reference time.")
              raise ValueError("Target period cannot be zero for reference time calculation.")
 
-        # Calculate the number of full periods from the epoch to the minimum time
-        # Use floor division to find the grid point *before* or *at* the minimum time
-        num_periods = np.floor(delta_ns / target_period_ns) # type: ignore
-
-        # Calculate the reference time by adding the total duration of these periods to the epoch
-        ref_time = epoch + pd.Timedelta(nanoseconds=num_periods * target_period_ns) # type: ignore
+        num_periods = np.floor(delta_ns / target_period_ns)
+        ref_time = epoch + pd.Timedelta(nanoseconds=num_periods * target_period_ns)
         logger.debug(f"Calculated reference time: {ref_time} based on target period {target_period}")
-
         return ref_time
 
 
     def _calculate_grid_index(self, target_rate: float, ref_time: pd.Timestamp) -> Optional[pd.DatetimeIndex]:
-        """
-        Calculates the final DatetimeIndex grid for the collection.
-
-        Determines the overall time range of all time-series signals and creates
-        a regular DatetimeIndex covering this range at the target_rate, aligned
-        to the ref_time.
-
-        Args:
-            target_rate: The target sampling rate in Hz.
-            ref_time: The reference timestamp for grid alignment.
-
-        Returns:
-            A pd.DatetimeIndex representing the common grid, or None if no valid
-            timestamps are found.
-        """
-        logger = logging.getLogger(__name__)
+        """Calculates the final DatetimeIndex grid based on TimeSeriesSignals."""
+        # logger = logging.getLogger(__name__) # Logger already defined
 
         if target_rate <= 0:
             logger.error(f"Invalid target_rate ({target_rate}) for grid calculation.")
@@ -631,25 +657,27 @@ class SignalCollection:
 
         min_times = []
         max_times = []
-        for signal in self.signals.values():
-            if isinstance(signal, TimeSeriesSignal):
+        # Iterate only over time_series_signals
+        for signal in self.time_series_signals.values():
+            try:
                 data = signal.get_data()
                 if data is not None and isinstance(data.index, pd.DatetimeIndex) and not data.empty:
                     # Ensure timezone consistency with ref_time before comparison
                     data_index_tz = data.index.tz_convert(ref_time.tz) if data.index.tz is not None else data.index.tz_localize(ref_time.tz)
                     min_times.append(data_index_tz.min())
                     max_times.append(data_index_tz.max())
+            except Exception as e:
+                 logger.warning(f"Could not get time range for signal {signal.metadata.name}: {e}")
+
 
         if not min_times or not max_times:
-            logger.warning("No valid timestamps found in signals. Cannot create grid index.")
+            logger.warning("No valid timestamps found in TimeSeriesSignals. Cannot create grid index.")
             return None
 
         earliest_start = min(min_times)
         latest_end = max(max_times)
-        logger.info(f"Overall time range for grid: {earliest_start} to {latest_end}")
+        logger.info(f"Overall time range for grid (from TimeSeriesSignals): {earliest_start} to {latest_end}")
 
-        # Generate a regular grid covering this range, aligned to ref_time
-        # Use floor/ceil on the number of periods from ref_time to ensure full coverage
         target_period_ns = target_period.total_seconds() * 1e9
         if target_period_ns == 0:
              logger.error("Target period is zero, cannot calculate grid index.")
@@ -658,33 +686,25 @@ class SignalCollection:
         start_offset_ns = (earliest_start - ref_time).total_seconds() * 1e9
         end_offset_ns = (latest_end - ref_time).total_seconds() * 1e9
 
-        # Calculate periods using floor/ceil for start/end respectively
-        periods_to_start = np.floor(start_offset_ns / target_period_ns) # type: ignore
-        periods_to_end = np.ceil(end_offset_ns / target_period_ns) # type: ignore
+        periods_to_start = np.floor(start_offset_ns / target_period_ns)
+        periods_to_end = np.ceil(end_offset_ns / target_period_ns)
 
-        grid_start = ref_time + pd.Timedelta(nanoseconds=periods_to_start * target_period_ns) # type: ignore
-        grid_end = ref_time + pd.Timedelta(nanoseconds=periods_to_end * target_period_ns) # type: ignore
+        grid_start = ref_time + pd.Timedelta(nanoseconds=periods_to_start * target_period_ns)
+        grid_end = ref_time + pd.Timedelta(nanoseconds=periods_to_end * target_period_ns)
 
-        # Ensure start <= end before creating range
         if grid_start > grid_end:
-            logger.warning(f"Calculated grid_start ({grid_start}) is after grid_end ({grid_end}). Cannot create grid.")
-            # Swap them if inverted due to potential floating point issues near zero offset
+            logger.warning(f"Calculated grid_start ({grid_start}) is after grid_end ({grid_end}). Attempting swap.")
             if abs((grid_start - grid_end).total_seconds()) < (target_period.total_seconds() * 0.5):
-                 logger.debug("Grid start/end inverted likely due to floating point near zero, swapping.")
                  grid_start, grid_end = grid_end, grid_start
             else:
-                 return None # Return None if range is invalid
+                 logger.error("Invalid grid range calculated.")
+                 return None
 
         try:
             grid_index = pd.date_range(
-                start=grid_start,
-                end=grid_end,
-                freq=target_period,
-                name='timestamp' # Name the index
+                start=grid_start, end=grid_end, freq=target_period, name='timestamp'
             )
-            # Ensure the grid has the same timezone as ref_time
             grid_index = grid_index.tz_convert(ref_time.tz) if grid_index.tz is not None else grid_index.tz_localize(ref_time.tz)
-
             logger.info(f"Calculated grid_index with {len(grid_index)} points from {grid_index.min()} to {grid_index.max()}")
             return grid_index
         except Exception as e:
@@ -694,41 +714,18 @@ class SignalCollection:
     # Decorator now just marks the method
     @register_collection_operation("generate_alignment_grid")
     def generate_alignment_grid(self, target_sample_rate: Optional[float] = None) -> 'SignalCollection':
-        """
-        Calculates and stores the alignment grid parameters for the collection.
-
-        Determines the target sampling rate, reference time, and the common
-        DatetimeIndex grid based on all time-series signals in the collection.
-        These parameters are stored on the collection instance (`target_rate`,
-        `ref_time`, `grid_index`) and the `_alignment_params_calculated` flag is set.
-
-        This method does *not* modify the individual signal data.
-
-        Args:
-            target_sample_rate: Optional. The desired target sample rate in Hz.
-                                If None, the highest standard rate less than or
-                                equal to the maximum rate found among signals
-                                will be used.
-
-        Returns:
-            The SignalCollection instance (self) with alignment parameters set.
-
-        Raises:
-            RuntimeError: If no time-series signals are found or if a valid
-                          grid index cannot be calculated.
-        """
+        """Calculates and stores the alignment grid parameters based on TimeSeriesSignals."""
         logger.info(f"Starting alignment grid parameter calculation with target_sample_rate={target_sample_rate}")
         start_time = time.time()
         self._alignment_params_calculated = False # Reset flag
 
         # --- Filter for TimeSeriesSignals ---
-        ts_signals = [s for s in self.signals.values() if isinstance(s, TimeSeriesSignal)]
-        if not ts_signals:
+        # Check the dedicated dictionary
+        if not self.time_series_signals:
             logger.error("No time-series signals found in the collection. Cannot calculate alignment grid.")
-            # Raise error as parameters are essential for subsequent steps
             raise RuntimeError("No time-series signals found in the collection to calculate alignment grid.")
 
-        # --- Determine Target Rate ---
+        # --- Determine Target Rate (uses time_series_signals internally now) ---
         try:
             self.target_rate = self.get_target_sample_rate(target_sample_rate)
             if self.target_rate is None or self.target_rate <= 0:
@@ -739,7 +736,7 @@ class SignalCollection:
             logger.error(f"Failed to determine target sample rate: {e}", exc_info=True)
             raise RuntimeError(f"Failed to determine target sample rate: {e}") from e
 
-        # --- Determine Reference Time ---
+        # --- Determine Reference Time (uses time_series_signals internally now) ---
         try:
             self.ref_time = self.get_reference_time(target_period)
             logger.info(f"Using reference time: {self.ref_time}")
@@ -747,21 +744,253 @@ class SignalCollection:
             logger.error(f"Failed to determine reference time: {e}", exc_info=True)
             raise RuntimeError(f"Failed to determine reference time: {e}") from e
 
-        # --- Calculate Grid Index ---
+        # --- Calculate Grid Index (uses time_series_signals internally now) ---
         try:
             self.grid_index = self._calculate_grid_index(self.target_rate, self.ref_time)
             if self.grid_index is None or self.grid_index.empty:
                 raise ValueError("Calculated grid index is None or empty.")
         except Exception as e:
             logger.error(f"Failed to calculate grid index: {e}", exc_info=True)
-            # Set grid_index to None to indicate failure
             self.grid_index = None
             raise RuntimeError(f"Failed to calculate a valid grid index for alignment: {e}") from e
 
-        # --- Mark as calculated ---
         self._alignment_params_calculated = True
         logger.info(f"Alignment grid parameters calculated in {time.time() - start_time:.2f} seconds.")
         return self
+
+    # --- New Epoch Grid Generation ---
+    @register_collection_operation("generate_epoch_grid")
+    def generate_epoch_grid(self, start_time: Optional[Union[str, pd.Timestamp]] = None, end_time: Optional[Union[str, pd.Timestamp]] = None) -> 'SignalCollection':
+        """
+        Calculates and stores the global epoch grid based on collection settings.
+
+        Uses `epoch_grid_config` from `CollectionMetadata` and the time range
+        of `time_series_signals` to create a common `epoch_grid_index`.
+
+        Args:
+            start_time: Optional override for the grid start time.
+            end_time: Optional override for the grid end time.
+
+        Returns:
+            The SignalCollection instance (self) with epoch grid parameters set.
+
+        Raises:
+            RuntimeError: If `epoch_grid_config` is missing or invalid, or if
+                          no time-series signals are found to determine the range.
+            ValueError: If start/end time overrides are invalid.
+        """
+        logger.info("Starting global epoch grid calculation...")
+        op_start_time = time.time()
+        self._epoch_grid_calculated = False # Reset flag
+
+        # --- Get Config ---
+        config = self.metadata.epoch_grid_config
+        if not config or "window_length" not in config or "step_size" not in config:
+            raise RuntimeError("Missing or incomplete 'epoch_grid_config' in collection metadata. Cannot generate epoch grid.")
+
+        try:
+            window_length = pd.Timedelta(config["window_length"])
+            step_size = pd.Timedelta(config["step_size"])
+            if window_length <= pd.Timedelta(0) or step_size <= pd.Timedelta(0):
+                raise ValueError("window_length and step_size must be positive.")
+        except (ValueError, TypeError) as e:
+            raise RuntimeError(f"Invalid epoch_grid_config parameters: {e}") from e
+
+        self.global_epoch_window_length = window_length
+        self.global_epoch_step_size = step_size
+        logger.info(f"Using global epoch parameters: window={window_length}, step={step_size}")
+
+        # --- Determine Time Range ---
+        min_times = []
+        max_times = []
+        collection_tz = pd.Timestamp('now', tz=self.metadata.timezone).tz # Get collection tz object
+
+        for signal in self.time_series_signals.values():
+            try:
+                data = signal.get_data()
+                if data is not None and isinstance(data.index, pd.DatetimeIndex) and not data.empty:
+                    # Ensure timezone consistency before comparison
+                    data_index_tz = data.index.tz_convert(collection_tz) if data.index.tz is not None else data.index.tz_localize(collection_tz)
+                    min_times.append(data_index_tz.min())
+                    max_times.append(data_index_tz.max())
+            except Exception as e:
+                 logger.warning(f"Could not get time range for signal {signal.metadata.name} for epoch grid: {e}")
+
+        if not min_times or not max_times:
+            raise RuntimeError("No valid time ranges found in TimeSeriesSignals. Cannot determine epoch grid range.")
+
+        # --- Apply Overrides ---
+        try:
+            grid_start = pd.Timestamp(start_time, tz=collection_tz) if start_time else min(min_times)
+            grid_end = pd.Timestamp(end_time, tz=collection_tz) if end_time else max(max_times)
+            # Ensure overrides are timezone-aware consistent with collection
+            if grid_start.tz is None: grid_start = grid_start.tz_localize(collection_tz)
+            else: grid_start = grid_start.tz_convert(collection_tz)
+            if grid_end.tz is None: grid_end = grid_end.tz_localize(collection_tz)
+            else: grid_end = grid_end.tz_convert(collection_tz)
+
+        except Exception as e:
+            raise ValueError(f"Invalid start_time or end_time override for epoch grid: {e}") from e
+
+        if grid_start >= grid_end:
+             raise ValueError(f"Epoch grid start time ({grid_start}) must be before end time ({grid_end}).")
+
+        logger.info(f"Epoch grid time range: {grid_start} to {grid_end}")
+
+        # --- Generate Epoch Index ---
+        try:
+            # Generate epoch start times using the step_size as frequency
+            self.epoch_grid_index = pd.date_range(
+                start=grid_start,
+                end=grid_end, # date_range includes end if it falls on frequency step
+                freq=step_size,
+                name='epoch_start_time',
+                inclusive='left' # Only include start times <= grid_end
+            )
+            # Filter out any start times where the window would begin after the grid ends
+            # This check might be slightly redundant with inclusive='left' but safer
+            self.epoch_grid_index = self.epoch_grid_index[self.epoch_grid_index <= grid_end]
+
+            if self.epoch_grid_index.empty:
+                 logger.warning("Generated epoch grid index is empty.")
+                 # Keep empty index, subsequent steps should handle this
+
+            # Ensure timezone matches collection
+            self.epoch_grid_index = self.epoch_grid_index.tz_convert(collection_tz) if self.epoch_grid_index.tz is not None else self.epoch_grid_index.tz_localize(collection_tz)
+
+            logger.info(f"Calculated epoch_grid_index with {len(self.epoch_grid_index)} points.")
+
+        except Exception as e:
+            logger.error(f"Error creating date_range for epoch grid index: {e}", exc_info=True)
+            self.epoch_grid_index = None # Mark as failed
+            raise RuntimeError(f"Failed to calculate epoch grid index: {e}") from e
+
+        self._epoch_grid_calculated = True
+        logger.info(f"Epoch grid calculated in {time.time() - op_start_time:.2f} seconds.")
+        return self
+
+    def apply_multi_signal_operation(self, operation_name: str, input_signal_keys: List[str], parameters: Dict[str, Any]) -> Union[TimeSeriesSignal, Feature]:
+        """
+        Applies an operation that takes multiple signals as input and produces a single output.
+
+        Handles operations registered in `multi_signal_registry`.
+
+        Args:
+            operation_name: Name of the operation (e.g., "feature_statistics").
+            input_signal_keys: List of keys for the input TimeSeriesSignals.
+            parameters: Dictionary of parameters for the operation.
+
+        Returns:
+            The resulting Feature or TimeSeriesSignal object.
+
+        Raises:
+            ValueError: If operation is not found, inputs are invalid, or prerequisites are not met.
+            RuntimeError: If the operation execution fails.
+        """
+        logger.info(f"Applying multi-signal operation '{operation_name}' to inputs: {input_signal_keys}")
+
+        if operation_name not in self.multi_signal_registry:
+            raise ValueError(f"Multi-signal operation '{operation_name}' not found in registry.")
+
+        operation_func, output_class = self.multi_signal_registry[operation_name]
+
+        # --- Input Resolution and Validation ---
+        input_signals: List[TimeSeriesSignal] = []
+        for key in input_signal_keys:
+            try:
+                signal = self.get_time_series_signal(key) # Ensure inputs are TimeSeriesSignals
+                input_signals.append(signal)
+            except KeyError:
+                raise ValueError(f"Input TimeSeriesSignal key '{key}' not found for operation '{operation_name}'.")
+
+        if not input_signals:
+            raise ValueError(f"No valid input TimeSeriesSignals resolved for operation '{operation_name}'.")
+
+        # --- Prerequisite Checks (Specific to Feature Extraction) ---
+        # Import Feature here to avoid circular dependency at module level if needed
+        from ..features.feature import Feature
+        is_feature_op = issubclass(output_class, Feature) # Check if output is a Feature
+        if is_feature_op:
+            if not self._epoch_grid_calculated or self.epoch_grid_index is None or self.epoch_grid_index.empty:
+                raise RuntimeError(f"Cannot execute feature operation '{operation_name}': generate_epoch_grid must be run successfully first.")
+            # Pass epoch grid index to feature functions
+            parameters['epoch_grid_index'] = self.epoch_grid_index
+            # Pass global epoch config for reference/fallback within the function
+            parameters['global_epoch_window_length'] = self.global_epoch_window_length
+            parameters['global_epoch_step_size'] = self.global_epoch_step_size
+
+        # --- Function Execution ---
+        try:
+            logger.debug(f"Executing operation function '{operation_func.__name__}'...")
+            # Pass the list of signal objects and parameters
+            result_object = operation_func(signals=input_signals, **parameters)
+            logger.debug(f"Operation function '{operation_func.__name__}' completed.")
+        except Exception as e:
+            logger.error(f"Error executing multi-signal operation function '{operation_func.__name__}': {e}", exc_info=True)
+            raise RuntimeError(f"Execution of operation '{operation_name}' failed.") from e
+
+        # --- Result Validation ---
+        if not isinstance(result_object, output_class):
+            raise TypeError(f"Operation '{operation_name}' returned unexpected type {type(result_object).__name__}. Expected {output_class.__name__}.")
+
+        # --- Metadata Propagation (for Feature outputs) ---
+        if isinstance(result_object, Feature):
+            logger.debug(f"Propagating metadata for Feature result of '{operation_name}'...")
+            feature_meta = result_object.metadata
+            fields_to_propagate = self.metadata.feature_index_config # Fields defined in collection config
+
+            if fields_to_propagate:
+                if len(input_signals) == 1:
+                    # Single input: Copy directly
+                    source_meta = input_signals[0].metadata
+                    for field in fields_to_propagate:
+                        if hasattr(source_meta, field) and hasattr(feature_meta, field):
+                            value = getattr(source_meta, field)
+                            setattr(feature_meta, field, value)
+                            logger.debug(f"  Propagated '{field}' = {value} (from single source)")
+                        elif hasattr(feature_meta, field):
+                             # Field exists in FeatureMetadata but not source TimeSeriesMetadata
+                             logger.debug(f"  Field '{field}' exists in FeatureMetadata but not in source TimeSeriesMetadata. Skipping propagation.")
+                        # else: Field doesn't exist in FeatureMetadata, ignore.
+
+                elif len(input_signals) > 1:
+                    # Multiple inputs: Check for common values
+                    for field in fields_to_propagate:
+                        if hasattr(feature_meta, field): # Only propagate if field exists in FeatureMetadata
+                            values = set()
+                            all_sources_have_field = True
+                            for source_signal in input_signals:
+                                if hasattr(source_signal.metadata, field):
+                                    values.add(getattr(source_signal.metadata, field))
+                                else:
+                                     all_sources_have_field = False
+                                     logger.debug(f"  Source signal '{source_signal.metadata.name}' missing field '{field}' for propagation.")
+                                     break # If one source doesn't have it, we can't determine commonality
+
+                            if not all_sources_have_field:
+                                 logger.debug(f"  Field '{field}' not present in all source TimeSeriesSignals. Setting to None.")
+                                 setattr(feature_meta, field, None) # Or handle as needed
+                            elif len(values) == 1:
+                                common_value = values.pop()
+                                setattr(feature_meta, field, common_value)
+                                logger.debug(f"  Propagated '{field}' = {common_value} (common value)")
+                            else:
+                                # Different values found
+                                setattr(feature_meta, field, "mixed") # Use "mixed" string indicator
+                                logger.debug(f"  Propagated '{field}' = 'mixed' (values differ: {values})")
+                        # else: Field doesn't exist in FeatureMetadata, ignore.
+            else:
+                 logger.debug("No feature_index_config set. Skipping metadata propagation.")
+
+            # Ensure source signal IDs and keys are set (should be done by feature function, but double-check)
+            if not feature_meta.source_signal_ids:
+                 feature_meta.source_signal_ids = [s.metadata.signal_id for s in input_signals]
+            if not feature_meta.source_signal_keys:
+                 feature_meta.source_signal_keys = [s.metadata.name for s in input_signals] # Use name as key
+
+        logger.info(f"Successfully applied multi-signal operation '{operation_name}'. Result type: {type(result_object).__name__}")
+        return result_object
+
 
     # --- Collection Operation Dispatch ---
 
@@ -791,10 +1020,7 @@ class SignalCollection:
         operation_method = self.collection_operation_registry[operation_name]
 
         try:
-            # Call the registered method (which is bound to the instance implicitly via lookup)
-            # We pass 'self' because the registry stores the unbound method typically
-            # Correction: The registry stores the unbound function/method.
-            # We need to call it, passing 'self' as the first argument.
+            # Call the registered method, passing 'self' as the first argument.
             result = operation_method(self, **parameters)
             logger.info(f"Successfully applied collection operation '{operation_name}'.")
             return result
@@ -806,326 +1032,218 @@ class SignalCollection:
     # --- End Collection Operation Dispatch ---
 
 
-    def get_signals_from_input_spec(self, input_spec: Union[str, Dict[str, Any], List[str], None] = None) -> List[SignalData]:
+    def get_signals_from_input_spec(self, input_spec: Union[str, Dict[str, Any], List[str], None] = None) -> List[Union[TimeSeriesSignal, Feature]]:
         """
-        Get signals based on an input specification.
-        
-        This is an alias for get_signals() that maintains interface compatibility
-        with the workflow executor.
-        
-        Args:
-            input_spec: Input specifier that can be:
-                      - String (signal key or base name)
-                      - Dictionary with criteria
-                      - List of string keys or base names
-                      
-        Returns:
-            List of SignalData instances matching the input specification
+        Get signals/features based on an input specification. Alias for get_signals.
         """
+        # Just call the main get_signals method
         return self.get_signals(input_spec=input_spec)
 
     @register_collection_operation("apply_grid_alignment")
     def apply_grid_alignment(self, method: str = 'nearest', signals_to_align: Optional[List[str]] = None):
-        """
-        Applies the pre-calculated grid alignment to specified signals in place
-        by calling the 'reindex_to_grid' operation on each signal.
+        """Applies grid alignment to specified TimeSeriesSignals in place."""
+        if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
+            logger.error("Cannot apply grid alignment: generate_alignment_grid must be run successfully first.")
+            raise RuntimeError("generate_alignment_grid must be run successfully before applying grid alignment.")
 
-        Modifies the internal data of TimeSeriesSignal objects to conform to the
-        grid_index calculated by a prior call to align_signals. Records the
-        operation in each signal's metadata.
-
-        Args:
-            method: The method to use for reindexing ('nearest', 'pad'/'ffill', 'backfill'/'bfill').
-            signals_to_align: Optional list of signal keys to align. If None, attempts
-                              to align all TimeSeriesSignal objects in the collection.
-
-        Raises:
-            RuntimeError: If align_signals has not been run successfully first (no valid grid_index).
-            ValueError: If an invalid alignment method is provided or the operation fails.
-        """
-        if not hasattr(self, 'grid_index') or self.grid_index is None or self.grid_index.empty:
-            logger.error("Cannot apply grid alignment: align_signals must be run successfully first.")
-            raise RuntimeError("align_signals must be run successfully before applying grid alignment.")
-
-        # Validate method (can keep the stricter validation if desired)
         allowed_methods = ['nearest', 'pad', 'ffill', 'backfill', 'bfill']
         if method not in allowed_methods:
-             # Decide whether to warn and default, or raise error
              logger.warning(f"Alignment method '{method}' not in allowed list {allowed_methods}. Using 'nearest'.")
              method = 'nearest'
-             # raise ValueError(f"Invalid alignment method: {method}. Use one of {allowed_methods}")
 
-        logger.info(f"Applying grid alignment in-place to signals using method '{method}' by calling 'reindex_to_grid' operation...")
-        start_time = time.time() # Record start time
-        target_keys = signals_to_align if signals_to_align is not None else self.signals.keys()
+        logger.info(f"Applying grid alignment in-place to TimeSeriesSignals using method '{method}'...")
+        start_time = time.time()
+        # Determine target keys: specified list or all time_series_signals
+        target_keys = signals_to_align if signals_to_align is not None else list(self.time_series_signals.keys())
 
         processed_count = 0
         skipped_count = 0
-        error_signals = [] # Initialize list to track errors
+        error_signals = []
 
         for key in target_keys:
-            if key not in self.signals:
-                logger.warning(f"Signal key '{key}' specified for alignment not found.")
-                skipped_count += 1
-                continue
+            try:
+                # Use get_time_series_signal to ensure correct type and existence
+                signal = self.get_time_series_signal(key)
 
-            signal = self.signals[key]
-            if isinstance(signal, TimeSeriesSignal):
-                try:
-                    current_data = signal.get_data()
-                    if current_data is None or current_data.empty:
-                        logger.warning(f"Skipping alignment for signal '{key}': data is None or empty.")
-                        skipped_count += 1
-                        continue
+                current_data = signal.get_data()
+                if current_data is None or current_data.empty:
+                    logger.warning(f"Skipping alignment for TimeSeriesSignal '{key}': data is None or empty.")
+                    skipped_count += 1
+                    continue
 
-                    # Call apply_operation to handle reindexing and metadata
-                    logger.debug(f"Calling apply_operation('reindex_to_grid') for signal '{key}'...")
-                    signal.apply_operation(
-                        'reindex_to_grid',
-                        inplace=True,
-                        grid_index=self.grid_index, # Pass the grid index
-                        method=method              # Pass the method
-                    )
-                    # apply_operation now handles metadata recording and sample rate update
-
-                    logger.debug(f"Successfully applied 'reindex_to_grid' operation to signal '{key}'.")
-                    processed_count += 1
-                except Exception as e:
-                    logger.error(f"Failed to apply 'reindex_to_grid' operation to signal '{key}': {e}", exc_info=True)
-                    warnings.warn(f"Failed to apply grid alignment to signal '{key}': {e}")
-                    error_signals.append(key) # Add key to error list
-            else:
-                 logger.debug(f"Skipping alignment for signal '{key}': not a TimeSeriesSignal.")
+                logger.debug(f"Calling apply_operation('reindex_to_grid') for TimeSeriesSignal '{key}'...")
+                signal.apply_operation(
+                    'reindex_to_grid',
+                    inplace=True,
+                    grid_index=self.grid_index,
+                    method=method
+                )
+                logger.debug(f"Successfully applied 'reindex_to_grid' operation to TimeSeriesSignal '{key}'.")
+                processed_count += 1
+            except KeyError:
+                 logger.warning(f"TimeSeriesSignal key '{key}' specified for alignment not found.")
                  skipped_count += 1
+            except Exception as e:
+                logger.error(f"Failed to apply 'reindex_to_grid' operation to TimeSeriesSignal '{key}': {e}", exc_info=True)
+                warnings.warn(f"Failed to apply grid alignment to TimeSeriesSignal '{key}': {e}")
+                error_signals.append(key)
 
-        logger.info(f"Grid alignment application finished in {time.time() - start_time:.2f} seconds. " # Use start_time
-                    f"Processed: {processed_count}, Skipped: {skipped_count}, Errors: {len(error_signals)}") # Use error_signals
+        logger.info(f"Grid alignment application finished in {time.time() - start_time:.2f} seconds. "
+                    f"Processed: {processed_count}, Skipped: {skipped_count}, Errors: {len(error_signals)}")
 
-        if error_signals: # Check error_signals list
-            # Raise the error to be caught by apply_operation if called via workflow
-            raise RuntimeError(f"Failed to apply grid alignment to the following signals: {', '.join(error_signals)}")
+        if error_signals:
+            raise RuntimeError(f"Failed to apply grid alignment to the following TimeSeriesSignals: {', '.join(error_signals)}")
 
     @register_collection_operation("align_and_combine_signals")
     def align_and_combine_signals(self) -> None:
-        """
-        Aligns signals to the grid using merge_asof and combines them.
-
-        This method requires `generate_alignment_grid` to have been run successfully.
-        It uses the stored `grid_index` and performs `pd.merge_asof` on the *original*
-        data of each TimeSeriesSignal (without modifying them). The resulting aligned
-        dataframes are then combined and stored in `self._aligned_dataframe`.
-
-        Raises:
-            RuntimeError: If alignment parameters haven't been calculated.
-        """
+        """Aligns TimeSeriesSignals using merge_asof and combines them."""
         if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
             logger.error("Cannot align and combine signals: generate_alignment_grid must be run successfully first.")
             raise RuntimeError("generate_alignment_grid must be run successfully before aligning and combining signals.")
 
-        logger.info("Aligning and combining signals using merge_asof...")
+        logger.info("Aligning and combining TimeSeriesSignals using merge_asof...")
         start_time = time.time()
 
-        # Calculate tolerance based on grid period
         target_period = pd.Timedelta(seconds=1 / self.target_rate) if self.target_rate else None
         if target_period is None or target_period.total_seconds() <= 0:
             logger.warning("Grid index frequency is missing or invalid. Using default merge tolerance (1ms).")
             tolerance = pd.Timedelta(milliseconds=1)
         else:
-            # Add a small epsilon (1 nanosecond) to tolerance to include boundary points
             tolerance_ns = target_period.total_seconds() * 1e9 / 2
             tolerance = pd.Timedelta(nanoseconds=tolerance_ns + 1)
-        self._merge_tolerance = tolerance # Store tolerance used
-        logger.debug(f"Using merge_asof tolerance: {self._merge_tolerance} (includes epsilon)")
+        self._merge_tolerance = tolerance
+        logger.debug(f"Using merge_asof tolerance: {self._merge_tolerance}")
 
-        # Prepare the target DataFrame for merge_asof
         target_df = pd.DataFrame({'timestamp': self.grid_index})
-
         aligned_signal_dfs = {}
         error_signals = []
 
-        # --- Align each non-temporary signal to the grid_index using merge_asof ---
-        for key, signal in self.signals.items():
-            # --- Skip temporary signals ---
+        # Iterate only over time_series_signals
+        for key, signal in self.time_series_signals.items():
             if signal.metadata.temporary:
-                logger.debug(f"Skipping temporary signal '{key}' for combined export.")
-                continue
-            # --- End skip ---
-
-            if not isinstance(signal, TimeSeriesSignal):
-                logger.debug(f"Skipping non-time-series signal: {key}")
+                logger.debug(f"Skipping temporary TimeSeriesSignal '{key}' for combined export.")
                 continue
 
             try:
-                # IMPORTANT: Get the ORIGINAL data, not potentially modified data
-                signal_df = signal.get_data() # Assumes get_data returns original if not modified inplace
-                # If signals could have been modified by apply_grid_alignment, we might need
-                # a way to access the truly original data (e.g., from metadata.source_file or cache)
-                # For now, assume get_data() provides the data needed for merge_asof.
-
+                signal_df = signal.get_data()
                 if signal_df is None or not isinstance(signal_df, pd.DataFrame) or signal_df.empty:
-                    logger.warning(f"Signal '{key}' has no valid data, skipping merge_asof.")
+                    logger.warning(f"TimeSeriesSignal '{key}' has no valid data, skipping merge_asof.")
                     continue
                 if not isinstance(signal_df.index, pd.DatetimeIndex):
-                     logger.warning(f"Signal '{key}' data does not have a DatetimeIndex, skipping merge_asof.")
+                     logger.warning(f"TimeSeriesSignal '{key}' data does not have a DatetimeIndex, skipping merge_asof.")
                      continue
 
-                # Prepare source DataFrame for merge_asof
                 source_df = signal_df.reset_index()
                 if source_df.columns[0] != 'timestamp':
                      source_df = source_df.rename(columns={source_df.columns[0]: 'timestamp'})
 
-                # Ensure timezone consistency for merge
                 if source_df['timestamp'].dt.tz is None:
                      source_df['timestamp'] = source_df['timestamp'].dt.tz_localize(self.grid_index.tz)
                 else:
                      source_df['timestamp'] = source_df['timestamp'].dt.tz_convert(self.grid_index.tz)
 
-                # Sort by timestamp (required for merge_asof)
                 source_df = source_df.sort_values('timestamp')
 
-                # Perform merge_asof
-                logger.debug(f"Aligning signal '{key}' using merge_asof (tolerance: {tolerance})")
+                logger.debug(f"Aligning TimeSeriesSignal '{key}' using merge_asof...")
                 aligned_df = pd.merge_asof(
-                    target_df,
-                    source_df,
-                    on='timestamp',
-                    direction='nearest',
-                    tolerance=tolerance
+                    target_df, source_df, on='timestamp', direction='nearest', tolerance=tolerance
                 )
 
-                # Set the grid timestamp as index and select original columns
-                # --- Enhanced Debug Log for none_rate ---
-                if key == "none_rate":
-                    logger.info(f"--- DEBUG START: none_rate merge_asof ---")
-                    logger.info(f"Target DF (grid) head:\n{target_df.head()}")
-                    logger.info(f"Target DF TZ: {target_df['timestamp'].dt.tz}")
-                    logger.info(f"Source DF (none_rate data) head:\n{source_df.head()}")
-                    logger.info(f"Source DF TZ: {source_df['timestamp'].dt.tz}")
-                    logger.info(f"Tolerance: {tolerance}")
-
-                # Perform merge_asof
-                aligned_df = pd.merge_asof(
-                    target_df,
-                    source_df,
-                    on='timestamp',
-                    direction='nearest',
-                    tolerance=tolerance
-                )
-
-                if key == "none_rate":
-                    logger.info(f"Aligned DF (raw merge_asof result) head:\n{aligned_df.head()}")
-                    logger.info(f"Aligned DF non-NaN value counts:\n{aligned_df.notna().sum()}") # Show counts per column
-
-                # Set the grid timestamp as index and select original columns
                 aligned_df = aligned_df.set_index('timestamp')
-                original_cols = [col for col in signal_df.columns if col in aligned_df.columns] # Get original data columns ('value')
+                original_cols = [col for col in signal_df.columns if col in aligned_df.columns]
 
-                if key == "none_rate":
-                     logger.info(f"Aligned DF (indexed, original cols only) head:\n{aligned_df[original_cols].head()}")
-                     logger.info(f"NaN check result for 'none_rate': {aligned_df[original_cols].isnull().all().all()}")
-                     logger.info(f"Non-NaN count for 'none_rate' (original cols): {aligned_df[original_cols].notna().sum().sum()}")
-                     logger.info(f"--- DEBUG END: none_rate merge_asof ---")
-                # --- End Enhanced Debug Log ---
-
-                # Check if the resulting aligned data (original columns only) is all NaN
                 if aligned_df[original_cols].isnull().all().all():
-                    logger.warning(f"Signal '{key}' resulted in all NaN values after merge_asof alignment. Skipping inclusion in combined dataframe.")
+                    logger.warning(f"TimeSeriesSignal '{key}' resulted in all NaN values after merge_asof alignment. Skipping.")
                 else:
                     aligned_signal_dfs[key] = aligned_df[original_cols]
-                    logger.debug(f"Signal '{key}' aligned via merge_asof. Result shape: {aligned_signal_dfs[key].shape}. Non-NaN values found.")
+                    logger.debug(f"TimeSeriesSignal '{key}' aligned via merge_asof. Shape: {aligned_signal_dfs[key].shape}.")
 
             except Exception as e:
-                logger.error(f"Error processing signal '{key}' with merge_asof: {e}", exc_info=True)
+                logger.error(f"Error processing TimeSeriesSignal '{key}' with merge_asof: {e}", exc_info=True)
                 error_signals.append(key)
 
         if error_signals:
-            # Decide whether to raise error or just warn and proceed with successful ones
-            warnings.warn(f"Failed merge_asof alignment for signals: {', '.join(error_signals)}. Combining successful ones.")
-            # raise RuntimeError(f"Failed merge_asof alignment for signals: {', '.join(error_signals)}")
+            warnings.warn(f"Failed merge_asof alignment for TimeSeriesSignals: {', '.join(error_signals)}. Combining successful ones.")
 
         if not aligned_signal_dfs:
-            logger.warning("No signals were successfully aligned using merge_asof. Storing empty DataFrame.")
-            self._aligned_dataframe = pd.DataFrame(index=self.grid_index) # Store empty frame with grid index
+            logger.warning("No TimeSeriesSignals were successfully aligned using merge_asof. Storing empty DataFrame.")
+            self._aligned_dataframe = pd.DataFrame(index=self.grid_index)
             self._aligned_dataframe_params = self._get_current_alignment_params("merge_asof")
             return
 
-        # --- Combine Data (Concatenation of merge_asof results) ---
-        combined_df = self._perform_concatenation(aligned_signal_dfs, self.grid_index)
+        combined_df = self._perform_concatenation(aligned_signal_dfs, self.grid_index, is_feature=False) # Specify not feature
 
-        # --- Store Result and Parameters ---
         self._aligned_dataframe = combined_df
         self._aligned_dataframe_params = self._get_current_alignment_params("merge_asof")
 
-        logger.info(f"Successfully aligned and combined {len(aligned_signal_dfs)} signals using merge_asof "
+        logger.info(f"Successfully aligned and combined {len(aligned_signal_dfs)} TimeSeriesSignals using merge_asof "
                     f"in {time.time() - start_time:.2f} seconds. Stored shape: {combined_df.shape}")
 
 
-    def _perform_concatenation(self, aligned_dfs: Dict[str, pd.DataFrame], grid_index: pd.DatetimeIndex) -> pd.DataFrame:
-        """
-        Internal helper to concatenate aligned dataframes, handling MultiIndex.
-
-        Args:
-            aligned_dfs: Dictionary {signal_key: aligned_dataframe}.
-            grid_index: The common DatetimeIndex for the final dataframe.
-
-        Returns:
-            The combined DataFrame.
-        """
+    def _perform_concatenation(self, aligned_dfs: Dict[str, pd.DataFrame], grid_index: pd.DatetimeIndex, is_feature: bool) -> pd.DataFrame:
+        """Internal helper to concatenate aligned dataframes, handling MultiIndex based on type."""
         if not aligned_dfs:
             return pd.DataFrame(index=grid_index)
 
+        # Determine which index config and metadata source to use
+        index_config = self.metadata.feature_index_config if is_feature else self.metadata.index_config
+        source_dict = self.features if is_feature else self.time_series_signals
+        metadata_attr = 'metadata' # Both Feature and TimeSeriesSignal have .metadata
+
         combined_df: pd.DataFrame
-        if hasattr(self.metadata, 'index_config') and self.metadata.index_config:
-            logger.info("Using MultiIndex for combined dataframe columns.")
+        if index_config:
+            logger.info(f"Using MultiIndex for combined {'feature' if is_feature else 'time-series'} columns.")
             multi_index_tuples = []
             final_columns_data = {}
 
             for key, signal_aligned_df in aligned_dfs.items():
-                signal = self.signals[key]
+                # Get the original signal/feature object to access metadata
+                signal_obj = source_dict.get(key)
+                if not signal_obj:
+                     logger.warning(f"Could not find original object for key '{key}' during concatenation. Skipping.")
+                     continue
+
+                metadata_obj = getattr(signal_obj, metadata_attr)
+
                 for col_name in signal_aligned_df.columns:
                     metadata_values = []
-                    for field in self.metadata.index_config:
-                        value = getattr(signal.metadata, field, None)
-                        value = key if value is None and field == 'name' else value
+                    for field in index_config:
+                        value = getattr(metadata_obj, field, None)
+                        value = key if value is None and field == 'name' else value # Fallback for name
                         value = "N/A" if value is None else value
-                        value = value.name if hasattr(value, 'name') else str(value)
+                        # Handle Enums and other potential non-string types
+                        value = value.name if isinstance(value, Enum) else str(value)
                         metadata_values.append(value)
+
+                    # Add the original column name as the last level
                     metadata_values.append(col_name)
                     tuple_key = tuple(metadata_values)
                     multi_index_tuples.append(tuple_key)
                     final_columns_data[tuple_key] = signal_aligned_df[col_name]
 
             if final_columns_data:
-                # Add 'column' to the names list to match the structure of multi_index_tuples
-                level_names = self.metadata.index_config + ['column']
-                multi_idx = pd.MultiIndex.from_tuples(
-                    multi_index_tuples,
-                    names=level_names
-                )
+                level_names = index_config + ['column'] # Name levels
+                multi_idx = pd.MultiIndex.from_tuples(multi_index_tuples, names=level_names)
                 combined_df = pd.DataFrame(final_columns_data, index=grid_index)
-                # Ensure columns are assigned correctly, especially if final_columns_data was empty
                 if not combined_df.empty:
                      combined_df.columns = multi_idx
-                else: # Handle case where data is empty but index/columns structure is needed
+                else:
                      combined_df = pd.DataFrame(index=grid_index, columns=multi_idx)
                 logger.debug(f"Applied MultiIndex. Final level names: {combined_df.columns.names}")
             else:
                 logger.warning("No data available to create MultiIndex columns.")
-                # Add 'column' to the names list for the empty MultiIndex as well
-                level_names = self.metadata.index_config + ['column']
+                level_names = index_config + ['column']
                 empty_multi_idx = pd.MultiIndex.from_tuples([], names=level_names)
                 combined_df = pd.DataFrame(index=grid_index, columns=empty_multi_idx)
         else:
-            logger.info("Using simple column names (key_colname) for combined dataframe.")
+            logger.info(f"Using simple column names (key_colname) for combined {'feature' if is_feature else 'time-series'} dataframe.")
             simple_concat_list = []
             for key, signal_aligned_df in aligned_dfs.items():
                  prefix = key
                  if len(signal_aligned_df.columns) == 1:
-                      # Rename the single column to the key
                       renamed_df = signal_aligned_df.rename(columns={signal_aligned_df.columns[0]: prefix})
                       simple_concat_list.append(renamed_df)
                  else:
-                      # Prefix existing columns
                       prefixed_df = signal_aligned_df.add_prefix(f"{prefix}_")
                       simple_concat_list.append(prefixed_df)
 
@@ -1133,13 +1251,10 @@ class SignalCollection:
                  logger.warning("No data available for simple column concatenation.")
                  combined_df = pd.DataFrame(index=grid_index)
             else:
-                 # Use concat for potentially non-unique columns across signals
                  combined_df = pd.concat(simple_concat_list, axis=1)
-                 # Ensure the index is the grid index (concat might lose it if dfs have different indices initially)
                  combined_df = combined_df.reindex(grid_index)
 
-
-        # --- Final Cleanup: Remove rows where *all* values are NaN ---
+        # Final Cleanup: Remove rows where *all* values are NaN
         if not combined_df.empty:
             initial_rows = len(combined_df)
             combined_df = combined_df.dropna(axis=0, how='all')
@@ -1166,878 +1281,503 @@ class SignalCollection:
     # --- Stored Combined Dataframe Access ---
 
     def get_stored_combined_dataframe(self) -> Optional[pd.DataFrame]:
-        """
-        Returns the internally stored combined dataframe, if generated.
-
-        This dataframe is the result of either `combine_aligned_signals` or
-        `align_and_combine_signals`.
-
-        Returns:
-            The stored pandas DataFrame, or None if it hasn't been generated yet.
-        """ # Ensure closing triple quotes are present and correctly placed
+        """Returns the internally stored combined *time-series* dataframe."""
         if self._aligned_dataframe is None:
-             logger.debug("Stored combined dataframe has not been generated yet.")
+             logger.debug("Stored combined time-series dataframe has not been generated yet.")
         return self._aligned_dataframe
 
-    def get_stored_combination_params(self) -> Optional[Dict[str, Any]]:
-         """
-         Returns the parameters used to generate the stored combined dataframe.
+    def get_stored_combined_feature_matrix(self) -> Optional[pd.DataFrame]:
+         """Returns the internally stored combined *feature* matrix."""
+         if self._combined_feature_matrix is None:
+              logger.debug("Stored combined feature matrix has not been generated yet.")
+         return self._combined_feature_matrix
 
-         Returns:
-             A dictionary containing the parameters, or None if not generated yet.
-         """
+
+    def get_stored_combination_params(self) -> Optional[Dict[str, Any]]:
+         """Returns the parameters used to generate the stored combined time-series dataframe."""
          if self._aligned_dataframe_params is None:
-              logger.debug("Stored combined dataframe parameters are not available (dataframe not generated).")
+              logger.debug("Stored combined time-series dataframe parameters are not available.")
          return self._aligned_dataframe_params
 
     @register_collection_operation("combine_aligned_signals")
     def combine_aligned_signals(self) -> None:
-        """
-        Combines signals that have been modified in-place by apply_grid_alignment.
-
-        This method assumes `apply_grid_alignment` was run, potentially resulting
-        in signals with sparse indices (due to NaN dropping in reindex_to_grid).
-        It uses an outer join on these potentially sparse signals and then reindexes
-        the result to the full `grid_index` to create the final combined dataframe
-        with NaNs where appropriate. Requires `generate_alignment_grid` to have run.
-        full grid_index to create the final combined dataframe with NaNs.
-        Requires generate_alignment_grid and apply_grid_alignment (with modified
-        _reindex_to_grid_logic) to have run.
-        """
+        """Combines TimeSeriesSignals modified in-place by apply_grid_alignment."""
         if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
             logger.error("Cannot combine snapped signals: generate_alignment_grid must be run successfully first.")
             raise RuntimeError("generate_alignment_grid must be run successfully before combining snapped signals.")
-        if not self.signals:
-             logger.warning("No signals in collection to combine.")
-             self._aligned_dataframe = pd.DataFrame(index=self.grid_index) # Store empty frame with grid index
+        if not self.time_series_signals: # Check specific dict
+             logger.warning("No TimeSeriesSignals in collection to combine.")
+             self._aligned_dataframe = pd.DataFrame(index=self.grid_index)
              self._aligned_dataframe_params = self._get_current_alignment_params("outer_join_reindex")
              return
 
-        logger.info("Combining in-place snapped signals using outer join and reindexing...")
+        logger.info("Combining in-place snapped TimeSeriesSignals using outer join and reindexing...")
         start_time = time.time()
 
-        # --- Collect Modified Signal DataFrames (excluding temporary) ---
         snapped_signal_dfs = {}
         error_signals = []
-        for key, signal in self.signals.items():
-            # --- Skip temporary signals ---
+        # Iterate only over time_series_signals
+        for key, signal in self.time_series_signals.items():
             if signal.metadata.temporary:
-                logger.debug(f"Skipping temporary signal '{key}' for combined export.")
+                logger.debug(f"Skipping temporary TimeSeriesSignal '{key}' for combined export.")
                 continue
-            # --- End skip ---
 
-            if isinstance(signal, TimeSeriesSignal):
-                try:
-                    signal_df = signal.get_data() # Get the modified data
-                    if signal_df is None or signal_df.empty:
-                        logger.warning(f"Signal '{key}' has no data after snapping, skipping combination.")
-                        continue
-                    if not isinstance(signal_df.index, pd.DatetimeIndex):
-                        logger.error(f"Signal '{key}' index is not DatetimeIndex after snapping attempt.")
-                        error_signals.append(key)
-                        continue
-                    # No need to check against grid_index here, indices are expected to be sparse
-
-                    # Prepare for MultiIndex or simple columns based on config
-                    if hasattr(self.metadata, 'index_config') and self.metadata.index_config:
-                        # Create MultiIndex tuples for this signal's columns
-                        metadata_values = []
-                        for field in self.metadata.index_config:
-                            value = getattr(signal.metadata, field, None)
-                            value = key if value is None and field == 'name' else value
-                            value = "N/A" if value is None else value
-                            value = value.name if hasattr(value, 'name') else str(value)
-                            metadata_values.append(value)
-
-                        new_cols = pd.MultiIndex.from_tuples(
-                            [tuple(metadata_values + [col_name]) for col_name in signal_df.columns],
-                            names=self.metadata.index_config + ['column']
-                        )
-                        df_to_join = signal_df.copy()
-                        df_to_join.columns = new_cols
-                        snapped_signal_dfs[key] = df_to_join
-                    else:
-                        # Use simple prefixed columns
-                        prefix = key
-                        if len(signal_df.columns) == 1:
-                             df_to_join = signal_df.rename(columns={signal_df.columns[0]: prefix})
-                        else:
-                             df_to_join = signal_df.add_prefix(f"{prefix}_")
-                        snapped_signal_dfs[key] = df_to_join
-
-                    logger.debug(f"Collected snapped data for signal '{key}'. Shape: {snapped_signal_dfs[key].shape}")
-
-                except Exception as e:
-                    logger.error(f"Error accessing data for signal '{key}': {e}", exc_info=True)
+            try:
+                signal_df = signal.get_data() # Get the potentially modified data
+                if signal_df is None or signal_df.empty:
+                    logger.warning(f"TimeSeriesSignal '{key}' has no data after snapping, skipping combination.")
+                    continue
+                if not isinstance(signal_df.index, pd.DatetimeIndex):
+                    logger.error(f"TimeSeriesSignal '{key}' index is not DatetimeIndex after snapping attempt.")
                     error_signals.append(key)
+                    continue
+
+                # Use _perform_concatenation's logic implicitly by preparing dict
+                snapped_signal_dfs[key] = signal_df
+                logger.debug(f"Collected snapped data for TimeSeriesSignal '{key}'. Shape: {signal_df.shape}")
+
+            except Exception as e:
+                logger.error(f"Error accessing data for TimeSeriesSignal '{key}': {e}", exc_info=True)
+                error_signals.append(key)
 
         if error_signals:
             raise RuntimeError(f"Failed to combine signals. Errors occurred while accessing data for: {', '.join(error_signals)}")
 
         if not snapped_signal_dfs:
-            logger.warning("No valid snapped signals found to combine. Storing empty DataFrame.")
+            logger.warning("No valid snapped TimeSeriesSignals found to combine. Storing empty DataFrame.")
             self._aligned_dataframe = pd.DataFrame(index=self.grid_index)
             self._aligned_dataframe_params = self._get_current_alignment_params("outer_join_reindex")
             return
 
-        # --- Perform Outer Join ---
-        logger.debug(f"Performing outer join on {len(snapped_signal_dfs)} signals...")
-        combined_df = pd.DataFrame(index=pd.DatetimeIndex([])) # Start with an empty frame
-        first = True
-        # Use list comprehension for potentially better performance if dict is large
-        dfs_to_join_list = list(snapped_signal_dfs.values())
-        if dfs_to_join_list:
-             combined_df = dfs_to_join_list[0]
-             for df_to_join in dfs_to_join_list[1:]:
-                 # Outer join preserves all unique index points from both frames
-                 combined_df = combined_df.join(df_to_join, how='outer')
-        # else: combined_df remains empty DataFrame
-
-        logger.debug(f"Outer join complete. Shape before reindex: {combined_df.shape}")
-
-        # --- Reindex to Full Grid ---
-        logger.debug(f"Reindexing joined data to the full grid_index ({len(self.grid_index)} points)...")
-        combined_df_final = combined_df.reindex(self.grid_index)
-        logger.debug(f"Reindexing complete. Final shape: {combined_df_final.shape}")
-
-        # --- Final Cleanup (Optional but good practice) ---
-        # Drop rows where *all* values are NaN (though reindex might handle this)
-        initial_rows = len(combined_df_final)
-        combined_df_final = combined_df_final.dropna(axis=0, how='all')
-        final_rows = len(combined_df_final)
-        if initial_rows != final_rows:
-            logger.info(f"Removed {initial_rows - final_rows} rows with all NaN values after reindexing.")
-
+        # --- Perform Outer Join & Reindex using helper ---
+        # Note: _perform_concatenation handles the join logic implicitly when is_feature=False
+        # It builds the structure needed for concatenation, which effectively does the join+reindex
+        # Let's rename the helper or adjust logic slightly for clarity if needed.
+        # For now, assume _perform_concatenation handles this correctly.
+        combined_df_final = self._perform_concatenation(snapped_signal_dfs, self.grid_index, is_feature=False)
 
         # --- Store Result and Parameters ---
         self._aligned_dataframe = combined_df_final
         self._aligned_dataframe_params = self._get_current_alignment_params("outer_join_reindex")
 
-        logger.info(f"Successfully combined {len(snapped_signal_dfs)} snapped signals using outer join and reindex "
+        logger.info(f"Successfully combined {len(snapped_signal_dfs)} snapped TimeSeriesSignals using outer join and reindex "
                     f"in {time.time() - start_time:.2f} seconds. Stored shape: {combined_df_final.shape}")
 
     @register_collection_operation("combine_features")
-    def combine_features(self, inputs: List[str], output: str) -> None:
+    def combine_features(self, inputs: List[str], feature_index_config: Optional[List[str]] = None) -> None: # Made config optional
         """
-        Combines multiple FeatureSignal instances into a single FeatureSignal.
+        Combines multiple Feature objects into a single combined feature matrix.
 
-        Validates that all input signals are FeatureSignals and share the exact
-        same DatetimeIndex. Concatenates their DataFrames column-wise.
+        Retrieves specified Feature objects, validates their indices against the
+        collection's `epoch_grid_index`, and concatenates their data column-wise.
+        Constructs a MultiIndex for the columns of the resulting DataFrame based
+        on the provided `feature_index_config` (read from collection metadata if
+        not provided here) and the metadata of the source Feature objects.
+        Stores the result in `self._combined_feature_matrix`.
 
         Args:
-            inputs: List of keys identifying the input FeatureSignal instances.
-            output: The key to assign to the resulting combined FeatureSignal.
+            inputs: List of keys identifying the input Feature objects in `self.features`.
+                    Can contain base names, which will be resolved.
+            feature_index_config: Optional list of metadata field names to override
+                                  the collection's default `feature_index_config`.
 
         Raises:
-            ValueError: If inputs are missing, not FeatureSignals, have mismatched
-                        indices, or if the output key already exists.
+            RuntimeError: If the epoch grid hasn't been calculated.
+            ValueError: If inputs are missing, invalid, not Feature objects,
+                        have indices mismatched with the epoch grid, or if
+                        `feature_index_config` is invalid.
             TypeError: If input dataframes cannot be concatenated.
         """
+        if not self._epoch_grid_calculated or self.epoch_grid_index is None or self.epoch_grid_index.empty:
+            raise RuntimeError("Cannot combine features: generate_epoch_grid must be run successfully first.")
         if not inputs:
             raise ValueError("No input signals specified for combine_features.")
-        if not output:
-            raise ValueError("Output key must be specified for combine_features.")
-        if output in self.signals:
-            raise ValueError(f"Output key '{output}' already exists in the collection.")
 
-        logger.info(f"Combining features from inputs: {inputs} into output: '{output}'")
+        # Use provided config or fallback to collection's config
+        config_to_use = feature_index_config if feature_index_config is not None else self.metadata.feature_index_config
+        if not config_to_use:
+             logger.warning("No feature_index_config provided or set on collection. Combined feature columns will not have a MultiIndex.")
+
+        logger.info(f"Combining features from inputs: {inputs} using index config: {config_to_use}")
         start_time = time.time()
 
-        # --- Retrieve and Validate Input Signals ---
-        input_signals: List[FeatureSignal] = []
-        first_index: Optional[pd.DatetimeIndex] = None
-        input_signal_ids_ops = [] # For derived_from metadata
-
         # --- Resolve input keys (handle base names) ---
-        # Use the same resolution logic as apply_multi_signal_operation
         resolved_keys = []
         for key_spec in inputs:
-            if key_spec in self.signals:
+            if key_spec in self.features: # Check features dict
                 resolved_keys.append(key_spec)
             else:
                 found_match = False
-                for existing_key in self.signals.keys():
+                for existing_key in self.features.keys(): # Check features dict
                     if existing_key.startswith(f"{key_spec}_") and existing_key[len(key_spec)+1:].isdigit():
                         resolved_keys.append(existing_key)
                         found_match = True
                 if not found_match:
-                    raise ValueError(f"Input specification '{key_spec}' for combine_features does not match any existing signal key or base name.")
+                    raise ValueError(f"Input specification '{key_spec}' for combine_features does not match any existing feature key or base name.")
 
         if not resolved_keys:
              raise ValueError(f"Input specification {inputs} for combine_features resolved to an empty list.")
         logger.debug(f"Resolved combine_features input {inputs} to keys: {resolved_keys}")
-        # --- End key resolution ---
 
+        # --- Retrieve and Validate Input Features ---
+        input_features: List[Feature] = []
+        for key in resolved_keys:
+            feature = self.get_feature(key) # Raises KeyError if not found
 
-        for key in resolved_keys: # Iterate over resolved keys
-            signal = self.get_signal(key)
-            if not isinstance(signal, FeatureSignal):
-                raise ValueError(f"Input '{key}' is not a FeatureSignal (type: {type(signal).__name__}). Cannot combine features.")
+            feature_data = feature.get_data()
+            if not isinstance(feature_data.index, pd.DatetimeIndex):
+                raise TypeError(f"Input Feature '{key}' does not have a DatetimeIndex.")
 
-            signal_data = signal.get_data()
-            if not isinstance(signal_data.index, pd.DatetimeIndex):
-                # This should be caught by FeatureSignal init, but double-check
-                raise TypeError(f"Input FeatureSignal '{key}' does not have a DatetimeIndex.")
+            # --- Strict Index Validation against epoch_grid_index ---
+            if not feature_data.index.equals(self.epoch_grid_index):
+                logger.error(f"Index mismatch for Feature '{key}'. Expected index matching epoch_grid_index (size {len(self.epoch_grid_index)}), "
+                             f"but got index size {len(feature_data.index)}.")
+                if len(feature_data.index) == len(self.epoch_grid_index):
+                     diff = self.epoch_grid_index.difference(feature_data.index)
+                     logger.error(f"Index values differ. Example differences (grid vs feature): {diff[:5]}...")
+                raise ValueError(f"Input Feature '{key}' index does not match the collection's epoch_grid_index. Ensure feature generation used the global grid.")
 
-            if first_index is None:
-                first_index = signal_data.index
-                # Basic validation that it's a DatetimeIndex
-                if not isinstance(first_index, pd.DatetimeIndex):
-                     raise TypeError(f"Input FeatureSignal '{key}' index is not a DatetimeIndex.")
-            else:
-                # Optional: Check timezone compatibility as a warning
-                current_index = signal_data.index
-                if not isinstance(current_index, pd.DatetimeIndex):
-                     raise TypeError(f"Input FeatureSignal '{key}' index is not a DatetimeIndex.")
-                if first_index.tz != current_index.tz:
-                     logger.warning(f"Timezone mismatch between FeatureSignals: '{first_index.tz}' (first) vs '{current_index.tz}' ('{key}'). Concatenation might convert timezones.")
-                     # Stricter alternative: raise ValueError(f"Input FeatureSignals must share the same timezone. Mismatch found for '{key}'.")
+            input_features.append(feature)
 
-            # REMOVED: Strict index equality check: elif not first_index.equals(signal_data.index): ... raise ValueError ...
-            # pd.concat(axis=1) will handle alignment based on index values (outer join).
-
-            input_signals.append(signal)
-            # Record source signal ID and its last operation index for provenance
-            op_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
-            input_signal_ids_ops.append((signal.metadata.signal_id, op_index))
-
-        if not input_signals:
-            logger.warning("No valid FeatureSignals found to combine.")
-            # Optionally create an empty FeatureSignal? For now, just return.
+        if not input_features:
+            logger.warning("No valid Feature objects found to combine.")
+            self._combined_feature_matrix = pd.DataFrame(index=self.epoch_grid_index)
             return
 
-        # --- Prepare DataFrames and MultiIndex ---
-        combined_data: Optional[pd.DataFrame] = None
-        all_feature_columns_data = {} # Stores {MultiIndexTuple: Series}
-        multi_index_tuples = []
-        final_index = first_index # Use the index of the first signal as the target
+        # --- Prepare DataFrames for Concatenation using helper ---
+        # Pass is_feature=True to use feature_index_config
+        combined_df = self._perform_concatenation(
+            {feat.metadata.name: feat.get_data() for feat in input_features},
+            self.epoch_grid_index,
+            is_feature=True
+        )
 
-        # Use collection's index_config if available
-        use_multi_index = hasattr(self.metadata, 'index_config') and self.metadata.index_config
-        level_names = (self.metadata.index_config + ['feature']) if use_multi_index else ['feature']
+        # --- Store Result ---
+        self._combined_feature_matrix = combined_df
+        # Optionally store the config used
+        # self._combined_feature_matrix_config = config_to_use
 
-        for signal in input_signals:
-            signal_data = signal.get_data()
-            # Align index before processing columns (important if indices weren't identical)
-            # Use outer join alignment to preserve all time points
-            aligned_data = signal_data.reindex(final_index.union(signal_data.index))
-            if final_index is None: # Should not happen after first signal, but safety check
-                 final_index = aligned_data.index
-            else:
-                 final_index = final_index.union(aligned_data.index) # Keep track of the union of all indices
-
-            for feature_col_name in aligned_data.columns:
-                if use_multi_index:
-                    # Build the multi-index tuple using source signal metadata
-                    metadata_values = []
-                    for field in self.metadata.index_config:
-                        value = getattr(signal.metadata, field, None)
-                        # Use the signal's key (name) as fallback if name field is None
-                        value = signal.metadata.name if value is None and field == 'name' else value
-                        value = "N/A" if value is None else value
-                        # Convert enums etc.
-                        value = value.name if hasattr(value, 'name') and isinstance(value, Enum) else str(value)
-                        metadata_values.append(value)
-                    # Add the base feature name as the last level
-                    metadata_values.append(feature_col_name)
-                    tuple_key = tuple(metadata_values)
-                else:
-                    # Use simple column name (signal_key + feature_name)
-                    tuple_key = f"{signal.metadata.name}_{feature_col_name}" # This becomes the flat column name
-
-                multi_index_tuples.append(tuple_key)
-                all_feature_columns_data[tuple_key] = aligned_data[feature_col_name]
-
-        # --- Create Combined DataFrame ---
-        if not all_feature_columns_data:
-             logger.warning("No feature data collected to combine.")
-             # Create an empty DataFrame with the final index
-             combined_data = pd.DataFrame(index=final_index)
-             # Assign empty MultiIndex columns if needed
-             if use_multi_index:
-                  empty_multi_idx = pd.MultiIndex.from_tuples([], names=level_names)
-                  combined_data.columns = empty_multi_idx
-        else:
-             # Create the DataFrame from the collected Series
-             combined_data = pd.DataFrame(all_feature_columns_data, index=final_index)
-             # Assign MultiIndex columns if configured
-             if use_multi_index:
-                  multi_idx = pd.MultiIndex.from_tuples(multi_index_tuples, names=level_names)
-                  # Ensure columns match the created MultiIndex
-                  combined_data = combined_data[list(all_feature_columns_data.keys())] # Ensure order
-                  combined_data.columns = multi_idx
-             # Sort columns for consistency (optional but recommended)
-             combined_data = combined_data.sort_index(axis=1)
-             # Drop rows that are all NaN (result of outer join alignment)
-             combined_data = combined_data.dropna(axis=0, how='all')
+        logger.info(f"Successfully combined {len(input_features)} feature objects "
+                    f"in {time.time() - start_time:.2f} seconds. Stored matrix shape: {combined_df.shape}")
 
 
-        # --- Create Metadata for Combined Signal ---
-        first_signal_meta = input_signals[0].metadata
-        combined_metadata_dict = {
-            "name": output,
-            "signal_type": SignalType.FEATURES, # Explicitly set type
-            "derived_from": input_signal_ids_ops,
-            "operations": [OperationInfo("combine_features", {"inputs": resolved_keys, "output": output})],
-            "epoch_window_length": first_signal_meta.epoch_window_length, # Assume consistent
-            "epoch_step_size": first_signal_meta.epoch_step_size, # Assume consistent
-            "feature_names": list(combined_data.columns) if not use_multi_index else [], # Store flat names only if not MultiIndex
-            "source_signal_keys": resolved_keys,
-            # Add other relevant fields if necessary
-        }
-
-        # --- Create and Add Combined FeatureSignal ---
-        combined_signal = FeatureSignal(data=combined_data, metadata=combined_metadata_dict, handler=self.metadata_handler)
-        self.add_signal(output, combined_signal)
-
-        logger.info(f"Successfully combined {len(resolved_keys)} feature signals into '{output}' "
-                    f"in {time.time() - start_time:.2f} seconds. Result shape: {combined_data.shape}")
-
-
-    # --- Multi-Signal Operations ---
-
-    def apply_multi_signal_operation(self, operation_name: str, inputs: List[str],
-                                    parameters: Dict[str, Any] = None) -> SignalData:
+    def apply_and_store_operation(self, signal_key: str, operation_name: str,
+                                 parameters: Dict[str, Any], output_key: str) -> Union[TimeSeriesSignal, Feature]:
         """
-        Apply an operation that works on multiple signals.
+        Apply an operation to a TimeSeriesSignal and store the result.
+
+        Note: This currently only supports operations on TimeSeriesSignals.
+        Operations on Features are not standard.
 
         Args:
-            operation_name: Name of the operation in the multi_signal_registry
-            inputs: List of signal keys to use as inputs
-            parameters: Parameters to pass to the operation
+            signal_key: Key of the TimeSeriesSignal to operate on.
+            operation_name: Name of the operation to apply (must be registered
+                            in the TimeSeriesSignal's registry).
+            parameters: Parameters for the operation.
+            output_key: Key to use when storing the result (must be unique).
 
         Returns:
-            The result signal instance
+            The resulting TimeSeriesSignal that was stored.
 
         Raises:
-            ValueError: If the operation is not found or if any input signal
-                key specified in `inputs` does not exist in the collection.
+            KeyError: If the signal key doesn't exist or is not a TimeSeriesSignal.
+            ValueError: If the operation fails or output_key exists.
         """
-        parameters = parameters or {}
-        # Check if operation exists
-        if operation_name not in self.multi_signal_registry:
-            raise ValueError(f"Multi-signal operation '{operation_name}' not found")
+        signal = self.get_time_series_signal(signal_key) # Ensures it's a TimeSeriesSignal
+        result = signal.apply_operation(operation_name, **parameters) # inplace=False is default
 
-        func, output_class = self.multi_signal_registry[operation_name]
-
-        # --- Check for grid_index prerequisite for feature extraction ---
-        # We assume operations starting with "feature_" require the grid index
-        grid_index = None
-        if operation_name.startswith("feature_"):
-             if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
-                  logger.error(f"Cannot execute feature operation '{operation_name}': "
-                               f"generate_alignment_grid must be run successfully first.")
-                  raise RuntimeError(f"generate_alignment_grid must be run successfully before feature operation '{operation_name}'.")
-             grid_index = self.grid_index
-             logger.debug(f"Passing grid_index (size: {len(grid_index)}) to feature operation '{operation_name}'.")
-        # --- End grid_index check ---
-
-
-        # --- Resolve input keys (handle base names) ---
-        resolved_keys = []
-        for key_spec in inputs:
-            # Check if key_spec is an exact key
-            if key_spec in self.signals:
-                resolved_keys.append(key_spec)
-            else:
-                # Assume it's a base name and find matching indexed keys
-                found_match = False
-                for existing_key in self.signals.keys():
-                    if existing_key.startswith(f"{key_spec}_") and existing_key[len(key_spec)+1:].isdigit():
-                        resolved_keys.append(existing_key)
-                        found_match = True
-                if not found_match:
-                    # If it's not an exact key and not a base name with matches, raise error
-                    raise ValueError(f"Input specification '{key_spec}' does not match any existing signal key or base name in the collection.")
-        
-        if not resolved_keys:
-             raise ValueError(f"Input specification {inputs} resolved to an empty list of signal keys.")
-        logger.debug(f"Resolved input specification {inputs} to keys: {resolved_keys}")
-
-        # Get all input signals using resolved keys
-        input_signals = []
-        current_key_being_processed = None # For error reporting
-        try:
-            for key in resolved_keys:
-                current_key_being_processed = key # Track the key for accurate error message
-                input_signals.append(self.get_signal(key))
-        except KeyError:
-            # This part should ideally not be reached if resolution logic is correct, but keep for safety
-            logger.error(f"Internal error: Resolved key '{current_key_being_processed}' not found during signal retrieval.")
-            raise ValueError(f"Input signal key '{current_key_being_processed}' (resolved from {inputs}) not found in collection") # Corrected error message
-
-        # Apply the operation, passing grid_index if required
-        if operation_name.startswith("feature_"):
-             # Feature functions expect List[SignalData], grid_index, parameters
-             result_signal = func(input_signals, grid_index, parameters) # func returns the full FeatureSignal
+        # Check result type and add to appropriate dictionary
+        if isinstance(result, TimeSeriesSignal):
+             self.add_time_series_signal(output_key, result)
+        # elif isinstance(result, Feature): # Should not happen from TimeSeriesSignal.apply_operation
+        #      self.add_feature(output_key, result)
         else:
-             # Other multi-signal ops might expect List[DataFrame], parameters
-             # This part needs refinement if other multi-signal ops exist
-             logger.warning(f"Executing non-feature multi-signal operation '{operation_name}'. "
-                            f"Assuming signature func(List[DataFrame], parameters).")
-             result_data = func([s.get_data() for s in input_signals], parameters)
-             # Need to construct the output signal manually for non-feature ops
-             derived_from = []
-             for signal in input_signals:
-                 operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
-                 derived_from.append((signal.metadata.signal_id, operation_index))
-             operation_info = OperationInfo(operation_name, parameters)
-             output_metadata = {
-                 "derived_from": derived_from,
-                 "operations": [operation_info]
-                 # Add other necessary metadata fields for the specific output_class
-             }
-             # Ensure output_class is correctly determined
-             if not issubclass(output_class, SignalData):
-                  raise TypeError(f"Registered output class for '{operation_name}' is not a SignalData subclass.")
-             result_signal = output_class(data=result_data, metadata=output_metadata)
+             raise TypeError(f"Operation '{operation_name}' on signal '{signal_key}' returned unexpected type {type(result).__name__}")
 
-
-        # --- Metadata Propagation for FeatureSignals from single input ---
-        # If the result is a FeatureSignal derived from a single input signal,
-        # copy relevant identifying metadata (from index_config) from the input
-        # to the output feature signal's metadata.
-        if isinstance(result_signal, FeatureSignal) and len(input_signals) == 1:
-            input_signal = input_signals[0]
-            if hasattr(self.metadata, 'index_config') and self.metadata.index_config:
-                logger.debug(f"Propagating metadata fields {self.metadata.index_config} from input '{input_signal.metadata.name}' to output FeatureSignal.")
-                fields_to_copy = self.metadata.index_config
-                for field_name in fields_to_copy:
-                    if hasattr(input_signal.metadata, field_name):
-                        value_to_copy = getattr(input_signal.metadata, field_name)
-                        # Only copy if the field exists on the output metadata object
-                        # and potentially only if it's None (optional, safer to just copy)
-                        if hasattr(result_signal.metadata, field_name):
-                             setattr(result_signal.metadata, field_name, value_to_copy)
-                        else:
-                             logger.warning(f"Metadata field '{field_name}' from index_config not found on FeatureSignal metadata. Cannot propagate.")
-                    else:
-                         logger.warning(f"Metadata field '{field_name}' from index_config not found on input signal '{input_signal.metadata.name}'. Cannot propagate.")
-
-        # --- Return the resulting signal ---
-        # Metadata (derived_from, operations) should be set correctly within the
-        # feature function wrapper (like compute_feature_statistics) or manually above.
-        # Identifying metadata is potentially added above.
-        return result_signal
-        # --- This block below seems like dead code after the return, removing it ---
-        # derived_from = []
-        # for signal in input_signals:
-        #     operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
-        #     derived_from.append((signal.metadata.signal_id, operation_index)) # Also comment/remove this line
-        # Create the output signal
-        operation_info = OperationInfo(operation_name, parameters)
-
-        output_metadata = {
-            "derived_from": derived_from,
-            "operations": [operation_info]
-        }
-
-        return output_class(data=result_data, metadata=output_metadata)
-
-    # --- Stored Combined Dataframe Access ---
-
-    def get_stored_combined_dataframe(self) -> Optional[pd.DataFrame]:
-        """
-        Returns the internally stored combined dataframe, if generated.
-
-        This dataframe is the result of either `combine_aligned_signals` or
-        `align_and_combine_signals`.
-
-        Returns:
-            The stored pandas DataFrame, or None if it hasn't been generated yet.
-        """
-        if self._aligned_dataframe is None:
-             logger.debug("Stored combined dataframe has not been generated yet.")
-        return self._aligned_dataframe
-
-    def get_stored_combination_params(self) -> Optional[Dict[str, Any]]:
-         """
-         Returns the parameters used to generate the stored combined dataframe.
-
-         Returns:
-             A dictionary containing the parameters, or None if not generated yet.
-         """
-         if self._aligned_dataframe_params is None:
-              logger.debug("Stored combined dataframe parameters are not available (dataframe not generated).")
-         return self._aligned_dataframe_params
-
-    # --- Multi-Signal Operations ---
-
-    def apply_multi_signal_operation(self, operation_name: str, inputs: List[str],
-                                    parameters: Dict[str, Any] = None) -> SignalData:
-        """
-        Apply an operation that works on multiple signals.
-        
-        Args:
-            operation_name: Name of the operation in the multi_signal_registry
-            inputs: List of signal keys to use as inputs
-            parameters: Parameters to pass to the operation
-        
-        Returns:
-            The result signal instance
-
-        Raises:
-            ValueError: If the operation is not found or if any input signal
-                key specified in `inputs` does not exist in the collection.
-        """
-        parameters = parameters or {}
-        # Check if operation exists
-        if operation_name not in self.multi_signal_registry:
-            raise ValueError(f"Multi-signal operation '{operation_name}' not found")
-
-        func, output_class = self.multi_signal_registry[operation_name]
-
-        # --- Check for grid_index prerequisite for feature extraction ---
-        # We assume operations starting with "feature_" require the grid index
-        grid_index = None
-        if operation_name.startswith("feature_"):
-             if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
-                  logger.error(f"Cannot execute feature operation '{operation_name}': "
-                               f"generate_alignment_grid must be run successfully first.")
-                  raise RuntimeError(f"generate_alignment_grid must be run successfully before feature operation '{operation_name}'.")
-             grid_index = self.grid_index
-             logger.debug(f"Passing grid_index (size: {len(grid_index)}) to feature operation '{operation_name}'.")
-        # --- End grid_index check ---
-
-
-        # Get all input signals
-        input_signals = []
-        for key in inputs:
-            try:
-                current_key_being_processed = key # Track the key for accurate error message
-                input_signals.append(self.get_signal(key))
-            except KeyError:
-                # This part should ideally not be reached if resolution logic is correct, but keep for safety
-                logger.error(f"Internal error: Resolved key '{current_key_being_processed}' not found during signal retrieval.")
-                raise ValueError(f"Input signal key '{current_key_being_processed}' (resolved from {inputs}) not found in collection") # Corrected error message
-
-        # Apply the operation, passing grid_index if required
-        if operation_name.startswith("feature_"):
-             # Feature functions expect List[SignalData], grid_index, parameters
-             result_signal = func(input_signals, grid_index, parameters) # func returns the full FeatureSignal
-        else:
-             # Other multi-signal ops might expect List[DataFrame], parameters
-             # This part needs refinement if other multi-signal ops exist
-             logger.warning(f"Executing non-feature multi-signal operation '{operation_name}'. "
-                            f"Assuming signature func(List[DataFrame], parameters).")
-             result_data = func([s.get_data() for s in input_signals], parameters)
-             # Need to construct the output signal manually for non-feature ops
-             derived_from = []
-             for signal in input_signals:
-                 operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
-                 derived_from.append((signal.metadata.signal_id, operation_index))
-             operation_info = OperationInfo(operation_name, parameters)
-             output_metadata = {
-                 "derived_from": derived_from,
-                 "operations": [operation_info]
-                 # Add other necessary metadata fields for the specific output_class
-             }
-             # Ensure output_class is correctly determined
-             if not issubclass(output_class, SignalData):
-                  raise TypeError(f"Registered output class for '{operation_name}' is not a SignalData subclass.")
-             result_signal = output_class(data=result_data, metadata=output_metadata)
-
-
-        # --- Return the resulting signal ---
-        # Metadata (derived_from, operations) should be set correctly within the
-        # feature function wrapper (like compute_feature_statistics) or manually above.
-        return result_signal
-        derived_from = []
-        for signal in input_signals:
-            operation_index = len(signal.metadata.operations) - 1 if signal.metadata.operations else -1
-            derived_from.append((signal.metadata.signal_id, operation_index))
-        # Create the output signal
-        operation_info = OperationInfo(operation_name, parameters)
-
-        output_metadata = {
-            "derived_from": derived_from,
-            "operations": [operation_info]
-        }
-        
-        return output_class(data=result_data, metadata=output_metadata)
-        
-    def apply_and_store_operation(self, signal_key: str, operation_name: str, 
-                                 parameters: Dict[str, Any], output_key: str) -> SignalData:
-        """
-        Apply an operation to a signal and store the result.
-        
-        Args:
-            signal_key: Key of the signal to operate on
-            operation_name: Name of the operation to apply
-            parameters: Parameters for the operation
-            output_key: Key to use when storing the result
-            
-        Returns:
-            The result signal that was stored
-            
-        Raises:
-            KeyError: If the signal key doesn't exist
-            ValueError: If the operation fails
-        """
-        signal = self.get_signal(signal_key)
-        result = signal.apply_operation(operation_name, **parameters)
-        self.add_signal(output_key, result)
         return result
-    
+
     def apply_operation_to_signals(self, signal_keys: List[str], operation_name: str,
                                   parameters: Dict[str, Any], inplace: bool = False,
-                                  output_keys: Optional[List[str]] = None) -> List[SignalData]:
+                                  output_keys: Optional[List[str]] = None) -> List[Union[TimeSeriesSignal, Feature]]:
         """
-        Apply an operation to multiple signals.
-        
+        Apply an operation to multiple TimeSeriesSignals.
+
+        Note: This currently only supports operations on TimeSeriesSignals.
+
         Args:
-            signal_keys: List of keys for signals to operate on
-            operation_name: Name of the operation to apply
-            parameters: Parameters for the operation
-            inplace: Whether to apply the operation in place
-            output_keys: Keys to use when storing results (required if inplace=False)
-            
+            signal_keys: List of keys for TimeSeriesSignals to operate on.
+            operation_name: Name of the operation to apply.
+            parameters: Parameters for the operation.
+            inplace: Whether to apply the operation in place.
+            output_keys: Keys for storing results (required if inplace=False).
+
         Returns:
-            List of signals that were created or modified
-            
+            List of TimeSeriesSignals that were created or modified.
+
         Raises:
-            ValueError: If inplace=False and output_keys not provided or length mismatch
+            ValueError: If inplace=False and output_keys mismatch, or if a key
+                        is not a valid TimeSeriesSignal key.
         """
         if not inplace and (not output_keys or len(output_keys) != len(signal_keys)):
             raise ValueError("Must provide matching output_keys when inplace=False")
-            
+
         results = []
         for i, key in enumerate(signal_keys):
-            signal = self.get_signal(key)
-            
+            signal = self.get_time_series_signal(key) # Ensures TimeSeriesSignal
+
             if inplace:
                 signal.apply_operation(operation_name, inplace=True, **parameters)
                 results.append(signal)
             else:
                 result = signal.apply_operation(operation_name, **parameters)
-                self.add_signal(output_keys[i], result)
-                results.append(result)
-                
-        return results
-        
-    def import_signals_from_source(self, importer_instance, source: str, 
-                                  spec: Dict[str, Any]) -> List[SignalData]:
-        """
-        Import signals from a source using the specified importer.
-        
-        Args:
-            importer_instance: The importer instance to use
-            source: Source path or identifier
-            spec: Import specification containing configuration
-            
-        Returns:
-            List of imported signals
-            
-        Raises:
-            ValueError: If the source doesn't exist or no signals can be imported
-        """
-        signal_type = spec["signal_type"]
-        strict_validation = spec.get("strict_validation", True)
-        
-        if "file_pattern" in spec:
-            # Handle directory with file pattern
-            if not os.path.isdir(source):
-                if strict_validation:
-                    raise ValueError(f"Source directory not found: {source}")
+                output_key = output_keys[i] # type: ignore
+                # Check result type and add
+                if isinstance(result, TimeSeriesSignal):
+                     self.add_time_series_signal(output_key, result)
+                # elif isinstance(result, Feature): # Should not happen
+                #      self.add_feature(output_key, result)
                 else:
-                    warnings.warn(f"Source directory not found: {source}, skipping")
-                    return []
-                
-            # Specialized importers handle file patterns internally
-            if spec["importer"] in ["MergingImporter", "PolarCSVImporter"]:
+                     raise TypeError(f"Operation '{operation_name}' on signal '{key}' returned unexpected type {type(result).__name__}")
+                results.append(result)
+
+        return results # type: ignore
+
+    def import_signals_from_source(self, importer_instance, source: str,
+                                  spec: Dict[str, Any]) -> List[TimeSeriesSignal]:
+        """
+        Import TimeSeriesSignals from a source using the specified importer.
+
+        Args:
+            importer_instance: The importer instance to use.
+            source: Source path or identifier.
+            spec: Import specification containing configuration.
+
+        Returns:
+            List of imported TimeSeriesSignals.
+
+        Raises:
+            ValueError: If the source doesn't exist or no signals can be imported.
+            TypeError: If the imported object is not a TimeSeriesSignal.
+        """
+        signal_type_str = spec["signal_type"]
+        strict_validation = spec.get("strict_validation", True)
+
+        # --- Determine expected output type based on signal_type_str ---
+        # This is a basic check; importers might return subclasses.
+        # We primarily expect TimeSeriesSignal results from importers.
+        expected_type = TimeSeriesSignal
+        # Add logic here if certain signal_type strings imply Feature outputs, though unlikely for importers.
+        # if signal_type_str == "some_feature_type":
+        #     expected_type = Feature
+
+        imported_objects: List[Any] = [] # Use Any initially
+
+        # --- File Pattern Handling ---
+        if "file_pattern" in spec:
+            if not os.path.isdir(source):
+                if strict_validation: raise ValueError(f"Source directory not found: {source}")
+                else: warnings.warn(f"Source directory not found: {source}, skipping"); return []
+
+            # Delegate pattern handling to importer if supported
+            if hasattr(importer_instance, 'import_signals'):
                 try:
-                    return importer_instance.import_signals(source, signal_type)
+                    # Assume import_signals returns a list of the expected type
+                    imported_objects = importer_instance.import_signals(source, signal_type_str)
+                except FileNotFoundError as e:
+                     if strict_validation: raise e
+                     else: warnings.warn(f"No files found matching pattern in {source} for importer: {e}"); return []
                 except Exception as e:
-                    if strict_validation:
-                        raise
-                    else:
-                        warnings.warn(f"Error importing from {source}: {e}, skipping")
-                        return []
+                    if strict_validation: raise
+                    else: warnings.warn(f"Error importing from {source} with pattern: {e}, skipping"); return []
             else:
-                # For other importers, process files individually
+                # Manual globbing if importer doesn't handle patterns
                 file_pattern = os.path.join(source, spec["file_pattern"])
                 matching_files = glob.glob(file_pattern)
-                
                 if not matching_files:
-                    if strict_validation:
-                        raise ValueError(f"No files found matching pattern: {file_pattern}")
-                    else:
-                        warnings.warn(f"No files found matching pattern: {file_pattern}, skipping")
-                        return []
-                    
-                # Import all matching files
-                all_signals = []
+                    if strict_validation: raise ValueError(f"No files found matching pattern: {file_pattern}")
+                    else: warnings.warn(f"No files found matching pattern: {file_pattern}, skipping"); return []
+
                 for file_path in matching_files:
                     try:
-                        signals = importer_instance.import_signals(file_path, signal_type)
-                        all_signals.extend(signals)
+                        # Assume import_signal returns a single object
+                        signal_obj = importer_instance.import_signal(file_path, signal_type_str)
+                        imported_objects.append(signal_obj)
                     except Exception as e:
-                        if strict_validation:
-                            raise
-                        else:
-                            warnings.warn(f"Error importing {file_path}: {e}, skipping")
-                    
-                return all_signals
+                        if strict_validation: raise
+                        else: warnings.warn(f"Error importing {file_path}: {e}, skipping")
         else:
-            # Regular file import
+            # --- Regular File Import ---
             if not os.path.exists(source):
-                if strict_validation:
-                    raise ValueError(f"Source file not found: {source}")
-                else:
-                    warnings.warn(f"Source file not found: {source}, skipping")
-                    return []
-            
-            # Import signals from source
-            return importer_instance.import_signals(source, signal_type)
-    
-    def add_imported_signals(self, signals: List[SignalData], base_name: str, 
+                if strict_validation: raise ValueError(f"Source file not found: {source}")
+                else: warnings.warn(f"Source file not found: {source}, skipping"); return []
+            try:
+                 # Assume import_signal for single file source
+                 signal_obj = importer_instance.import_signal(source, signal_type_str)
+                 imported_objects.append(signal_obj)
+            except Exception as e:
+                 if strict_validation: raise
+                 else: warnings.warn(f"Error importing {source}: {e}, skipping"); return []
+
+
+        # --- Validate and Filter Results ---
+        validated_signals: List[TimeSeriesSignal] = []
+        for obj in imported_objects:
+            if isinstance(obj, expected_type):
+                 # Further check if it's specifically TimeSeriesSignal for this method
+                 if isinstance(obj, TimeSeriesSignal):
+                      validated_signals.append(obj)
+                 else:
+                      # This case should be rare if expected_type is TimeSeriesSignal
+                      logger.warning(f"Importer returned object of type {type(obj).__name__} which is not TimeSeriesSignal. Skipping.")
+            else:
+                logger.warning(f"Importer returned unexpected type {type(obj).__name__} (expected {expected_type.__name__}). Skipping.")
+
+        return validated_signals
+
+
+    def add_imported_signals(self, signals: List[TimeSeriesSignal], base_name: str,
                            start_index: int = 0) -> List[str]:
-        """
-        Add imported signals to the collection with sequential indexing.
-        
-        Args:
-            signals: List of signals to add
-            base_name: Base name to use for signal keys
-            start_index: Starting index for sequential numbering
-            
-        Returns:
-            List of keys assigned to the added signals
-        """
+        """Add imported TimeSeriesSignals to the collection with sequential indexing."""
         keys = []
         current_index = start_index
-        
+
         for signal in signals:
+            if not isinstance(signal, TimeSeriesSignal):
+                 logger.warning(f"Skipping object of type {type(signal).__name__} during add_imported_signals (expected TimeSeriesSignal).")
+                 continue
             key = f"{base_name}_{current_index}"
-            self.add_signal(key, signal)
-            keys.append(key)
-            current_index += 1
-            
+            try:
+                self.add_time_series_signal(key, signal) # Use specific add method
+                keys.append(key)
+                current_index += 1
+            except ValueError as e:
+                 # Handle case where key might already exist unexpectedly
+                 logger.error(f"Failed to add imported signal with key '{key}': {e}. Trying next index.")
+                 # Try incrementing index again to find next available slot
+                 current_index += 1
+                 key = f"{base_name}_{current_index}"
+                 try:
+                      self.add_time_series_signal(key, signal)
+                      keys.append(key)
+                      current_index += 1
+                 except ValueError as e2:
+                      logger.error(f"Failed again to add imported signal with key '{key}': {e2}. Skipping this signal.")
+
+
         return keys
 
     @register_collection_operation("summarize_signals")
     def summarize_signals(self, fields_to_include: Optional[List[str]] = None, print_summary: bool = True) -> Optional[pd.DataFrame]:
-        """
-        Generates a summary table of signals, stores it, and optionally prints a formatted version.
+        """Generates a summary table of TimeSeriesSignals and Features."""
+        # Combine both signal types for summary generation
+        all_items = {**self.time_series_signals, **self.features}
 
-        Args:
-            fields_to_include: A list of metadata field names to include as columns.
-                               If None, a default set is used.
-            print_summary: If True, prints a formatted version of the summary table to the console.
-
-        Returns:
-            A pandas DataFrame containing the raw summary data, or None if the collection is empty.
-            The generated DataFrame is also stored in `self._summary_dataframe`.
-        """
-        if not self.signals:
+        if not all_items:
             logger.info("Signal collection is empty. No summary to generate.")
-            self._summary_dataframe = None # Ensure it's None if empty
+            self._summary_dataframe = pd.DataFrame() # Store empty DataFrame
             self._summary_dataframe_params = None
             if print_summary:
                 print("Signal collection is empty.")
-            return None
+            return self._summary_dataframe
 
-        default_fields = [
-            'signal_type', 'name', 'sensor_type', 'sensor_model',
-            'body_position', 'sample_rate', 'start_time', 'end_time',
-            'source_files_count', 'operations_count', 'temporary', 'data_shape'
-        ]
-        # Add feature-specific fields to defaults if any FeatureSignals exist
-        if any(isinstance(s, FeatureSignal) for s in self.signals.values()):
-             default_fields.extend(['epoch_window_length', 'epoch_step_size', 'feature_names_count'])
+        # --- Determine Fields ---
+        # Default fields combine common attributes and type-specific ones
+        default_ts_fields = [f.name for f in fields(TimeSeriesMetadata)]
+        default_feat_fields = [f.name for f in fields(FeatureMetadata)]
+        # Combine and deduplicate, prioritize common names
+        common_fields = set(default_ts_fields) & set(default_feat_fields)
+        ts_only_fields = set(default_ts_fields) - common_fields
+        feat_only_fields = set(default_feat_fields) - common_fields
+        # Add calculated fields
+        calculated_fields = ['source_files_count', 'operations_count', 'feature_names_count', 'data_shape', 'item_type']
+        default_fields_ordered = ['key', 'item_type'] + sorted(list(common_fields)) + \
+                                 sorted(list(ts_only_fields)) + sorted(list(feat_only_fields)) + \
+                                 sorted(calculated_fields)
 
-        # Use provided fields or the default set
-        fields_for_summary = fields_to_include if fields_to_include is not None else default_fields
-        logger.debug(f"Generating summary with fields: {fields_for_summary}")
+        fields_for_summary = fields_to_include if fields_to_include is not None else default_fields_ordered
+        logger.info(f"Generating summary. Fields requested: {'Default' if fields_to_include is None else fields_to_include}")
+        logger.debug(f"Actual fields being processed for summary: {fields_for_summary}")
 
         summary_data = []
-        valid_metadata_fields = {f.name for f in fields(SignalMetadata)}
+        valid_ts_meta_fields = {f.name for f in fields(TimeSeriesMetadata)}
+        valid_feat_meta_fields = {f.name for f in fields(FeatureMetadata)}
 
-        for key, signal in self.signals.items():
-            row_data = {'key': key} # Start with the collection key
+        for key, item in all_items.items():
+            row_data = {'key': key}
+            metadata_obj = item.metadata
+            is_feature = isinstance(item, Feature)
+            row_data['item_type'] = 'Feature' if is_feature else 'TimeSeries'
+            valid_meta_fields = valid_feat_meta_fields if is_feature else valid_ts_meta_fields
 
             for field in fields_for_summary:
+                if field in ['key', 'item_type']: continue # Already handled
+
                 value = None
                 try:
-                    # --- Get Raw Value ---
+                    # --- Calculated Fields ---
                     if field == 'source_files_count':
-                        value = len(signal.metadata.source_files) if signal.metadata.source_files else 0
+                         value = len(metadata_obj.source_files) if hasattr(metadata_obj, 'source_files') and metadata_obj.source_files else 0
                     elif field == 'operations_count':
-                        value = len(signal.metadata.operations) if signal.metadata.operations else 0
+                         value = len(metadata_obj.operations) if hasattr(metadata_obj, 'operations') and metadata_obj.operations else 0
                     elif field == 'feature_names_count':
-                         if hasattr(signal.metadata, 'feature_names'):
-                              value = len(signal.metadata.feature_names) if signal.metadata.feature_names else 0
-                         else: value = None # Store None if field doesn't exist
+                         value = len(metadata_obj.feature_names) if hasattr(metadata_obj, 'feature_names') and metadata_obj.feature_names else (0 if is_feature else None) # Count only for features
                     elif field == 'data_shape':
                          try:
-                              data = signal.get_data()
-                              # Store shape tuple directly if available
+                              data = item.get_data()
                               value = data.shape if hasattr(data, 'shape') else None
-                         except Exception:
-                              value = None # Store None if error getting data
-                    elif field in valid_metadata_fields:
-                        value = getattr(signal.metadata, field, None)
-                    else:
-                         value = None # Field not valid or not found
+                         except Exception: value = None
+                    # --- Metadata Fields ---
+                    elif field in valid_meta_fields:
+                        value = getattr(metadata_obj, field, None)
+                    else: # Field not applicable to this item type
+                         value = None
 
-                    row_data[field] = value # Store the raw value (or None)
+                    row_data[field] = value # Store raw value
 
                 except Exception as e:
-                    logger.warning(f"Error accessing raw field '{field}' for signal '{key}': {e}")
-                    row_data[field] = None # Store None on error
+                    logger.warning(f"Error accessing raw field '{field}' for item '{key}': {e}")
+                    row_data[field] = None
 
             summary_data.append(row_data)
 
-        # --- Create Raw DataFrame for Storage ---
+        # --- Create Raw DataFrame ---
         raw_summary_df = pd.DataFrame(summary_data)
-
-        # Reorder columns to have 'key' first, then the requested fields
-        cols_order = ['key'] + [f for f in fields_for_summary if f in raw_summary_df.columns]
-        raw_summary_df = raw_summary_df[cols_order]
-
-        # Set key as index and sort
+        # Ensure all requested columns exist, filling with NaN if needed
+        for col in fields_for_summary:
+             if col not in raw_summary_df.columns:
+                  raw_summary_df[col] = None
+        # Reorder columns
+        raw_summary_df = raw_summary_df[['key'] + [f for f in fields_for_summary if f != 'key']]
         raw_summary_df = raw_summary_df.set_index('key').sort_index()
 
-        # --- Store Raw DataFrame and Parameters ---
+        # --- Store Raw DataFrame ---
         self._summary_dataframe = raw_summary_df.copy()
         self._summary_dataframe_params = {'fields_to_include': fields_for_summary, 'print_summary': print_summary}
-        logger.info(f"Stored signal summary DataFrame with shape {self._summary_dataframe.shape}")
+        logger.info(f"Stored signal/feature summary DataFrame with shape {self._summary_dataframe.shape}")
 
-        # --- Handle Printing (Formatted Version) ---
+        # --- Handle Printing ---
         if print_summary:
-            # Create a formatted copy for printing
             formatted_summary_df = raw_summary_df.copy()
+            # Apply formatting (similar to previous logic)
             for col in formatted_summary_df.columns:
-                # Apply formatting similar to the original logic
-                formatted_values = []
-                for val in formatted_summary_df[col]:
-                    if isinstance(val, Enum):
-                        formatted_values.append(val.name)
-                    elif isinstance(val, (pd.Timestamp, datetime)):
-                        formatted_values.append(val.strftime('%Y-%m-%d %H:%M:%S %Z') if pd.notna(val) else 'N/A')
-                    elif isinstance(val, pd.Timedelta):
-                         formatted_values.append(str(val))
-                    elif isinstance(val, (list, tuple, dict)):
-                         formatted_values.append(len(val)) # Represent by length
-                    elif isinstance(val, tuple) and col == 'data_shape': # Handle shape tuple specifically
-                         formatted_values.append(str(val))
-                    elif pd.isna(val):
-                        formatted_values.append('N/A')
-                    else:
-                        formatted_values.append(val) # Keep other types as is for printing
-                formatted_summary_df[col] = formatted_values
-
+                # Convert complex types for display
+                formatted_summary_df[col] = formatted_summary_df[col].apply(
+                    lambda x: x.name if isinstance(x, Enum)
+                    else (x.strftime('%Y-%m-%d %H:%M:%S %Z') if isinstance(x, (pd.Timestamp, datetime)) and pd.notna(x) else str(x)) if isinstance(x, pd.Timedelta)
+                    else (len(x) if isinstance(x, (list, tuple, dict)) and col != 'data_shape' else str(x)) if isinstance(x, tuple) and col == 'data_shape'
+                    else ('N/A' if pd.isna(x) else x)
+                )
             print("\n--- Signal Collection Summary ---")
-            # Use to_string to prevent truncation
             print(formatted_summary_df.to_string())
             print("-------------------------------\n")
 
-        # Return the raw DataFrame
         return self._summary_dataframe
 
 
 # --- Populate the Collection Operation Registry ---
 # Iterate through the methods of the class *after* it's defined
 # and populate the registry based on the decorator attribute.
+SignalCollection.collection_operation_registry = {} # Reset registry before population
 for _method_name, _method_obj in inspect.getmembers(SignalCollection, predicate=inspect.isfunction):
     if hasattr(_method_obj, '_collection_op_name'):
         _op_name = getattr(_method_obj, '_collection_op_name')
@@ -2047,14 +1787,14 @@ for _method_name, _method_obj in inspect.getmembers(SignalCollection, predicate=
         logger.debug(f"Registered collection operation '{_op_name}' to method SignalCollection.{_method_name}")
 
 # --- Register Multi-Signal Operations ---
-# Import the feature extraction functions
+SignalCollection.multi_signal_registry = {} # Reset registry before population
 try:
     from ..operations.feature_extraction import compute_feature_statistics #, compute_feature_correlation # Add others later
-    from ..signals.feature_signal import FeatureSignal
+    from ..features.feature import Feature # Import Feature from new location
 
     SignalCollection.multi_signal_registry.update({
-        "feature_statistics": (compute_feature_statistics, FeatureSignal),
-        # "feature_correlation": (compute_feature_correlation, FeatureSignal), # Uncomment when implemented
+        "feature_statistics": (compute_feature_statistics, Feature), # Output is Feature
+        # "feature_correlation": (compute_feature_correlation, Feature), # Uncomment when implemented
     })
     logger.debug("Registered multi-signal feature operations.")
 except ImportError as e:
@@ -2062,4 +1802,7 @@ except ImportError as e:
 
 
 # Clean up temporary variables from the global scope of the module
-del _method_name, _method_obj, _op_name
+# Check if variables exist before deleting
+if '_method_name' in locals() or '_method_name' in globals(): del _method_name
+if '_method_obj' in locals() or '_method_obj' in globals(): del _method_obj
+if '_op_name' in locals() or '_op_name' in globals(): del _op_name

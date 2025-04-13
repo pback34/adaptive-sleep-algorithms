@@ -7,10 +7,14 @@ from typing import List, Dict, Any, Callable
 import pandas as pd
 import numpy as np
 
-from ..core.signal_data import SignalData
+import itertools
+import warnings # Added import
+
+# Removed SignalData import
 from ..signals.time_series_signal import TimeSeriesSignal
-from ..signals.feature_signal import FeatureSignal
-from ..core.metadata import OperationInfo
+# Import Feature and FeatureMetadata from their correct locations
+from ..features.feature import Feature
+from ..core.metadata import FeatureMetadata, OperationInfo, FeatureType
 
 logger = logging.getLogger(__name__)
 
@@ -67,144 +71,178 @@ def _compute_basic_stats(segment: pd.DataFrame, aggregations: List[str]) -> Dict
 # --- Main Wrapper Function (Registered in SignalCollection) ---
 
 def compute_feature_statistics(
-    signals: List[SignalData],
-    grid_index: pd.DatetimeIndex,
+    signals: List[TimeSeriesSignal],
+    epoch_grid_index: pd.DatetimeIndex,
     parameters: Dict[str, Any]
-) -> FeatureSignal:
+) -> Feature:
     """
-    Computes statistical features over epochs for one or more signals.
+    Computes statistical features over epochs for one or more TimeSeriesSignals.
+
+    Uses the provided global `epoch_grid_index` for epoch start times.
+    The `window_length` can be specified in `parameters` to override the global
+    setting, but `step_size` is determined solely by the `epoch_grid_index`.
 
     Args:
         signals: List containing the input TimeSeriesSignal objects.
-        grid_index: The pre-calculated DatetimeIndex defining the overall time range.
-        parameters: Dictionary containing:
-            - window_length (str): Duration of each epoch (e.g., "30s").
-            - step_size (str): Time interval between epoch starts (e.g., "10s").
+        epoch_grid_index: The pre-calculated DatetimeIndex defining epoch start times.
+        parameters: Dictionary containing operation parameters:
+            - window_length (str, optional): Duration of each epoch (e.g., "30s").
+                                             Overrides global if provided.
             - aggregations (List[str]): List of stats to compute (e.g., ["mean", "std"]).
+            - global_epoch_window_length (pd.Timedelta): Global window length (passed by executor).
+            - global_epoch_step_size (pd.Timedelta): Global step size (passed by executor).
             - Other parameters specific to feature functions.
 
     Returns:
-        A FeatureSignal object containing the computed features.
+        A Feature object containing the computed features, indexed by epoch_start_time.
 
     Raises:
-        ValueError: If required parameters are missing or invalid, or if no
-                    TimeSeriesSignals are provided, or if grid_index is missing.
-        RuntimeError: If epoch generation fails.
+        ValueError: If input signals are invalid, epoch_grid_index is missing/empty,
+                    or required parameters are missing/invalid.
+        RuntimeError: If feature calculation fails.
     """
     if not signals:
         raise ValueError("No input signals provided for feature statistics.")
     if not all(isinstance(s, TimeSeriesSignal) for s in signals):
         raise ValueError("All input signals must be TimeSeriesSignal instances.")
-    if grid_index is None or grid_index.empty:
-         raise ValueError("A valid grid_index must be provided for epoch generation.")
+    if epoch_grid_index is None or epoch_grid_index.empty:
+         raise ValueError("A valid epoch_grid_index must be provided.")
 
-    # --- Parameter Parsing ---
+    # --- Parameter Parsing & Validation ---
     try:
-        window_length_str = parameters['window_length']
-        step_size_str = parameters['step_size']
+        # Get global parameters passed by the executor
+        global_window_length = parameters['global_epoch_window_length']
+        global_step_size = parameters['global_epoch_step_size']
+
+        # Determine effective window length: override or global
+        window_length_str = parameters.get('window_length') # Optional override
+        if window_length_str:
+            effective_window_length = pd.Timedelta(window_length_str)
+            logger.info(f"Using step-specific window_length override: {effective_window_length}")
+        else:
+            effective_window_length = global_window_length
+            logger.info(f"Using global collection window_length: {effective_window_length}")
+
+        if effective_window_length <= pd.Timedelta(0):
+             raise ValueError("Effective window_length must be positive.")
+
+        # Step size is implicitly defined by epoch_grid_index.freq or global_step_size
+        # We use global_step_size for metadata recording.
+        epoch_step_size = global_step_size
+        if epoch_grid_index.freq is None and epoch_step_size is None:
+             warnings.warn("Epoch grid index has no frequency and global_step_size not provided. Cannot verify step size consistency.")
+        elif epoch_grid_index.freq is not None and epoch_step_size is not None and epoch_grid_index.freq != epoch_step_size:
+             warnings.warn(f"Epoch grid index frequency ({epoch_grid_index.freq}) differs from global_epoch_step_size ({epoch_step_size}). Using global value for metadata.")
+        elif epoch_step_size is None and epoch_grid_index.freq is not None:
+             epoch_step_size = epoch_grid_index.freq # Infer from grid if not passed explicitly
+
+        if epoch_step_size is None or epoch_step_size <= pd.Timedelta(0):
+             raise ValueError("Could not determine a positive epoch_step_size from epoch_grid_index or global parameters.")
+
         aggregations = parameters.get('aggregations', ['mean', 'std']) # Default aggregations
 
-        window_length = pd.Timedelta(window_length_str)
-        step_size = pd.Timedelta(step_size_str)
-
-        if window_length <= pd.Timedelta(0) or step_size <= pd.Timedelta(0):
-             raise ValueError("window_length and step_size must be positive durations.")
-
     except KeyError as e:
-        raise ValueError(f"Missing required parameter: {e}") from e
+        raise ValueError(f"Missing required global parameter from executor: {e}") from e
     except ValueError as e:
-        raise ValueError(f"Invalid parameter format: {e}") from e
+        raise ValueError(f"Invalid parameter format or value: {e}") from e
 
-    logger.info(f"Computing feature statistics: window={window_length}, step={step_size}, aggs={aggregations}")
+    logger.info(f"Computing feature statistics: effective_window={effective_window_length}, step={epoch_step_size} (from grid), aggs={aggregations}")
 
-    # --- Epoch Generation ---
-    try:
-        # Use grid_index min/max for range
-        start_time = grid_index.min()
-        end_time = grid_index.max()
+    # --- Handle Empty Epoch Grid ---
+    if epoch_grid_index.empty:
+         logger.warning("Provided epoch_grid_index is empty. Returning empty Feature object.")
+         # Determine expected columns for the empty DataFrame
+         expected_simple_cols = set()
+         for signal in signals:
+              try:
+                   # Attempt to get data columns even if signal data might be empty/None
+                   data_cols = signal.get_data().columns if signal.get_data() is not None else []
+                   numeric_cols = signal.get_data().select_dtypes(include=np.number).columns if signal.get_data() is not None else []
+                   for col in data_cols:
+                        if col in numeric_cols:
+                             for agg in aggregations:
+                                  if agg in ['mean', 'std', 'min', 'max', 'median', 'var']:
+                                       expected_simple_cols.add(f"{col}_{agg}")
+              except Exception as e:
+                   logger.warning(f"Could not determine columns for signal '{signal.metadata.name}' for empty feature output: {e}")
 
-        # Generate epoch start times ensuring the *start* time is within the grid range
-        # The window can extend beyond the end_time
-        epoch_starts = pd.date_range(
-            start=start_time,
-            end=end_time, # Generate starts up to the grid end
-            freq=step_size,
-            inclusive='left' # Include start, exclude exact end if it falls on step
-        )
-        # Filter out any start times where the window would begin after the grid ends
-        epoch_starts = epoch_starts[epoch_starts <= end_time]
+         # Create expected MultiIndex columns for the empty DataFrame
+         expected_multiindex_cols = pd.MultiIndex.from_tuples(
+             list(itertools.product([s.metadata.name for s in signals], sorted(list(expected_simple_cols)))),
+             names=['signal_key', 'feature']
+         )
+         empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
+         empty_data.index.name = 'timestamp' # Set index name
 
-        if epoch_starts.empty:
-             logger.warning("No valid epoch start times generated based on grid_index and step_size.")
-             # Return an empty FeatureSignal
-             empty_data = pd.DataFrame(index=pd.DatetimeIndex([]))
-             feature_names = [] # Will be populated later if needed
-             metadata = {
-                 "epoch_window_length": window_length,
-                 "epoch_step_size": step_size,
-                 "feature_names": feature_names,
-                 "source_signal_keys": [s.metadata.name for s in signals], # Use name as key proxy
-                 "derived_from": [(s.metadata.signal_id, len(s.metadata.operations)-1) for s in signals],
-                 "operations": [OperationInfo("feature_statistics", parameters)]
-             }
-             # Need to determine columns for empty dataframe
-             # Let's compute expected columns based on input signals and aggs
-             expected_cols = []
-             for signal in signals:
-                  data_cols = signal.get_data().columns
-                  numeric_cols = signal.get_data().select_dtypes(include=np.number).columns
-                  for col in data_cols:
-                       if col in numeric_cols:
-                            for agg in aggregations:
-                                 if agg in ['mean', 'std', 'min', 'max', 'median', 'var']:
-                                      expected_cols.append(f"{signal.metadata.name}_{col}_{agg}") # Prefix with signal name
-             empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_cols)
-             metadata["feature_names"] = expected_cols
-             return FeatureSignal(data=empty_data, metadata=metadata)
+         # Create metadata for the empty Feature object
+         metadata_dict = {
+             "epoch_window_length": global_window_length, # Record global window used for grid
+             "epoch_step_size": global_step_size,       # Record global step used for grid
+             "feature_names": sorted(list(expected_simple_cols)), # Store simple names
+             "feature_type": FeatureType.STATISTICAL,
+             "source_signal_keys": [s.metadata.name for s in signals],
+             "source_signal_ids": [s.metadata.signal_id for s in signals],
+             "operations": [OperationInfo("feature_statistics", parameters)] # Store original params
+         }
+         # Note: FeatureMetadata requires specific fields, handled by Feature.__init__
+         return Feature(data=empty_data, metadata=metadata_dict)
 
-
-    except Exception as e:
-        logger.error(f"Error generating epoch sequence: {e}", exc_info=True)
-        raise RuntimeError(f"Failed to generate epoch sequence: {e}") from e
 
     # --- Feature Calculation Loop ---
     all_epoch_results = []
     processed_epochs = 0
     skipped_epochs = 0
+    generated_feature_names = set() # Store the simple feature names generated
 
-    for epoch_start in epoch_starts:
-        epoch_end = epoch_start + window_length
-        epoch_features = {'epoch_start': epoch_start} # Store start time for index later
+    # Iterate directly over the provided epoch grid index
+    for epoch_start in epoch_grid_index:
+        epoch_end = epoch_start + effective_window_length # Use effective window length
+        epoch_features = {'epoch_start': epoch_start} # Use epoch_start from grid for index
 
         # Get data segments for this epoch from all input signals
-        segments = []
-        signal_names = [] # To prefix feature names
+        # Store segments along with their original signal key for context
+        segments_with_keys = []
         try:
+            segments_with_keys = []
+            valid_epoch = True
             for signal in signals:
-                # Slice data for the current epoch [start, end)
-                segment = signal.get_data()[epoch_start:epoch_end]
-                # Note: Pandas slicing [start:end] includes start, excludes end by default for DatetimeIndex
-                # Adjust if strict inclusion/exclusion is needed, e.g., segment = signal.get_data().loc[epoch_start : epoch_end - pd.Timedelta(nanoseconds=1)]
-                segments.append(segment)
-                signal_names.append(signal.metadata.name or f"signal_{signal.metadata.signal_id[:4]}") # Use name or partial ID
+                try:
+                    # Slice data for the current epoch [start, end)
+                    # Ensure slicing handles potential timezone differences if necessary
+                    # Assuming signal data index is compatible with epoch_start/epoch_end timezone
+                    segment = signal.get_data()[epoch_start:epoch_end]
+                    segments_with_keys.append((signal.metadata.name, segment)) # Store key and segment
+                except Exception as slice_err:
+                     logger.warning(f"Error slicing data for signal '{signal.metadata.name}' in epoch {epoch_start}: {slice_err}. Skipping epoch.")
+                     valid_epoch = False
+                     break # Stop processing this epoch if any signal fails slicing
+
+            if not valid_epoch:
+                 skipped_epochs += 1
+                 continue
 
             # --- Compute features for this epoch ---
-            # For feature_statistics, we process each signal segment individually
+            # Process each signal segment individually (if epoch is valid)
             combined_epoch_stats = {}
-            for i, segment in enumerate(segments):
-                 signal_name_prefix = signal_names[i]
+            for signal_key, segment in segments_with_keys:
                  # Pass only the relevant aggregations for basic stats
                  basic_aggregations = [agg for agg in aggregations if agg in ['mean', 'std', 'min', 'max', 'median', 'var']]
                  if basic_aggregations:
+                      # _compute_basic_stats returns simple names like 'X_mean', 'Y_std'
                       stats = _compute_basic_stats(segment, basic_aggregations)
-                      # Prefix feature names with signal name/key
-                      prefixed_stats = {f"{signal_name_prefix}_{k}": v for k, v in stats.items()}
-                      combined_epoch_stats.update(prefixed_stats)
+                      # Store results keyed by (signal_key, feature_name) temporarily
+                      for simple_feature_name, value in stats.items():
+                           # Add the simple name to our set of generated features
+                           generated_feature_names.add(simple_feature_name)
+                           # Use a tuple key for the dictionary to avoid collisions
+                           combined_epoch_stats[(signal_key, simple_feature_name)] = value
 
                  # --- Add calls to other core feature functions here if needed ---
-                 # Example: if 'hrv' in aggregations and signals[i].signal_type == SignalType.HEART_RATE:
+                 # Example: if 'hrv' in aggregations and signal_type == SignalType.HEART_RATE:
                  #      hrv_features = _compute_hrv(segment, parameters.get('hrv_params', {}))
-                 #      combined_epoch_stats.update(hrv_features)
+                 #      for simple_hrv_name, value in hrv_features.items():
+                 #           generated_feature_names.add(simple_hrv_name)
+                 #           combined_epoch_stats[(signal_key, simple_hrv_name)] = value
 
             epoch_features.update(combined_epoch_stats)
             all_epoch_results.append(epoch_features)
@@ -220,50 +258,80 @@ def compute_feature_statistics(
 
     if not all_epoch_results:
         logger.warning("No features were successfully computed for any epoch.")
-        # Return empty FeatureSignal (similar to above)
-        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]))
-        feature_names = []
-        metadata = {
-            "epoch_window_length": window_length,
-            "epoch_step_size": step_size,
-            "feature_names": feature_names,
+        # Return empty Feature object (using the same logic as above for empty grid)
+        expected_simple_cols = set()
+        for signal in signals:
+             try:
+                  data_cols = signal.get_data().columns if signal.get_data() is not None else []
+                  numeric_cols = signal.get_data().select_dtypes(include=np.number).columns if signal.get_data() is not None else []
+                  for col in data_cols:
+                       if col in numeric_cols:
+                            for agg in aggregations:
+                                 if agg in ['mean', 'std', 'min', 'max', 'median', 'var']:
+                                      expected_simple_cols.add(f"{col}_{agg}")
+             except Exception as e:
+                  logger.warning(f"Could not determine columns for signal '{signal.metadata.name}' for empty feature output: {e}")
+
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            list(itertools.product([s.metadata.name for s in signals], sorted(list(expected_simple_cols)))),
+            names=['signal_key', 'feature']
+        )
+        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
+        empty_data.index.name = 'timestamp'
+
+        metadata_dict = {
+            "epoch_window_length": global_window_length,
+            "epoch_step_size": global_step_size,
+            "feature_names": sorted(list(expected_simple_cols)),
+            "feature_type": FeatureType.STATISTICAL,
             "source_signal_keys": [s.metadata.name for s in signals],
-            "derived_from": [(s.metadata.signal_id, len(s.metadata.operations)-1) for s in signals],
+            "source_signal_ids": [s.metadata.signal_id for s in signals],
             "operations": [OperationInfo("feature_statistics", parameters)]
         }
-        # Determine expected columns again
-        expected_cols = []
-        for signal in signals:
-             data_cols = signal.get_data().columns
-             numeric_cols = signal.get_data().select_dtypes(include=np.number).columns
-             for col in data_cols:
-                  if col in numeric_cols:
-                       for agg in aggregations:
-                            if agg in ['mean', 'std', 'min', 'max', 'median', 'var']:
-                                 expected_cols.append(f"{signal.metadata.name}_{col}_{agg}")
-        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_cols)
-        metadata["feature_names"] = expected_cols
-        return FeatureSignal(data=empty_data, metadata=metadata)
+        return Feature(data=empty_data, metadata=metadata_dict)
 
 
     # --- Assemble Final DataFrame ---
+    # Create DataFrame from results, using the tuple keys (signal_key, feature_name) as columns
     feature_df = pd.DataFrame(all_epoch_results)
-    feature_df = feature_df.set_index('epoch_start')
+    feature_df = feature_df.set_index('epoch_start') # Index is now epoch_start times from grid
+
+    # Convert tuple columns to MultiIndex
+    if not feature_df.empty:
+         feature_df.columns = pd.MultiIndex.from_tuples(feature_df.columns, names=['signal_key', 'feature'])
+    else:
+         # Handle case where df is empty but columns might exist from skipped epochs
+         # Recreate expected columns if df is empty after processing
+         expected_simple_cols = generated_feature_names # Use names actually generated
+         expected_multiindex_cols = pd.MultiIndex.from_tuples(
+             list(itertools.product([s.metadata.name for s in signals], sorted(list(expected_simple_cols)))),
+             names=['signal_key', 'feature']
+         )
+         feature_df = pd.DataFrame(index=feature_df.index, columns=expected_multiindex_cols)
+
+
+    # Reindex to ensure the final DataFrame index *exactly* matches the epoch_grid_index
+    # Fill missing epochs (e.g., skipped due to errors) with NaN
+    feature_df = feature_df.reindex(epoch_grid_index)
     feature_df.index.name = 'timestamp' # Standard index name
 
-    # --- Create FeatureSignal ---
-    feature_names = list(feature_df.columns)
-    metadata = {
-        "epoch_window_length": window_length,
-        "epoch_step_size": step_size,
-        "feature_names": feature_names,
+    # --- Create Feature ---
+    # Feature names are the *simple* names collected earlier
+    simple_feature_names = sorted(list(generated_feature_names))
+
+    # Create metadata dictionary for the Feature object
+    # Use global epoch parameters to reflect the grid used
+    metadata_dict = {
+        "epoch_window_length": global_window_length,
+        "epoch_step_size": global_step_size,
+        "feature_names": simple_feature_names, # Store the simple feature names
+        "feature_type": FeatureType.STATISTICAL, # Set the feature type
         "source_signal_keys": [s.metadata.name for s in signals], # Use name as key proxy
-        # Link derivation to the state *before* this operation
-        "derived_from": [(s.metadata.signal_id, len(s.metadata.operations)-1 if s.metadata.operations else -1) for s in signals],
-        "operations": [OperationInfo("feature_statistics", parameters)] # Record this operation
+        "source_signal_ids": [s.metadata.signal_id for s in signals], # Store source UUIDs
+        # Record this operation, including the effective window length if overridden
+        "operations": [OperationInfo("feature_statistics", parameters)] # Store original params passed
     }
 
-    # Pass the collection's handler if available (needed?) - FeatureSignal init handles it
-    # handler = getattr(signals[0], 'handler', None) if signals else None
-
-    return FeatureSignal(data=feature_df, metadata=metadata) #, handler=handler)
+    # Instantiate the Feature object
+    # The Feature.__init__ handles metadata validation and creation
+    return Feature(data=feature_df, metadata=metadata_dict)

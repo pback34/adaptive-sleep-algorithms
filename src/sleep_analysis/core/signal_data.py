@@ -12,7 +12,8 @@ import uuid
 from datetime import datetime
 import pandas as pd
 
-from .metadata import SignalMetadata, OperationInfo
+# Updated import to use TimeSeriesMetadata
+from .metadata import TimeSeriesMetadata, OperationInfo
 from ..signal_types import SignalType
 from .. import __version__
 from .metadata_handler import MetadataHandler

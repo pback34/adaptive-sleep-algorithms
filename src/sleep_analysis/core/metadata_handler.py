@@ -5,10 +5,11 @@ This module provides a centralized handler for managing signal metadata
 in a consistent way across standalone signals and collections.
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union # Added Union
 import uuid
 import pandas as pd # Added import
-from ..core.metadata import SignalMetadata, OperationInfo
+# Updated import to use TimeSeriesMetadata and FeatureMetadata
+from ..core.metadata import TimeSeriesMetadata, FeatureMetadata, OperationInfo
 
 class MetadataHandler:
     """
@@ -27,23 +28,24 @@ class MetadataHandler:
             default_values: Dictionary of default values for metadata fields
         """
         self.default_values = default_values or {}
-        self.required_fields = ["signal_id"]  # Signal ID is always required
-    
-    def initialize_metadata(self, **kwargs) -> SignalMetadata:
+        self.required_fields = ["signal_id"]  # Signal ID is always required for TimeSeriesMetadata
+
+    # Updated to specifically handle TimeSeriesMetadata initialization
+    def initialize_metadata(self, **kwargs) -> TimeSeriesMetadata:
         """
-        Create metadata with defaults and specified overrides.
-        
-        This method creates a new SignalMetadata instance with default values,
-        then applies any provided overrides from kwargs.
+        Create TimeSeriesMetadata with defaults and specified overrides.
+
+        This method creates a new TimeSeriesMetadata instance with default values,
+        then applies any provided overrides from kwargs. It is specific to TimeSeries signals.
         
         Args:
             **kwargs: Metadata field values to override defaults
-            
+
         Returns:
-            Initialized SignalMetadata instance
-            
+            Initialized TimeSeriesMetadata instance
+
         Raises:
-            ValueError: If a required field is missing
+            ValueError: If a required field is missing or invalid for TimeSeriesMetadata
         """
         # Start with default values
         metadata_dict = dict(self.default_values)
@@ -55,11 +57,11 @@ class MetadataHandler:
         # Apply overrides from kwargs
         metadata_dict.update(kwargs)
         
-        # Filter out any keys that are not valid for SignalMetadata
+        # Filter out any keys that are not valid for TimeSeriesMetadata
         # Need to import pandas here if not already imported globally
         import pandas as pd
         from dataclasses import fields
-        valid_fields = {f.name for f in fields(SignalMetadata)}
+        valid_fields = {f.name for f in fields(TimeSeriesMetadata)} # Use TimeSeriesMetadata
         filtered_dict = {}
         for k, v in metadata_dict.items():
             if k in valid_fields:
@@ -72,36 +74,40 @@ class MetadataHandler:
                 else:
                     filtered_dict[k] = v
 
-        # Create the metadata instance
-        metadata = SignalMetadata(**filtered_dict)
-        
-        # Ensure required fields are set
-        for field in self.required_fields:
+        # Create the TimeSeriesMetadata instance
+        metadata = TimeSeriesMetadata(**filtered_dict) # Use TimeSeriesMetadata
+
+        # Ensure required fields are set (for TimeSeriesMetadata)
+        for field in self.required_fields: # self.required_fields currently only contains 'signal_id'
             if not getattr(metadata, field, None):
                 raise ValueError(f"Required metadata field '{field}' is missing")
                 
         return metadata
-    
-    def update_metadata(self, metadata: SignalMetadata, **kwargs) -> None:
+
+    # Updated type hint to handle both metadata types
+    def update_metadata(self, metadata: Union[TimeSeriesMetadata, FeatureMetadata], **kwargs) -> None:
         """
-        Update existing metadata with new values.
-        
+        Update existing metadata (TimeSeries or Feature) with new values.
+
         Args:
-            metadata: The metadata instance to update
-            **kwargs: New field values to apply
+            metadata: The TimeSeriesMetadata or FeatureMetadata instance to update.
+            **kwargs: New field values to apply.
         """
         for key, value in kwargs.items():
             if hasattr(metadata, key):
                 setattr(metadata, key, value)
-    
-    def set_name(self, metadata: SignalMetadata, name: Optional[str] = None, key: Optional[str] = None) -> None:
+
+    # Updated type hint to handle both metadata types
+    def set_name(self, metadata: Union[TimeSeriesMetadata, FeatureMetadata], name: Optional[str] = None, key: Optional[str] = None) -> None:
         """
         Set the 'name' field using a fallback strategy. Prioritizes key if provided.
 
+        Works for both TimeSeriesMetadata and FeatureMetadata.
+
         Args:
-            metadata: The metadata instance to update
-            name: Explicit name to set (used only if key is not provided)
-            key: Collection key to use (highest priority)
+            metadata: The TimeSeriesMetadata or FeatureMetadata instance to update.
+            name: Explicit name to set (used only if key is not provided).
+            key: Collection key to use (highest priority).
         """
         # --- MODIFIED LOGIC ---
         if key:
@@ -115,15 +121,18 @@ class MetadataHandler:
             metadata.name = f"signal_{metadata.signal_id[:8]}"
         # If key is None, name is None, and metadata.name already exists, we do nothing (preserve existing name).
         # --- END MODIFIED LOGIC ---
-    
-    def record_operation(self, metadata: SignalMetadata, operation_name: str, parameters: Dict[str, Any]) -> None:
+
+    # Updated type hint to handle both metadata types
+    def record_operation(self, metadata: Union[TimeSeriesMetadata, FeatureMetadata], operation_name: str, parameters: Dict[str, Any]) -> None:
         """
         Record an operation in the metadata's operation history.
-        
+
+        Works for both TimeSeriesMetadata and FeatureMetadata.
+
         Args:
-            metadata: The metadata instance to update
-            operation_name: Name of the operation performed
-            parameters: Parameters used for the operation
+            metadata: The TimeSeriesMetadata or FeatureMetadata instance to update.
+            operation_name: Name of the operation performed.
+            parameters: Parameters used for the operation.
         """
         if metadata.operations is None: # Should not happen with default_factory=list
             metadata.operations = []

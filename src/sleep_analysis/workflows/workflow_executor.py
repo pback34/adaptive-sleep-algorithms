@@ -12,8 +12,11 @@ import os # Added os import
 from typing import Dict, Any, List, Optional, Type, Union, Callable
 
 from ..core.signal_collection import SignalCollection
-from ..core.signal_data import SignalData
-from ..signals.eeg_sleep_stage_signal import EEGSleepStageSignal # Added import
+# Removed SignalData import as it's less directly used here
+# Import TimeSeriesSignal and Feature for type checking
+from ..signals.time_series_signal import TimeSeriesSignal
+from ..features.feature import Feature
+from ..signals.eeg_sleep_stage_signal import EEGSleepStageSignal
 from ..signal_types import SignalType, SensorType, SensorModel, BodyPosition
 from ..utils import str_to_enum
 
@@ -115,13 +118,28 @@ class WorkflowExecutor:
         # --- Process Collection Settings (e.g., index_config) ---
         if "collection_settings" in workflow_config:
             settings = workflow_config["collection_settings"]
-            if "index_config" in settings:
+            if "index_config" in settings: # Check if index_config exists
+                try: # Add try block
+                    self.container.set_index_config(settings["index_config"]) # Correct indent
+                    logger.info(f"Set collection index_config to: {settings['index_config']}") # Correct indent
+                except ValueError as e: # Correct indent for except
+                    logger.error(f"Invalid index_config in collection_settings: {e}") # Correct indent
+                    raise # Re-raise error if config is invalid # Correct indent
+            if "feature_index_config" in settings:
                 try:
-                    self.container.set_index_config(settings["index_config"])
-                    logger.info(f"Set collection index_config to: {settings['index_config']}")
+                    self.container.set_feature_index_config(settings["feature_index_config"]) # Correct indent
+                    logger.info(f"Set collection feature_index_config to: {settings['feature_index_config']}")
                 except ValueError as e:
-                    logger.error(f"Invalid index_config in collection_settings: {e}")
+                    logger.error(f"Invalid feature_index_config in collection_settings: {e}")
                     raise # Re-raise error if config is invalid
+            if "epoch_grid_config" in settings:
+                try:
+                    # Store the config dict on the collection metadata
+                    self.container.metadata.epoch_grid_config = settings["epoch_grid_config"]
+                    logger.info(f"Set collection epoch_grid_config to: {settings['epoch_grid_config']}")
+                except Exception as e: # Catch potential issues setting the attribute
+                    logger.error(f"Failed to set epoch_grid_config on collection metadata: {e}")
+                    raise # Re-raise error if setting fails
         # --- End Collection Settings ---
 
         # Handle import section if present
@@ -158,17 +176,20 @@ class WorkflowExecutor:
         operation_name = step["operation"]
         parameters = step.get("parameters", {})
         inplace = step.get("inplace", False)
-        output_name = step.get("output")
-        
-        # Validate output specification for non-inplace operations
-        if not inplace and "output" not in step and step.get("type") != "collection":
-            raise ValueError("Output must be specified for non-inplace operations")
-        
+        output_key = step.get("output") # Use output_key for clarity
+
+        # Validate output specification for non-inplace operations that produce output
+        # Collection operations might not produce output to be stored via 'output' key
+        produces_output = step.get("type") != "collection" and not inplace
+        if produces_output and "output" not in step:
+            raise ValueError(f"Step '{step.get('operation', 'unknown')}' requires 'output' key because it's non-inplace and not type 'collection'")
+
         try:
+            step_type = step.get("type") # e.g., "collection", "time_series", "feature" (or inferred)
+
             # Handle collection-level operations using the new apply_operation method
-            if "type" in step and step["type"] == "collection":
+            if step_type == "collection":
                 # --- Handle Deprecated Operations First ---
-                # It's cleaner to check for deprecated names here before calling apply_operation
                 if operation_name in ['align_signals', 'generate_and_store_aligned_dataframe']:
                     error_msg = (f"Workflow operation '{operation_name}' is deprecated and removed. "
                                  f"Please update your workflow. Use 'generate_alignment_grid', "
@@ -183,25 +204,19 @@ class WorkflowExecutor:
                         return # Skip this step
 
                 # --- Specific Handling for Operations with Top-Level Args ---
+                # Updated combine_features call: output key is not used, config passed internally
                 if operation_name == "combine_features":
-                    # Extract inputs and output directly from the step definition
                     inputs = step.get("inputs")
-                    output = step.get("output")
-                    if inputs is None or output is None:
-                        # Raise error if required args are missing in the YAML step itself
-                        self._handle_error(
-                            ValueError(f"Collection operation '{operation_name}' requires 'inputs' and 'output' to be defined in the workflow step."),
-                            operation_name=f"collection.{operation_name}"
-                        )
-                        return # Stop processing this step
-
+                    if inputs is None:
+                        self._handle_error(ValueError(f"Collection operation '{operation_name}' requires 'inputs' defined in the workflow step."), operation_name=f"collection.{operation_name}")
+                        return
                     try:
-                        # Call the method directly with extracted arguments
-                        self.container.combine_features(inputs=inputs, output=output)
-                        logger.info(f"Successfully executed collection operation '{operation_name}' directly.")
+                        # Pass inputs from step, feature_index_config comes from collection metadata
+                        self.container.combine_features(inputs=inputs)
+                        logger.info(f"Successfully executed collection operation '{operation_name}'. Result stored internally.")
                     except Exception as e:
                         self._handle_error(e, operation_name=f"collection.{operation_name}")
-                        return # Stop processing this step
+                        return
 
                 # --- Special handling for summarize_signals parameters ---
                 elif operation_name == "summarize_signals":
@@ -216,6 +231,18 @@ class WorkflowExecutor:
                         self._handle_error(e, operation_name=f"collection.{operation_name}")
                         return # Stop processing this step
 
+                # --- Handle generate_epoch_grid ---
+                elif operation_name == "generate_epoch_grid":
+                     try:
+                          # Extract optional start/end time overrides from parameters
+                          start_override = parameters.get("start_time")
+                          end_override = parameters.get("end_time")
+                          self.container.generate_epoch_grid(start_time=start_override, end_time=end_override)
+                          logger.info(f"Successfully executed collection operation '{operation_name}'.")
+                     except Exception as e:
+                          self._handle_error(e, operation_name=f"collection.{operation_name}")
+                          return
+
                 # --- Fallback to Generic apply_operation for other collection ops ---
                 else:
                     try:
@@ -227,15 +254,16 @@ class WorkflowExecutor:
                         self._handle_error(e, operation_name=f"collection.{operation_name}")
                         return # Stop processing this step
 
-                # No need to handle 'output' or 'inplace' for collection ops currently defined (except summarize)
+                # No need to handle 'output' or 'inplace' for most collection ops
 
-            # Handle multi-signal operations
+            # Handle multi-signal operations (typically feature extraction)
             elif "inputs" in step:
                 if inplace:
-                    raise ValueError("Inplace operations not supported for multi-signal steps")
-                
-                # Collect signal IDs from all input specifiers
-                signal_ids = []
+                    # While technically possible for some multi-signal ops, current design focuses on non-inplace feature generation
+                    raise ValueError("Inplace operations currently not supported for multi-signal steps (feature extraction).")
+
+                # Collect signal KEYS (metadata.name) from all input specifiers
+                signal_keys = [] # Initialize signal_keys list here
                 for input_spec in step["inputs"]:
                     signals = self.container.get_signals_from_input_spec(input_spec)
                     if not signals:
@@ -246,28 +274,47 @@ class WorkflowExecutor:
                               warnings.warn(f"No signals found for input specifier '{input_spec}' in multi_signal step '{operation_name}'. Skipping this input.")
                               continue # Skip to the next input_spec in the list
 
+                    # Ensure inputs are TimeSeriesSignals for feature extraction
+                    if not all(isinstance(s, TimeSeriesSignal) for s in signals):
+                         raise TypeError(f"Input specifier '{input_spec}' for multi_signal step '{operation_name}' resolved to non-TimeSeriesSignal objects.")
                     # Extend the list with the signal KEYS (stored in metadata.name)
-                    signal_ids.extend([s.metadata.name for s in signals if s.metadata.name is not None]) # Use name (key)
+                    signal_keys.extend([s.metadata.name for s in signals if s.metadata.name is not None]) # Use name (key)
 
-                if not signal_ids:
+                if not signal_keys:
                     # This check now happens after processing all input_specs
                     if self.strict_validation:
-                        raise ValueError(f"No valid input signals resolved for operation '{operation_name}' after processing all input specifiers.")
+                        raise ValueError(f"No valid input TimeSeriesSignals resolved for operation '{operation_name}' after processing all input specifiers.")
                     else:
-                        warnings.warn(f"No input signals found for operation '{operation_name}', skipping")
+                        warnings.warn(f"No input TimeSeriesSignals found for operation '{operation_name}', skipping")
                         return
-                
+
+                # Remove step_size from parameters if present (it's global now)
+                if 'step_size' in parameters:
+                     del parameters['step_size']
+                     logger.debug(f"Removed 'step_size' from parameters for feature operation '{operation_name}' (using global epoch grid).")
+
                 # Apply the operation via the container
-                result = self.container.apply_multi_signal_operation(
-                    operation_name, signal_ids, parameters
+                result_object = self.container.apply_multi_signal_operation(
+                    operation_name, signal_keys, parameters
                 )
-                self.container.add_signal(output_name, result)
-                
-            # Handle single signal operations
+
+                # Add the result using the appropriate method based on type
+                if isinstance(result_object, Feature):
+                    self.container.add_feature(output_key, result_object)
+                    logger.info(f"Stored Feature result with key '{output_key}'")
+                elif isinstance(result_object, TimeSeriesSignal):
+                    # This path might be used for future multi-signal ops producing TimeSeries
+                    self.container.add_time_series_signal(output_key, result_object)
+                    logger.info(f"Stored TimeSeriesSignal result with key '{output_key}'")
+                else:
+                    # Should not happen if registry is correct, but handle defensively
+                    raise TypeError(f"Multi-signal operation '{operation_name}' returned unexpected type {type(result_object).__name__}")
+
+            # Handle single signal operations (typically on TimeSeriesSignals)
             elif "input" in step:
                 input_spec = step["input"]
-                
-                # Get the signals
+
+                # Get the signals (can be TimeSeriesSignal or potentially Feature, though ops on Features are rare)
                 signals = self.container.get_signals_from_input_spec(input_spec)
                 if not signals:
                     if self.strict_validation:
@@ -275,43 +322,59 @@ class WorkflowExecutor:
                     else:
                         warnings.warn(f"No signals found for input specifier '{input_spec}', skipping")
                         return
-                
-                # Handle list of inputs with list of outputs
-                if isinstance(input_spec, list) and isinstance(output_name, list):
-                    if len(input_spec) != len(output_name):
-                        raise ValueError("'input' and 'output' lists must have the same length")
-                    
-                    # Create pairs of input signals and output keys
-                    pairs = []
-                    for i, in_spec in enumerate(input_spec):
-                        in_signals = self.container.get_signals_from_input_spec(in_spec)
-                        for j, signal in enumerate(in_signals):
-                            out_key = f"{output_name[i]}_{j}" if len(in_signals) > 1 else output_name[i]
-                            pairs.append((signal, out_key))
-                    
-                    # Apply operations using the pairs
-                    for signal, out_key in pairs:
-                        if inplace:
-                            signal.apply_operation(operation_name, inplace=True, **parameters)
-                        else:
-                            result = signal.apply_operation(operation_name, **parameters)
-                            self.container.add_signal(out_key, result)
-                
-                # Handle regular single signal operations
-                else:
-                    # For in-place operations, modify signals directly
+
+                # --- Apply Operation to Resolved Signals ---
+                processed_results = [] # Store results if not inplace
+
+                for i, signal in enumerate(signals):
+                    # Determine output key for non-inplace operations
+                    current_output_key = None
+                    if not inplace:
+                        # Handle list vs single output key spec
+                        if isinstance(output_key, list):
+                            if i < len(output_key):
+                                current_output_key = output_key[i]
+                            else:
+                                raise ValueError(f"Output key list length mismatch for input spec '{input_spec}'")
+                        else: # Single output key string
+                            current_output_key = f"{output_key}_{i}" if len(signals) > 1 else output_key
+
+                        if current_output_key is None: # Should not happen if validation passed
+                             raise ValueError("Could not determine output key.")
+
+                    # Apply the operation
                     if inplace:
-                        for signal in signals:
+                        # Ensure signal has apply_operation (primarily TimeSeriesSignals)
+                        if hasattr(signal, 'apply_operation'):
                             signal.apply_operation(operation_name, inplace=True, **parameters)
-                    # For non-in-place operations, create new signals
+                            logger.debug(f"Applied inplace operation '{operation_name}' to '{signal.metadata.name}'")
+                        else:
+                             warnings.warn(f"Cannot apply inplace operation '{operation_name}' to object of type {type(signal).__name__} ('{signal.metadata.name}'). Skipping.")
                     else:
-                        for i, signal in enumerate(signals):
-                            out_key = f"{output_name}_{i}" if len(signals) > 1 else output_name
-                            result = signal.apply_operation(operation_name, **parameters)
-                            self.container.add_signal(out_key, result)
-            
+                        # Ensure signal has apply_operation
+                        if hasattr(signal, 'apply_operation'):
+                            result_object = signal.apply_operation(operation_name, **parameters) # inplace=False is default
+                            processed_results.append((current_output_key, result_object))
+                            logger.debug(f"Applied non-inplace operation '{operation_name}' to '{signal.metadata.name}'. Result key: '{current_output_key}'")
+                        else:
+                             warnings.warn(f"Cannot apply non-inplace operation '{operation_name}' to object of type {type(signal).__name__} ('{signal.metadata.name}'). Skipping.")
+
+
+                # Store non-inplace results after processing all signals for this step
+                if not inplace:
+                    for key, result in processed_results:
+                        # Add result using appropriate method
+                        if isinstance(result, TimeSeriesSignal):
+                            self.container.add_time_series_signal(key, result)
+                        elif isinstance(result, Feature):
+                            # This path is less common for single-signal ops but possible
+                            self.container.add_feature(key, result)
+                        else:
+                            raise TypeError(f"Operation '{operation_name}' returned unexpected type {type(result).__name__}")
+                        logger.info(f"Stored result with key '{key}' (type: {type(result).__name__})")
+
             # Neither collection-level, inputs, nor input was specified
-            elif step.get("type") != "collection":
+            elif step_type != "collection": # Check step_type again
                 raise ValueError("Step must specify 'input', 'inputs', or type 'collection'")
                 
         except Exception as e:
@@ -463,15 +526,26 @@ class WorkflowExecutor:
                     base_name_counts[base_name] = 0
                 
                 # Add signals with incremental indices
-                for signal in signals:
-                    # Update the signal's metadata from the spec
-                    self.container.update_signal_metadata(signal, spec)
-                    
-                    # Add to container with incremental index
+                # Ensure we only process TimeSeriesSignals returned by the importer here
+                time_series_signals_imported = [s for s in signals if isinstance(s, TimeSeriesSignal)]
+                if len(time_series_signals_imported) != len(signals):
+                     logger.warning(f"Importer for {spec['signal_type']} returned non-TimeSeriesSignal objects. Only TimeSeriesSignals will be added.")
+
+                for signal in time_series_signals_imported:
+                    # Update the signal's metadata from the spec using the correct method
+                    self.container.update_time_series_metadata(signal, spec)
+
+                    # Add to container with incremental index using the correct method
                     key = f"{base_name}_{base_name_counts[base_name]}"
-                    self.container.add_signal(key, signal)
-                    base_name_counts[base_name] += 1
-                    
+                    try:
+                         self.container.add_time_series_signal(key, signal)
+                         base_name_counts[base_name] += 1
+                         logger.info(f"Imported and added TimeSeriesSignal with key '{key}'")
+                    except ValueError as add_err:
+                         # Handle potential key collision if base_name_counts logic fails somehow
+                         logger.error(f"Failed to add imported signal with key '{key}': {add_err}. Skipping this signal.")
+                         # Don't increment count if add failed
+
             except Exception as e:
                 self._handle_error(e)
 

@@ -9,9 +9,19 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Tuple
 import datetime
 import pandas as pd
+from enum import Enum, auto
 
 from sleep_analysis.signal_types import SignalType, SensorType, SensorModel, BodyPosition, Unit
 from sleep_analysis import __version__
+
+class FeatureType(Enum):
+    """Enumeration for different categories of features."""
+    STATISTICAL = auto()
+    SPECTRAL = auto()
+    HRV = auto()
+    CORRELATION = auto()
+    CUSTOM = auto()
+    # Add more types as needed
 
 @dataclass
 class OperationInfo:
@@ -19,9 +29,13 @@ class OperationInfo:
     operation_name: str
     parameters: Dict[str, Any]
 
+# Added import for Union and uuid
+from typing import Union
+import uuid
+
 @dataclass
-class SignalMetadata:
-    """Class for storing metadata about a signal."""
+class TimeSeriesMetadata:
+    """Class for storing metadata about a time-series signal."""
     signal_id: str  # Unique identifier (immutable)
     name: Optional[str] = None  # User-friendly name for reference
     signal_type: Optional[SignalType] = None  # Type of signal (e.g., PPG, ACCELEROMETER)
@@ -38,13 +52,27 @@ class SignalMetadata:
     sensor_info: Optional[Dict[str, Any]] = None  # Additional sensor details
     source_files: List[str] = field(default_factory=list)  # List of file paths contributing to the signal
     merged: bool = False  # Flag indicating if this signal was merged from multiple sources
-    # --- FeatureSignal Specific Metadata ---
-    epoch_window_length: Optional[pd.Timedelta] = None # Duration of epochs used for features
-    epoch_step_size: Optional[pd.Timedelta] = None # Step between epochs used for features
-    feature_names: List[str] = field(default_factory=list) # List of feature column names
-    source_signal_keys: List[str] = field(default_factory=list) # Keys of source signals from collection
-    # --- End FeatureSignal Specific ---
+    # Feature-specific fields are removed from TimeSeriesMetadata
     framework_version: str = __version__  # Framework version used to process the signal
+
+@dataclass
+class FeatureMetadata:
+    """Class for storing metadata about an epoch-based feature set."""
+    feature_id: str = field(default_factory=lambda: str(uuid.uuid4())) # Unique identifier (immutable)
+    name: Optional[str] = None  # User-friendly name / key assigned in workflow
+    feature_type: Optional[FeatureType] = None # Category of features (e.g., STATISTICAL, SPECTRAL)
+    epoch_window_length: Optional[pd.Timedelta] = None # Global epoch window length used
+    epoch_step_size: Optional[pd.Timedelta] = None # Global epoch step size used (grid frequency)
+    operations: List[OperationInfo] = field(default_factory=list)  # Generation history (e.g., feature_statistics)
+    feature_names: List[str] = field(default_factory=list) # List of *simple* feature column names (e.g., "mean", "std")
+    source_signal_keys: List[str] = field(default_factory=list) # Keys of source TimeSeriesSignal(s) from collection
+    source_signal_ids: List[str] = field(default_factory=list) # UUIDs of source TimeSeriesSignal(s) for provenance
+    # --- Propagated fields (potentially used by feature_index_config) ---
+    sensor_type: Optional[Union[SensorType, str]] = None  # Type of sensor (or "mixed")
+    sensor_model: Optional[Union[SensorModel, str]] = None # Model of sensor (or "mixed")
+    body_position: Optional[Union[BodyPosition, str]] = None # Position on body (or "mixed")
+    # --- End Propagated fields ---
+    framework_version: str = __version__  # Framework version used to process the feature
 
 @dataclass
 class CollectionMetadata:
@@ -61,5 +89,7 @@ class CollectionMetadata:
     notes: str = ""  # Additional notes
     protocol_id: Optional[str] = None  # Optional: links to study protocol
     data_acquisition_notes: Optional[str] = None  # Optional: notes on data collection process
-    index_config: List[str] = field(default_factory=list)  # Multi-index configuration for dataframe exports
+    index_config: List[str] = field(default_factory=list)  # Multi-index configuration for combined time-series exports
+    feature_index_config: List[str] = field(default_factory=list) # Multi-index configuration for combined feature matrix
+    epoch_grid_config: Dict[str, str] = field(default_factory=dict) # Global epoch settings (window_length, step_size)
     framework_version: str = __version__  # Framework version used to process the collection

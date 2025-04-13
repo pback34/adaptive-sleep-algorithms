@@ -17,7 +17,8 @@ from typing import Dict, Any, Type, List, Optional, Callable # Added Callable im
 
 from ..core.signal_data import SignalData
 from ..signal_types import SignalType
-from ..core.metadata import OperationInfo
+# Updated import to use TimeSeriesMetadata
+from ..core.metadata import OperationInfo, TimeSeriesMetadata
 from ..core.metadata_handler import MetadataHandler
 
 
@@ -259,6 +260,7 @@ class TimeSeriesSignal(SignalData):
             raise ValueError(f"Core logic for {call_type} '{operation_name}' failed: {e}") from e
 
         # --- 5. Handle Inplace vs. New Instance ---
+        # Updated type hint
         instance_to_update_metadata_on: 'TimeSeriesSignal'
         return_signal: 'SignalData'
 
@@ -295,12 +297,15 @@ class TimeSeriesSignal(SignalData):
             # Pass the existing handler to the new signal if it exists
             handler = getattr(self, 'handler', None)
 
-            # Instantiate the new signal
+            # Instantiate the new signal using the correct output_class
+            # The metadata_dict created from asdict(self.metadata) will contain
+            # the necessary fields for TimeSeriesMetadata.
             new_signal = output_class(data=result_data, metadata=metadata_dict, handler=handler)
-            instance_to_update_metadata_on = new_signal # Metadata already set during init
+            # Ensure the instance to update is correctly typed if needed, although assignment works polymorphically.
+            # instance_to_update_metadata_on = new_signal # This assignment is okay
             return_signal = new_signal
 
-        # --- 4. Record Operation (only needed for inplace) ---
+        # --- 6. Record Operation (only needed for inplace) ---
         if inplace:
             if self.handler:
                 logger.debug(f"Recording inplace operation '{operation_name}' in metadata.")
@@ -309,11 +314,12 @@ class TimeSeriesSignal(SignalData):
                  logger.warning(f"Cannot record inplace operation '{operation_name}': Metadata handler not found.")
 
 
-        # --- 5. Update Sample Rate Metadata ---
+        # --- 7. Update Sample Rate Metadata ---
         # The new signal's __init__ calls this, so only explicitly call for inplace
         if inplace:
              logger.debug(f"Updating sample rate metadata after inplace operation '{operation_name}'.")
-             instance_to_update_metadata_on._update_sample_rate_metadata()
+             # Ensure we call the method on the correct instance (which is 'self' if inplace)
+             self._update_sample_rate_metadata()
         # For new signals, __init__ already called it.
 
         logger.debug(f"Operation '{operation_name}' processing finished.")

@@ -15,8 +15,15 @@ import warnings
 import logging # Ensure logging is imported
 from enum import Enum # Added import
 
-from ..core import SignalCollection, SignalData, SignalMetadata, CollectionMetadata
-from ..signals.feature_signal import FeatureSignal # Added import
+# Updated core imports for refactored metadata and feature classes
+from ..core import (
+    SignalCollection, CollectionMetadata, TimeSeriesMetadata, FeatureMetadata
+)
+# Import specific signal/feature types needed
+from ..signals.time_series_signal import TimeSeriesSignal
+from ..features.feature import Feature
+# Removed SignalData import as it's less directly used
+# Removed FeatureSignal import as Feature is now used
 
 
 class ExportModule:
@@ -59,8 +66,7 @@ class ExportModule:
             ValueError: If an unsupported format is specified or if specified signal keys are not found.
             IOError: If there are issues creating output directory or writing files.
         """
-        # Logger is available at module level or within specific methods if needed
-        logger = logging.getLogger(__name__) # Keep logger init here for use within this method
+        logger = logging.getLogger(__name__)
 
         # Validate formats
         for fmt in formats:
@@ -80,45 +86,58 @@ class ExportModule:
             export_individual = True # Export the specified signals individually
             export_combined = False # Explicit signals override combined export for this task
             if include_combined:
-                logger.warning(f"Both 'signals' and 'include_combined=True' specified for export to '{output_dir}'. Exporting specified signals only.")
+                logger.warning(f"Both 'signals' and 'include_combined=True' specified for export to '{output_dir}'. Exporting specified signals/features only.")
 
-            # Resolve signal keys
+            # Resolve signal/feature keys from both dictionaries
             resolved_keys = []
             missing_keys = []
+            search_space = {**self.collection.time_series_signals, **self.collection.features}
             for key_spec in signals:
-                if key_spec in self.collection.signals:
+                if key_spec in search_space:
                     resolved_keys.append(key_spec)
                 else:
-                    missing_keys.append(key_spec)
+                    # Try resolving base names if exact key not found
+                    found_base = False
+                    for existing_key in search_space:
+                         if existing_key.startswith(f"{key_spec}_") and existing_key[len(key_spec)+1:].isdigit():
+                              resolved_keys.append(existing_key)
+                              found_base = True
+                    if not found_base:
+                         missing_keys.append(key_spec)
 
             if missing_keys:
-                 # Handle error/warning based on strictness? For now, raise error.
-                 raise ValueError(f"Specified signal key(s) not found in collection for export: {missing_keys}")
+                 raise ValueError(f"Specified signal/feature key(s) or base name(s) not found in collection for export: {missing_keys}")
             if not resolved_keys:
-                 raise ValueError(f"No valid signals found for export based on specification: {signals}")
+                 raise ValueError(f"No valid signals or features found for export based on specification: {signals}")
 
-            signals_to_process = {key: self.collection.signals[key] for key in resolved_keys}
+            # Deduplicate resolved keys (in case base name resolution added duplicates)
+            resolved_keys = sorted(list(set(resolved_keys)))
+            logger.debug(f"Resolved export keys: {resolved_keys}")
+
+            signals_to_process = {key: search_space[key] for key in resolved_keys}
             metadata_keys_to_include = resolved_keys # Filter metadata
 
         elif include_combined:
-            logger.info("Exporting combined signal only.")
-            export_individual = False # Don't export individual signals
-            export_combined = True
-            # Include metadata for all non-temporary signals for context
-            metadata_keys_to_include = [k for k, s in self.collection.signals.items() if not s.metadata.temporary]
+            logger.info("Exporting combined time-series signal only.")
+            export_individual = False # Don't export individual signals/features
+            export_combined = True # This flag specifically refers to the time-series combined df
+            # Include metadata for all non-temporary time-series signals for context
+            metadata_keys_to_include = [k for k, s in self.collection.time_series_signals.items() if not s.metadata.temporary]
 
         else:
-            logger.info("Exporting all individual non-temporary signals.")
+            logger.info("Exporting all individual non-temporary TimeSeriesSignals and Features.")
             export_individual = True
             export_combined = False # Default is not to export combined unless requested
-            # Select all non-temporary signals
-            signals_to_process = {k: s for k, s in self.collection.signals.items() if not s.metadata.temporary}
+            # Select all non-temporary signals and features
+            signals_to_process = {
+                **{k: s for k, s in self.collection.time_series_signals.items() if not s.metadata.temporary},
+                **self.collection.features # Features don't have 'temporary' flag currently
+            }
             if not signals_to_process:
-                 logger.warning(f"No non-temporary signals found to export individually to '{output_dir}'.")
-                 # If no individual signals, check if combined should be exported as fallback? No, stick to logic.
-                 export_individual = False # Ensure flag is false if no signals found
+                 logger.warning(f"No non-temporary signals or features found to export individually to '{output_dir}'.")
+                 export_individual = False # Ensure flag is false if no items found
 
-            metadata_keys_to_include = list(signals_to_process.keys()) # Include metadata for all exported signals
+            metadata_keys_to_include = list(signals_to_process.keys()) # Include metadata for all exported items
 
         # Serialize metadata based on the determined keys
         serialized_metadata = self._serialize_metadata(signal_keys_to_include=metadata_keys_to_include)
@@ -246,27 +265,37 @@ class ExportModule:
         # Serialize collection metadata
         collection_metadata = make_json_serializable(asdict(self.collection.metadata))
 
-        # Serialize signal metadata, filtering if necessary
-        signals_metadata = {}
-        keys_to_iterate = signal_keys_to_include if signal_keys_to_include is not None else self.collection.signals.keys()
+        # Serialize metadata for TimeSeriesSignals and Features separately
+        time_series_metadata = {}
+        feature_metadata = {}
+        keys_to_iterate = signal_keys_to_include if signal_keys_to_include is not None else list(self.collection.time_series_signals.keys()) + list(self.collection.features.keys())
 
         for key in keys_to_iterate:
-            if key in self.collection.signals:
-                signal = self.collection.signals[key]
-                signals_metadata[key] = make_json_serializable(asdict(signal.metadata))
+            if key in self.collection.time_series_signals:
+                signal = self.collection.time_series_signals[key]
+                # Only include if key was requested or if all keys are included
+                if signal_keys_to_include is None or key in signal_keys_to_include:
+                    time_series_metadata[key] = make_json_serializable(asdict(signal.metadata))
+            elif key in self.collection.features:
+                feature = self.collection.features[key]
+                # Only include if key was requested or if all keys are included
+                if signal_keys_to_include is None or key in signal_keys_to_include:
+                    feature_metadata[key] = make_json_serializable(asdict(feature.metadata))
             else:
                 # This case should ideally not happen if keys are validated before calling
-                logger.warning(f"Signal key '{key}' requested for metadata serialization not found in collection.")
+                logger.warning(f"Key '{key}' requested for metadata serialization not found in time_series_signals or features.")
 
-        # Prepare combined metadata
+        # Prepare combined metadata structure
         metadata = {
             "collection": collection_metadata,
-            "signals": signals_metadata
+            "time_series_signals": time_series_metadata,
+            "features": feature_metadata
         }
 
         return metadata
 
-    def _export_excel(self, output_dir: str, signals_to_export: Dict[str, SignalData],
+    # Updated type hint for signals_to_export
+    def _export_excel(self, output_dir: str, signals_to_export: Dict[str, Union[TimeSeriesSignal, Feature]],
                       export_combined: bool, summary_df: Optional[pd.DataFrame],
                       serialized_metadata: Dict[str, Any]) -> None:
         """
@@ -274,7 +303,7 @@ class ExportModule:
 
         Args:
             output_dir: Directory where Excel file(s) will be saved.
-            signals_to_export: Dictionary of individual signals {key: SignalData} to export.
+            signals_to_export: Dictionary of individual signals/features {key: TimeSeriesSignal or Feature} to export.
             export_combined: Whether to export the combined dataframe.
             summary_df: Optional summary DataFrame to export.
             serialized_metadata: Pre-serialized metadata dictionary.
@@ -339,18 +368,34 @@ class ExportModule:
 
             if combined_df is not None and not combined_df.empty:
                 logger.info(f"Retrieved stored combined dataframe (shape: {combined_df.shape}) for Excel export.")
-                # Format timestamp before writing
-                combined_df_formatted = self._format_timestamp(combined_df.copy()) # Work on copy
 
-                # Excel doesn't support timezone-aware datetimes, remove timezone
-                if 'timestamp' in combined_df_formatted.columns and pd.api.types.is_datetime64_any_dtype(combined_df_formatted['timestamp']):
-                    if combined_df_formatted['timestamp'].dt.tz is not None:
-                        logger.debug("Removing timezone information for Excel export.")
-                        combined_df_formatted['timestamp'] = combined_df_formatted['timestamp'].dt.tz_localize(None)
+                # Check if columns are MultiIndex
+                if isinstance(combined_df.columns, pd.MultiIndex):
+                    logger.debug("Handling combined export for MultiIndex columns.")
+                    # Work on a copy
+                    combined_df_excel = combined_df.copy()
+                    # Remove timezone from index for Excel compatibility
+                    if isinstance(combined_df_excel.index, pd.DatetimeIndex) and combined_df_excel.index.tz is not None:
+                        logger.debug("Removing timezone from DatetimeIndex for Excel export.")
+                        combined_df_excel.index = combined_df_excel.index.tz_localize(None)
+                    # Write with index=True (default) for DatetimeIndex
+                    combined_df_excel.to_excel(combined_file, na_rep='')
+                    logger.info(f"Successfully exported combined data with MultiIndex columns to {combined_file}")
+                else:
+                    logger.debug("Handling combined export for standard columns.")
+                    # Format timestamp to column for standard export
+                    combined_df_formatted = self._format_timestamp(combined_df.copy()) # Work on copy
 
-                # Ensure no NaN rows are included and index is properly handled
-                combined_df_formatted.to_excel(combined_file, na_rep='', index=False) # Use index=False as timestamp is a column
-                logger.info(f"Successfully exported combined data to {combined_file}")
+                    # Excel doesn't support timezone-aware datetimes, remove timezone from column
+                    if 'timestamp' in combined_df_formatted.columns and pd.api.types.is_datetime64_any_dtype(combined_df_formatted['timestamp']):
+                        if combined_df_formatted['timestamp'].dt.tz is not None:
+                            logger.debug("Removing timezone information from timestamp column for Excel export.")
+                            combined_df_formatted['timestamp'] = combined_df_formatted['timestamp'].dt.tz_localize(None)
+
+                    # Write with index=False as timestamp is now a column
+                    combined_df_formatted.to_excel(combined_file, na_rep='', index=False)
+                    logger.info(f"Successfully exported combined data with standard columns to {combined_file}")
+
             elif combined_df is None:
                 logger.warning("Stored combined dataframe not found or generation failed. Skipping combined Excel export.")
                 warnings.warn("Stored combined dataframe not found or generation failed. Skipping combined Excel export.")
@@ -381,7 +426,8 @@ class ExportModule:
                 warnings.warn("Failed to export summary dataframe to Excel.")
 
 
-    def _export_csv(self, output_dir: str, signals_to_export: Dict[str, SignalData],
+    # Updated type hint for signals_to_export
+    def _export_csv(self, output_dir: str, signals_to_export: Dict[str, Union[TimeSeriesSignal, Feature]],
                     export_combined: bool, summary_df: Optional[pd.DataFrame],
                     serialized_metadata: Dict[str, Any]) -> None:
         """
@@ -389,7 +435,7 @@ class ExportModule:
 
         Args:
             output_dir: Directory where CSV file(s) will be saved.
-            signals_to_export: Dictionary of individual signals {key: SignalData} to export.
+            signals_to_export: Dictionary of individual signals/features {key: TimeSeriesSignal or Feature} to export.
             export_combined: Whether to export the combined dataframe.
             summary_df: Optional summary DataFrame to export.
             serialized_metadata: Pre-serialized metadata dictionary.
@@ -425,9 +471,8 @@ class ExportModule:
                         # Format the timestamp to be a column not an index
                         data_formatted = self._format_timestamp(data)
 
-                        # --- MultiIndex columns should now exist directly in the FeatureSignal's data ---
+                        # --- MultiIndex columns should now exist directly in the Feature's data ---
                         # --- if created by combine_features. No need to create it here. ---
-                        # Removed the call to _create_multi_index_for_features
 
                         file_path = os.path.join(signals_dir, f"{key}.csv")
 
@@ -511,104 +556,11 @@ class ExportModule:
                 warnings.warn("Failed to export summary dataframe to CSV.")
 
 
-    def _create_multi_index_for_features(self, feature_signal: FeatureSignal, index_config: List[str]) -> Optional[pd.MultiIndex]:
-        """
-        Creates a MultiIndex for a FeatureSignal DataFrame based on source signal metadata.
-
-        Args:
-            feature_signal: The FeatureSignal instance.
-            index_config: The list of metadata fields to use for index levels.
-
-        Returns:
-            A pandas MultiIndex or None if creation fails.
-        """
-        logger = logging.getLogger(__name__)
-        multi_index_tuples = []
-        new_column_names = [] # Store the base feature names for the last level
-
-        # Get source signal keys from the feature signal's metadata
-        source_keys = feature_signal.metadata.source_signal_keys
-        if not source_keys:
-             logger.warning(f"FeatureSignal '{feature_signal.metadata.name}' has no source_signal_keys in metadata. Cannot create MultiIndex.")
-             return None
-
-        # Create a mapping from source key to source signal object for quick lookup
-        source_signal_map = {}
-        for sk in source_keys:
-             if sk in self.collection.signals:
-                  source_signal_map[sk] = self.collection.signals[sk]
-             else:
-                  # Try resolving base names if the exact key isn't found (might happen if source_signal_keys stores base names)
-                  found = False
-                  for existing_key in self.collection.signals:
-                       if existing_key.startswith(f"{sk}_") and existing_key[len(sk)+1:].isdigit():
-                            # Assuming the first match is sufficient if base names were stored
-                            source_signal_map[sk] = self.collection.signals[existing_key]
-                            logger.debug(f"Resolved base name '{sk}' to source key '{existing_key}' for MultiIndex creation.")
-                            found = True
-                            break
-                  if not found:
-                       logger.warning(f"Source signal key '{sk}' (from FeatureSignal metadata) not found in collection. Cannot create MultiIndex accurately.")
-                       return None # Cannot proceed without source metadata
+    # Removed _create_multi_index_for_features method as it's no longer needed.
+    # MultiIndex creation for combined features is handled by SignalCollection.combine_features.
 
 
-        feature_data = feature_signal.get_data()
-        if feature_data is None or feature_data.empty:
-             logger.warning(f"FeatureSignal '{feature_signal.metadata.name}' data is empty. Cannot create MultiIndex.")
-             return None
-
-        for flat_col_name in feature_data.columns:
-            found_source = False
-            # Iterate through known source keys to find the matching prefix
-            # Sort by length descending to match longer keys first (e.g., 'hr_10' before 'hr_1')
-            sorted_source_keys = sorted(source_signal_map.keys(), key=len, reverse=True)
-
-            for source_key in sorted_source_keys:
-                # Check if the flat column name starts with the source key and an underscore
-                if flat_col_name.startswith(f"{source_key}_"):
-                    source_signal = source_signal_map[source_key]
-                    base_feature_name = flat_col_name[len(source_key) + 1:] # Extract the part after "<source_key>_"
-
-                    metadata_values = []
-                    for field in index_config:
-                        value = getattr(source_signal.metadata, field, None)
-                        # Handle specific cases like name fallback or None values
-                        value = source_key if value is None and field == 'name' else value # Use the key if name is None
-                        value = "N/A" if value is None else value
-                        # Convert enums to their names for the header
-                        value = value.name if hasattr(value, 'name') and isinstance(value, Enum) else str(value)
-                        metadata_values.append(value)
-
-                    multi_index_tuples.append(tuple(metadata_values))
-                    new_column_names.append(base_feature_name) # Add base feature name for the last level
-                    found_source = True
-                    break # Stop after finding the first matching source key prefix
-
-            if not found_source:
-                 logger.warning(f"Could not map column '{flat_col_name}' to any source key {list(source_signal_map.keys())}. Using flat name.")
-                 # Fallback: Use 'Unknown' for metadata levels and the original flat name for the last level
-                 unknown_meta = ["Unknown"] * len(index_config)
-                 multi_index_tuples.append(tuple(unknown_meta))
-                 new_column_names.append(flat_col_name)
-
-
-        if not multi_index_tuples:
-             logger.warning("No MultiIndex tuples generated.")
-             return None
-
-        # Create the MultiIndex using the metadata tuples and the extracted base feature names
-        try:
-             # Combine metadata tuples and base feature names for final index creation
-             final_tuples = [meta_tuple + (feat_name,) for meta_tuple, feat_name in zip(multi_index_tuples, new_column_names)]
-             level_names = index_config + ['feature'] # Name the levels
-             multi_index = pd.MultiIndex.from_tuples(final_tuples, names=level_names)
-             return multi_index
-        except Exception as e:
-             logger.error(f"Failed to create MultiIndex from tuples: {e}", exc_info=True)
-             return None
-
-
-    def _export_pickle(self, output_dir: str, signals_to_export: Dict[str, SignalData],
+    def _export_pickle(self, output_dir: str, signals_to_export: Dict[str, Union[TimeSeriesSignal, Feature]], # Updated type hint
                        export_combined: bool, summary_df: Optional[pd.DataFrame],
                        serialized_metadata: Dict[str, Any]) -> None:
         """
@@ -668,7 +620,8 @@ class ExportModule:
             logger.error(f"Failed to save data to Pickle file '{pickle_file}': {e}", exc_info=True)
             raise IOError(f"Failed to save Pickle file.") from e
 
-    def _export_hdf5(self, output_dir: str, signals_to_export: Dict[str, SignalData],
+    # Updated type hint for signals_to_export
+    def _export_hdf5(self, output_dir: str, signals_to_export: Dict[str, Union[TimeSeriesSignal, Feature]],
                      export_combined: bool, summary_df: Optional[pd.DataFrame],
                      serialized_metadata: Dict[str, Any]) -> None:
         """
@@ -676,7 +629,7 @@ class ExportModule:
 
         Args:
             output_dir: Directory where HDF5 file(s) will be saved.
-            signals_to_export: Dictionary of individual signals {key: SignalData} to export.
+            signals_to_export: Dictionary of individual signals/features {key: TimeSeriesSignal or Feature} to export.
             export_combined: Whether to export the combined dataframe.
             summary_df: Optional summary DataFrame to export.
             serialized_metadata: Pre-serialized metadata dictionary.

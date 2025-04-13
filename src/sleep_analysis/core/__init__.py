@@ -1,8 +1,17 @@
-"""Core module for signal data and metadata classes."""
+"""Core module for signal data, features, metadata, and collection classes."""
 
 from .signal_data import SignalData
-from .metadata import SignalMetadata, CollectionMetadata, OperationInfo
+# Updated metadata imports
+from .metadata import TimeSeriesMetadata, FeatureMetadata, CollectionMetadata, OperationInfo, FeatureType
 from .signal_collection import SignalCollection
 from .metadata_handler import MetadataHandler
+# Import Feature class from its new location
+from ..features.feature import Feature
 
-__all__ = ['SignalData', 'SignalMetadata', 'CollectionMetadata', 'OperationInfo', 'SignalCollection', 'MetadataHandler']
+__all__ = [
+    'SignalData',
+    'TimeSeriesMetadata', 'FeatureMetadata', 'CollectionMetadata', 'OperationInfo', 'FeatureType', # Updated metadata
+    'Feature', # Added Feature
+    'SignalCollection',
+    'MetadataHandler'
+    ]
