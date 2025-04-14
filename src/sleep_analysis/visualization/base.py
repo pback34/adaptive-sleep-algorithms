@@ -5,6 +5,7 @@ This module defines the VisualizerBase abstract base class which provides
 a unified interface for all visualization backends used in the sleep analysis framework.
 """
 
+import warnings # Added import
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Union, Tuple
 import pandas as pd
@@ -578,8 +579,31 @@ class VisualizerBase(ABC):
         Returns:
             A backend-specific figure object
         """
-        # For now, default to time series plot
-        return self.create_time_series_plot(signal, **kwargs)
+        from ..signals.time_series_signal import TimeSeriesSignal
+        from ..features.feature import Feature
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if isinstance(signal, TimeSeriesSignal):
+            # Handle specific visualization for known TimeSeriesSignal types
+            if isinstance(signal, EEGSleepStageSignal):
+                 logger.debug(f"Using hypnogram plot for EEGSleepStageSignal: {signal.metadata.name}")
+                 return self.create_hypnogram_plot(signal, **kwargs)
+            else:
+                 logger.debug(f"Using default time series plot for signal: {signal.metadata.name}")
+                 return self.create_time_series_plot(signal, **kwargs)
+        elif isinstance(signal, Feature):
+            # Visualization for Feature objects is not yet defined
+            logger.warning(f"Visualization for Feature objects (like '{signal.metadata.name}') is not implemented yet.")
+            # Option 1: Raise error
+            raise NotImplementedError(f"Visualization for Feature objects (type: {type(signal).__name__}) is not implemented.")
+            # Option 2: Return an empty figure with a message
+            # fig = self.create_figure(**kwargs)
+            # self.set_title(fig, f"Feature: {signal.metadata.name} (No Visualization)")
+            # return fig
+        else:
+            logger.error(f"Unsupported signal data type for visualization: {type(signal).__name__}")
+            raise TypeError(f"Cannot visualize object of type {type(signal).__name__}")
     
     def visualize_collection(self, collection: SignalCollection, 
                            signals: Optional[List[str]] = None,
@@ -593,203 +617,168 @@ class VisualizerBase(ABC):
             signals: Optional list of signal keys or base names to visualize (if None, visualize all)
             layout: Layout type, one of "vertical", "horizontal", "grid"
             **kwargs: Optional visualization parameters
-                - shared_x_range: If True, synchronize x-axes across all plots
+                - link_x_axes: If True, synchronize x-axes across all plots (default: True)
                 - time_range: Optional tuple of (start_time, end_time) to restrict the view
                 - subplot_titles: List of titles for subplots (optional)
-                - strict: If False, skip missing signals with a warning instead of raising an error
-            
+                - strict: If False, skip missing signals with a warning instead of raising an error (default: True)
+
         Returns:
             A backend-specific figure or layout object
         """
         import logging
+        import math
+        from ..signals.time_series_signal import TimeSeriesSignal # Import TimeSeriesSignal
+
         logger = logging.getLogger(__name__)
-        
-        # Handle signal selection
-        if signals is None:
-            # Get all signals from the collection
-            signals = list(collection.signals.keys())
-            logger.info(f"Using all {len(signals)} signals from collection")
-        else:
-            # Process signal specifiers which could be keys or base names
-            expanded_signals = []
-            for signal_spec in signals:
-                # Try to get signals by base name or specific key
-                matching_signals = collection.get_signals(input_spec=signal_spec)
-                
-                if matching_signals:
-                    # If we got signals by base name, we'll have SignalData objects
-                    # We need to find their keys in the collection
-                    for matching_signal in matching_signals:
-                        # Find the key for this signal in the collection
-                        for key, signal in collection.signals.items():
-                            if signal is matching_signal:
-                                expanded_signals.append(key)
-                                break
-                else:
-                    # If it's an exact key in the collection, use it directly
-                    if signal_spec in collection.signals:
-                        expanded_signals.append(signal_spec)
-                    else:
-                        # No matches found for this specifier
-                        strict = kwargs.get('strict', True)
-                        if strict:
-                            raise ValueError(f"No signals found for specifier '{signal_spec}'")
-                        else:
-                            logger.warning(f"No signals found for specifier '{signal_spec}', skipping")
-            
-            signals = expanded_signals
-            logger.info(f"Found {len(signals)} signals matching the provided specifiers")
-        
-        if not signals:
-            logger.warning("No signals selected for visualization")
-            # Create an empty figure with a message
-            fig = self.create_figure(**kwargs)
-            # Add a text annotation saying "No signals to display"
-            return fig
-            
-        logger.info(f"Visualizing collection with {len(signals)} signals using {layout} layout")
-        
-        # Generate subplot titles if not explicitly provided
+        strict = kwargs.get('strict', True)
+
+        # --- Retrieve Signals ---
+        try:
+            # Use get_signals to handle keys, base names, and filtering
+            signals_to_plot = collection.get_signals(input_spec=signals)
+        except Exception as e:
+            logger.error(f"Error retrieving signals for visualization spec '{signals}': {e}", exc_info=True)
+            if strict: raise
+            else: return self.create_figure(title=f"Error Loading Signals: {e}")
+
+        if not signals_to_plot:
+            msg = f"No signals found matching specification '{signals}' for visualization."
+            logger.warning(msg)
+            if strict: raise ValueError(msg)
+            else: return self.create_figure(title="No Signals Found")
+
+        logger.info(f"Visualizing {len(signals_to_plot)} signals/features using {layout} layout")
+
+        # --- Generate Subplot Titles ---
         subplot_titles = kwargs.get('subplot_titles', [])
-        if not subplot_titles and len(signals) > 1:
-            logger.debug("Generating subplot titles from signal metadata")
+        if not subplot_titles and len(signals_to_plot) > 1:
+            logger.debug("Generating subplot titles from signal/feature metadata")
             subplot_titles = []
-            for signal_key in signals:
+            for item in signals_to_plot:
                 try:
-                    signal = collection.get_signal(signal_key)
-                    
-                    # Start with the signal name
                     title_parts = []
-                    
-                    # Add sensor model if available
-                    if hasattr(signal.metadata, 'sensor_model') and signal.metadata.sensor_model:
-                        model = signal.metadata.sensor_model
+                    # Add sensor model if available (TimeSeriesSignal)
+                    if hasattr(item.metadata, 'sensor_model') and item.metadata.sensor_model:
+                        model = item.metadata.sensor_model
                         model_name = model.name if hasattr(model, 'name') else str(model)
                         title_parts.append(model_name)
-                    
-                    # Add signal name
-                    if signal.metadata.name:
-                        title_parts.append(signal.metadata.name)
-                    else:
-                        title_parts.append(signal_key)
-                    
-                    # Add body position if available
-                    if hasattr(signal.metadata, 'body_position') and signal.metadata.body_position:
-                        position = signal.metadata.body_position
+
+                    # Add name (common to both)
+                    if item.metadata.name:
+                        title_parts.append(item.metadata.name)
+                    else: # Fallback to ID if name is missing
+                        item_id = item.metadata.signal_id if hasattr(item.metadata, 'signal_id') else item.metadata.feature_id
+                        title_parts.append(f"ID: {item_id[:8]}")
+
+                    # Add body position if available (TimeSeriesSignal)
+                    if hasattr(item.metadata, 'body_position') and item.metadata.body_position:
+                        position = item.metadata.body_position
                         position_name = position.name if hasattr(position, 'name') else str(position)
                         title_parts.append(f"({position_name})")
-                    
+
+                    # Add feature type if available (Feature)
+                    if hasattr(item.metadata, 'feature_type') and item.metadata.feature_type:
+                        ftype = item.metadata.feature_type
+                        ftype_name = ftype.name if hasattr(ftype, 'name') else str(ftype)
+                        title_parts.append(f"[{ftype_name}]")
+
                     title = " ".join(title_parts)
                     subplot_titles.append(title)
                 except Exception as e:
-                    logger.warning(f"Could not generate title for signal '{signal_key}': {str(e)}")
-                    subplot_titles.append(signal_key)
-            
+                    item_id = item.metadata.signal_id if hasattr(item.metadata, 'signal_id') else item.metadata.feature_id
+                    logger.warning(f"Could not generate title for item '{item_id[:8]}': {str(e)}")
+                    subplot_titles.append(item.metadata.name or f"ID: {item_id[:8]}")
+
             # Add subplot_titles to kwargs for use by visualizer implementations
             kwargs['subplot_titles'] = subplot_titles
-        
-        # Determine common time range if needed
+
+        # --- Determine Common Time Range (only for TimeSeriesSignals) ---
         link_x_axes = kwargs.get('link_x_axes', True)
-        
-        if link_x_axes and len(signals) > 1:
-            # Find common time bounds across all signals
+        if link_x_axes and len(signals_to_plot) > 1:
             min_times = []
             max_times = []
-            
-            for signal_key in signals:
+            # Iterate only over TimeSeriesSignals for time range calculation
+            ts_signals = [s for s in signals_to_plot if isinstance(s, TimeSeriesSignal)]
+            for signal in ts_signals:
                 try:
-                    signal = collection.get_signal(signal_key)
                     data = signal.get_data()
-                    if data is not None and len(data) > 0:
+                    if data is not None and isinstance(data.index, pd.DatetimeIndex) and not data.empty:
                         min_times.append(data.index.min())
                         max_times.append(data.index.max())
                 except Exception as e:
-                    logger.warning(f"Could not get time range for signal '{signal_key}': {str(e)}")
-            
+                    logger.warning(f"Could not get time range for signal '{signal.metadata.name}': {str(e)}")
+
             if min_times and max_times:
-                # Use the intersection of all time ranges
                 common_start = max(min_times)
                 common_end = min(max_times)
-                
-                logger.info(f"Using common time range: {common_start} to {common_end}")
-                
+                logger.info(f"Using common time range for TimeSeriesSignals: {common_start} to {common_end}")
+
                 # Override time range in kwargs if specified
                 if 'time_range' in kwargs:
                     user_start, user_end = kwargs['time_range']
-                    common_start = user_start if user_start else common_start
-                    common_end = user_end if user_end else common_end
-                
+                    common_start = pd.Timestamp(user_start) if user_start else common_start
+                    common_end = pd.Timestamp(user_end) if user_end else common_end
+                    logger.info(f"Applying user time_range override: {common_start} to {common_end}")
+
                 kwargs['x_min'] = common_start
                 kwargs['x_max'] = common_end
-        
-        # Create figures for each signal
+
+        # --- Create Figures ---
         figures = []
-        for signal_key in signals:
+        for i, item in enumerate(signals_to_plot):
             try:
-                signal = collection.get_signal(signal_key)
-                # Add signal key to the title if not already specified
-                if 'title' not in kwargs:
-                    title = signal.metadata.name or signal_key
-                    signal_kwargs = {**kwargs, 'title': title}
-                else:
-                    signal_kwargs = kwargs
+                # Use subplot title if available, otherwise generate default
+                plot_title = subplot_titles[i] if i < len(subplot_titles) else (item.metadata.name or f"Item {i}")
+                signal_kwargs = {**kwargs, 'title': plot_title}
 
                 # Check if this signal is categorical and might need a default y-range
                 is_categorical_signal = False
-                primary_col = signal.get_data().columns[0]
-                signal_data = signal.get_data()
-                if pd.api.types.is_categorical_dtype(signal_data[primary_col]) or \
-                   pd.api.types.is_object_dtype(signal_data[primary_col]) or \
-                   (hasattr(signal, 'signal_type') and signal.signal_type == SignalType.EEG_SLEEP_STAGE):
-                    is_categorical_signal = True
+                if isinstance(item, TimeSeriesSignal):
+                    try:
+                        signal_data = item.get_data()
+                        if not signal_data.empty:
+                            primary_col = signal_data.columns[0]
+                            if pd.api.types.is_categorical_dtype(signal_data[primary_col]) or \
+                               pd.api.types.is_object_dtype(signal_data[primary_col]) or \
+                               (hasattr(item, 'signal_type') and item.signal_type == SignalType.EEG_SLEEP_STAGE):
+                                is_categorical_signal = True
+                    except Exception as e:
+                         logger.warning(f"Could not determine if signal '{item.metadata.name}' is categorical: {e}")
 
-                # If categorical and no y-limits are set, provide a default for Bokeh
-                # This helps when it's the only plot or determines linked axis range
+                # If categorical and no y-limits are set, provide a default
                 if is_categorical_signal and 'y_min' not in signal_kwargs and 'y_max' not in signal_kwargs:
-                     # Set a default range like (-0.5, 0.5) or (0, 1)
-                     # Let's use (0, 1) as it matches the default in add_categorical_regions
                      signal_kwargs.setdefault('y_min', 0)
                      signal_kwargs.setdefault('y_max', 1)
-                     logger.debug(f"Setting default y-range (0, 1) for categorical signal '{signal_key}'")
+                     logger.debug(f"Setting default y-range (0, 1) for categorical signal '{item.metadata.name}'")
 
-                figure = self.visualize_signal(signal, **signal_kwargs)
+                # Visualize the item (signal or feature)
+                figure = self.visualize_signal(item, **signal_kwargs)
                 figures.append(figure)
+            except NotImplementedError as nie:
+                 logger.warning(f"Skipping visualization for item '{item.metadata.name}': {nie}")
             except Exception as e:
-                import warnings
-                warnings.warn(f"Could not visualize signal '{signal_key}': {str(e)}")
-                logger.error(f"Could not visualize signal '{signal_key}': {str(e)}")
-        
-        # Apply the layout
+                logger.error(f"Could not visualize item '{item.metadata.name}': {str(e)}", exc_info=True)
+                if strict: raise
+                else: warnings.warn(f"Could not visualize item '{item.metadata.name}': {str(e)}")
+
+        # --- Apply Layout ---
         if not figures:
-            raise ValueError("No figures created - check signal keys")
-            
+            msg = "No figures were created for visualization."
+            logger.warning(msg)
+            if strict: raise ValueError(msg)
+            else: return self.create_figure(title="No Figures Created")
+
         if layout == "vertical":
             return self.create_grid_layout(figures, len(figures), 1, **kwargs)
         elif layout == "horizontal":
             return self.create_grid_layout(figures, 1, len(figures), **kwargs)
         elif layout == "grid":
-            # Calculate a reasonable grid size based on the number of figures
-            import math
             cols = math.ceil(math.sqrt(len(figures)))
             rows = math.ceil(len(figures) / cols)
             return self.create_grid_layout(figures, rows, cols, **kwargs)
-        elif layout == "overlay":
-            # For overlaying, return only the first figure but with all signals
-            # This requires backend-specific implementation and is not fully supported
-            logger.warning("Overlay layout is experimental and may not work with all backends")
-            
-            # If we're overlaying multiple signals, ensure they have different colors
-            if len(figures) > 1 and figures[0]:
-                # For each signal after the first, extract its traces and add them to the first figure
-                # with different colors
-                first_fig = figures[0]
-                for i, fig in enumerate(figures[1:], 1):
-                    if hasattr(self, 'transfer_traces'):
-                        # Use dedicated method if available
-                        self.transfer_traces(fig, first_fig, color_index=i)
-                    # Color handling for individual signals is done in create_time_series_plot
-            return figures[0] if figures else None
+        # Removed 'overlay' layout as it's complex and not fully supported
         else:
+            logger.warning(f"Unsupported layout '{layout}'. Returning list of figures.")
             return figures
     
     def create_from_config(self, config: Dict[str, Any], collection: SignalCollection) -> Any:

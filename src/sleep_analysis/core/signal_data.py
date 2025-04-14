@@ -108,9 +108,10 @@ class SignalData(ABC):
              if field not in metadata_kwargs:
                   metadata_kwargs[field] = None
 
-        # Use the handler to create the metadata
-        self.metadata = self.handler.initialize_metadata(**metadata_kwargs)
-        
+        # Use the handler to create the TimeSeriesMetadata
+        # This assumes SignalData is primarily for TimeSeries signals now
+        self.metadata = self.handler.initialize_time_series_metadata(**metadata_kwargs)
+
         # Store the data
         self._data = data
     

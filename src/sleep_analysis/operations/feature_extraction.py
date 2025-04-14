@@ -73,7 +73,10 @@ def _compute_basic_stats(segment: pd.DataFrame, aggregations: List[str]) -> Dict
 def compute_feature_statistics(
     signals: List[TimeSeriesSignal],
     epoch_grid_index: pd.DatetimeIndex,
-    parameters: Dict[str, Any]
+    parameters: Dict[str, Any],
+    # Add explicit arguments for global parameters
+    global_window_length: pd.Timedelta,
+    global_step_size: pd.Timedelta
 ) -> Feature:
     """
     Computes statistical features over epochs for one or more TimeSeriesSignals.
@@ -89,9 +92,9 @@ def compute_feature_statistics(
             - window_length (str, optional): Duration of each epoch (e.g., "30s").
                                              Overrides global if provided.
             - aggregations (List[str]): List of stats to compute (e.g., ["mean", "std"]).
-            - global_epoch_window_length (pd.Timedelta): Global window length (passed by executor).
-            - global_epoch_step_size (pd.Timedelta): Global step size (passed by executor).
             - Other parameters specific to feature functions.
+        global_window_length: Global window length from collection settings.
+        global_step_size: Global step size from collection settings.
 
     Returns:
         A Feature object containing the computed features, indexed by epoch_start_time.
@@ -110,16 +113,17 @@ def compute_feature_statistics(
 
     # --- Parameter Parsing & Validation ---
     try:
-        # Get global parameters passed by the executor
-        global_window_length = parameters['global_epoch_window_length']
-        global_step_size = parameters['global_epoch_step_size']
+        # REMOVE attempts to get global params from 'parameters' dict
+        # global_window_length = parameters['global_epoch_window_length'] # REMOVE
+        # global_step_size = parameters['global_epoch_step_size']         # REMOVE
 
-        # Determine effective window length: override or global
+        # Determine effective window length: override or global (using passed arg)
         window_length_str = parameters.get('window_length') # Optional override
         if window_length_str:
             effective_window_length = pd.Timedelta(window_length_str)
             logger.info(f"Using step-specific window_length override: {effective_window_length}")
         else:
+            # Fallback to the explicitly passed global_window_length argument
             effective_window_length = global_window_length
             logger.info(f"Using global collection window_length: {effective_window_length}")
 
@@ -127,22 +131,21 @@ def compute_feature_statistics(
              raise ValueError("Effective window_length must be positive.")
 
         # Step size is implicitly defined by epoch_grid_index.freq or global_step_size
-        # We use global_step_size for metadata recording.
+        # Use the explicitly passed global_step_size argument for metadata recording.
         epoch_step_size = global_step_size
-        if epoch_grid_index.freq is None and epoch_step_size is None:
-             warnings.warn("Epoch grid index has no frequency and global_step_size not provided. Cannot verify step size consistency.")
-        elif epoch_grid_index.freq is not None and epoch_step_size is not None and epoch_grid_index.freq != epoch_step_size:
+        if epoch_grid_index.freq is not None and epoch_grid_index.freq != epoch_step_size:
              warnings.warn(f"Epoch grid index frequency ({epoch_grid_index.freq}) differs from global_epoch_step_size ({epoch_step_size}). Using global value for metadata.")
-        elif epoch_step_size is None and epoch_grid_index.freq is not None:
-             epoch_step_size = epoch_grid_index.freq # Infer from grid if not passed explicitly
+        # No need to infer from grid freq, as global_step_size is now guaranteed to be passed
 
         if epoch_step_size is None or epoch_step_size <= pd.Timedelta(0):
-             raise ValueError("Could not determine a positive epoch_step_size from epoch_grid_index or global parameters.")
+             # This check should ideally not fail if generate_epoch_grid worked
+             raise ValueError("Could not determine a positive epoch_step_size from global parameters.")
 
         aggregations = parameters.get('aggregations', ['mean', 'std']) # Default aggregations
 
-    except KeyError as e:
-        raise ValueError(f"Missing required global parameter from executor: {e}") from e
+    # REMOVE KeyError handling for global params
+    # except KeyError as e:
+    #     raise ValueError(f"Missing required global parameter from executor: {e}") from e
     except ValueError as e:
         raise ValueError(f"Invalid parameter format or value: {e}") from e
 
@@ -174,11 +177,11 @@ def compute_feature_statistics(
          empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
          empty_data.index.name = 'timestamp' # Set index name
 
-         # Create metadata for the empty Feature object
+         # Create metadata for the empty Feature object using passed global args
          metadata_dict = {
-             "epoch_window_length": global_window_length, # Record global window used for grid
-             "epoch_step_size": global_step_size,       # Record global step used for grid
-             "feature_names": sorted(list(expected_simple_cols)), # Store simple names
+             "epoch_window_length": global_window_length, # Use passed global arg
+             "epoch_step_size": global_step_size,       # Use passed global arg
+             "feature_names": sorted(list(expected_simple_cols)),
              "feature_type": FeatureType.STATISTICAL,
              "source_signal_keys": [s.metadata.name for s in signals],
              "source_signal_ids": [s.metadata.signal_id for s in signals],
@@ -319,14 +322,13 @@ def compute_feature_statistics(
     # Feature names are the *simple* names collected earlier
     simple_feature_names = sorted(list(generated_feature_names))
 
-    # Create metadata dictionary for the Feature object
-    # Use global epoch parameters to reflect the grid used
+    # Create metadata dictionary using passed global args
     metadata_dict = {
-        "epoch_window_length": global_window_length,
-        "epoch_step_size": global_step_size,
-        "feature_names": simple_feature_names, # Store the simple feature names
-        "feature_type": FeatureType.STATISTICAL, # Set the feature type
-        "source_signal_keys": [s.metadata.name for s in signals], # Use name as key proxy
+        "epoch_window_length": global_window_length, # Use passed global arg
+        "epoch_step_size": global_step_size,       # Use passed global arg
+        "feature_names": simple_feature_names,
+        "feature_type": FeatureType.STATISTICAL,
+        "source_signal_keys": [s.metadata.name for s in signals],
         "source_signal_ids": [s.metadata.signal_id for s in signals], # Store source UUIDs
         # Record this operation, including the effective window length if overridden
         "operations": [OperationInfo("feature_statistics", parameters)] # Store original params passed

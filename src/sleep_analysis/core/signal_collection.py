@@ -913,21 +913,40 @@ class SignalCollection:
         if is_feature_op:
             if not self._epoch_grid_calculated or self.epoch_grid_index is None or self.epoch_grid_index.empty:
                 raise RuntimeError(f"Cannot execute feature operation '{operation_name}': generate_epoch_grid must be run successfully first.")
-            # Pass epoch grid index to feature functions
-            parameters['epoch_grid_index'] = self.epoch_grid_index
-            # Pass global epoch config for reference/fallback within the function
-            parameters['global_epoch_window_length'] = self.global_epoch_window_length
-            parameters['global_epoch_step_size'] = self.global_epoch_step_size
+            # REMOVE the lines that add global params to the 'parameters' dict
+            # parameters['epoch_grid_index'] = self.epoch_grid_index # Keep this if needed, but it's passed separately below
+            # parameters['global_epoch_window_length'] = self.global_epoch_window_length # REMOVE
+            # parameters['global_epoch_step_size'] = self.global_epoch_step_size         # REMOVE
 
         # --- Function Execution ---
         try:
             logger.debug(f"Executing operation function '{operation_func.__name__}'...")
-            # Pass the list of signal objects and parameters
-            result_object = operation_func(signals=input_signals, **parameters)
+            if is_feature_op:
+                # Make a copy to avoid modifying the original dict
+                params_copy = parameters.copy()
+                # Remove epoch_grid_index from parameters dict as it's passed separately
+                # Also remove window_length/step_size if they were accidentally left in params
+                params_copy.pop('epoch_grid_index', None)
+                params_copy.pop('global_epoch_window_length', None)
+                params_copy.pop('global_epoch_step_size', None)
+
+                # Call feature function with explicit global args
+                result_object = operation_func(
+                    signals=input_signals,
+                    epoch_grid_index=self.epoch_grid_index, # Pass grid index separately
+                    parameters=params_copy,                 # Pass remaining specific params
+                    global_window_length=self.global_epoch_window_length, # Pass global window explicitly
+                    global_step_size=self.global_epoch_step_size          # Pass global step explicitly
+                )
+            else:
+                 # For non-feature ops, pass parameters as before
+                 result_object = operation_func(signals=input_signals, **parameters)
+
             logger.debug(f"Operation function '{operation_func.__name__}' completed.")
         except Exception as e:
             logger.error(f"Error executing multi-signal operation function '{operation_func.__name__}': {e}", exc_info=True)
-            raise RuntimeError(f"Execution of operation '{operation_name}' failed.") from e
+            # Add context about which operation failed
+            raise RuntimeError(f"Execution of operation '{operation_name}' failed.") from e # Keep original error context
 
         # --- Result Validation ---
         if not isinstance(result_object, output_class):
@@ -1666,6 +1685,64 @@ class SignalCollection:
 
         return keys
 
+    def _format_summary_cell(self, x, col_name):
+        """Helper function to format a single cell for the summary DataFrame printout."""
+        # --- Start Debugging ---
+        logger.debug(f"_format_summary_cell received value of type: {type(x)} for column '{col_name}'")
+        if isinstance(x, (pd.Series, pd.DataFrame)):
+            # Log detailed error if a Series/DataFrame is received
+            logger.error(f"!!! Unexpected Series/DataFrame received in _format_summary_cell for column '{col_name}'. Value:\n{x}")
+            # Optionally return a distinct error string for the output table
+            # return "<ERROR: Unexpected Series/DataFrame>"
+        # --- End Debugging ---
+
+        # --- Start Corrected Logic ---
+        # Handle lists, tuples, dicts FIRST
+        if isinstance(x, (list, tuple, dict)):
+             # Show type and length to avoid large strings
+             try:
+                  # Check if empty before accessing length
+                  if not x:
+                       return f"<{type(x).__name__} len=0>"
+                  else:
+                       return f"<{type(x).__name__} len={len(x)}>"
+             except TypeError: # Handle unsized objects (should be rare for list/tuple/dict)
+                  return f"<{type(x).__name__}>"
+        # Handle Enums next
+        elif isinstance(x, Enum):
+            return x.name
+        # Handle Timestamps/Datetimes
+        elif isinstance(x, (pd.Timestamp, datetime)):
+            # pd.Timestamp handles NaT check implicitly in strftime
+            try:
+                # Check for NaT explicitly before formatting
+                if pd.isna(x):
+                     return 'NaT'
+                # Attempt to format with timezone, fallback if naive or fails
+                return x.strftime('%Y-%m-%d %H:%M:%S %Z')
+            except ValueError: # Handle cases where %Z might fail or other formatting issues
+                try:
+                     return x.strftime('%Y-%m-%d %H:%M:%S')
+                except ValueError: # Fallback if all formatting fails
+                     return str(x) # Use default string representation
+        # Handle Timedeltas
+        elif isinstance(x, pd.Timedelta):
+             if pd.isna(x):
+                  return 'NaT'
+             return str(x) # Default Timedelta string representation
+        # Handle specific column formatting (like data_shape tuple)
+        elif col_name == 'data_shape' and isinstance(x, tuple):
+             return str(x) # Format shape tuple as string
+
+        # NOW it's safe to use pd.isna() for remaining scalar types
+        elif pd.isna(x): # Handles None, np.nan, etc. for non-list/enum/time types
+            return 'N/A'
+
+        # Fallback for other scalar types (numbers, strings, bools, etc.)
+        else:
+            return x # Keep other types as they are
+        # --- End Corrected Logic ---
+
     @register_collection_operation("summarize_signals")
     def summarize_signals(self, fields_to_include: Optional[List[str]] = None, print_summary: bool = True) -> Optional[pd.DataFrame]:
         """Generates a summary table of TimeSeriesSignals and Features."""
@@ -1689,10 +1766,11 @@ class SignalCollection:
         ts_only_fields = set(default_ts_fields) - common_fields
         feat_only_fields = set(default_feat_fields) - common_fields
         # Add calculated fields
-        calculated_fields = ['source_files_count', 'operations_count', 'feature_names_count', 'data_shape', 'item_type']
+        # REMOVE 'item_type' from this list
+        calculated_fields = ['source_files_count', 'operations_count', 'feature_names_count', 'data_shape'] # Removed 'item_type'
         default_fields_ordered = ['key', 'item_type'] + sorted(list(common_fields)) + \
                                  sorted(list(ts_only_fields)) + sorted(list(feat_only_fields)) + \
-                                 sorted(calculated_fields)
+                                 sorted(calculated_fields) # Now item_type only appears once
 
         fields_for_summary = fields_to_include if fields_to_include is not None else default_fields_ordered
         logger.info(f"Generating summary. Fields requested: {'Default' if fields_to_include is None else fields_to_include}")
@@ -1750,6 +1828,12 @@ class SignalCollection:
         raw_summary_df = raw_summary_df[['key'] + [f for f in fields_for_summary if f != 'key']]
         raw_summary_df = raw_summary_df.set_index('key').sort_index()
 
+        # --- Start Debugging ---
+        logger.debug("Raw summary DataFrame info before formatting:")
+        # Log dtypes to see if any column unexpectedly holds objects that might be Series
+        logger.debug(f"dtypes:\n{raw_summary_df.dtypes}")
+        # --- End Debugging ---
+
         # --- Store Raw DataFrame ---
         self._summary_dataframe = raw_summary_df.copy()
         self._summary_dataframe_params = {'fields_to_include': fields_for_summary, 'print_summary': print_summary}
@@ -1758,17 +1842,33 @@ class SignalCollection:
         # --- Handle Printing ---
         if print_summary:
             formatted_summary_df = raw_summary_df.copy()
-            # Apply formatting (similar to previous logic)
+            # Apply formatting using the new helper function
             for col in formatted_summary_df.columns:
-                # Convert complex types for display
-                formatted_summary_df[col] = formatted_summary_df[col].apply(
-                    lambda x: x.name if isinstance(x, Enum)
-                    else (x.strftime('%Y-%m-%d %H:%M:%S %Z') if isinstance(x, (pd.Timestamp, datetime)) and pd.notna(x) else str(x)) if isinstance(x, pd.Timedelta)
-                    else (len(x) if isinstance(x, (list, tuple, dict)) and col != 'data_shape' else str(x)) if isinstance(x, tuple) and col == 'data_shape'
-                    else ('N/A' if pd.isna(x) else x)
-                )
+                # --- Start Debugging ---
+                logger.debug(f"Attempting to format summary column: '{col}'")
+                try:
+                    # Pass the column name to the helper function for context-aware formatting
+                    formatted_summary_df[col] = formatted_summary_df[col].apply(
+                        lambda cell_value: self._format_summary_cell(cell_value, col)
+                    )
+                except ValueError as e:
+                    # Catch the specific error to log context
+                    if "The truth value of a Series is ambiguous" in str(e):
+                        logger.error(f"ValueError caught while formatting column '{col}'. This likely means a cell contained a Series.")
+                        # Optionally log the first few problematic values
+                        try:
+                            problematic_values = formatted_summary_df[col][formatted_summary_df[col].apply(lambda v: isinstance(v, pd.Series))]
+                            logger.error(f"Problematic Series values found in column '{col}':\n{problematic_values.head()}")
+                        except Exception as log_err:
+                            logger.error(f"Could not log specific problematic values in column '{col}': {log_err}")
+                    # Re-raise the original error after logging
+                    raise e
+                # --- End Debugging ---
+
             print("\n--- Signal Collection Summary ---")
-            print(formatted_summary_df.to_string())
+            # Use pandas display options for better formatting if needed
+            with pd.option_context('display.max_rows', None, 'display.max_columns', None, 'display.width', 1000):
+                 print(formatted_summary_df.to_string())
             print("-------------------------------\n")
 
         return self._summary_dataframe

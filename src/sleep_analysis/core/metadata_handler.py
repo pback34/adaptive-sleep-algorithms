@@ -28,10 +28,12 @@ class MetadataHandler:
             default_values: Dictionary of default values for metadata fields
         """
         self.default_values = default_values or {}
-        self.required_fields = ["signal_id"]  # Signal ID is always required for TimeSeriesMetadata
+        # Define required fields separately for clarity
+        self.required_ts_fields = ["signal_id"]
+        self.required_feature_fields = ["feature_id", "epoch_window_length", "epoch_step_size", "feature_names", "source_signal_keys", "source_signal_ids"]
 
-    # Updated to specifically handle TimeSeriesMetadata initialization
-    def initialize_metadata(self, **kwargs) -> TimeSeriesMetadata:
+    # Renamed and updated to specifically handle TimeSeriesMetadata initialization
+    def initialize_time_series_metadata(self, **kwargs) -> TimeSeriesMetadata:
         """
         Create TimeSeriesMetadata with defaults and specified overrides.
 
@@ -53,7 +55,7 @@ class MetadataHandler:
         # Generate a signal_id if not provided
         if "signal_id" not in metadata_dict and "signal_id" not in kwargs:
             metadata_dict["signal_id"] = str(uuid.uuid4())
-            
+
         # Apply overrides from kwargs
         metadata_dict.update(kwargs)
         
@@ -75,14 +77,76 @@ class MetadataHandler:
                     filtered_dict[k] = v
 
         # Create the TimeSeriesMetadata instance
-        metadata = TimeSeriesMetadata(**filtered_dict) # Use TimeSeriesMetadata
+        metadata = TimeSeriesMetadata(**filtered_dict)
 
         # Ensure required fields are set (for TimeSeriesMetadata)
-        for field in self.required_fields: # self.required_fields currently only contains 'signal_id'
+        for field in self.required_ts_fields:
             if not getattr(metadata, field, None):
-                raise ValueError(f"Required metadata field '{field}' is missing")
-                
+                raise ValueError(f"Required TimeSeriesMetadata field '{field}' is missing")
+
         return metadata
+
+    # --- New method for FeatureMetadata ---
+    def initialize_feature_metadata(self, **kwargs) -> FeatureMetadata:
+        """
+        Create FeatureMetadata with defaults and specified overrides.
+
+        Args:
+            **kwargs: Metadata field values to override defaults
+
+        Returns:
+            Initialized FeatureMetadata instance
+
+        Raises:
+            ValueError: If a required field is missing or invalid for FeatureMetadata
+        """
+        # Start with default values (might not be relevant for features, but consistent)
+        metadata_dict = dict(self.default_values)
+
+        # Generate a feature_id if not provided
+        if "feature_id" not in metadata_dict and "feature_id" not in kwargs:
+            metadata_dict["feature_id"] = str(uuid.uuid4())
+
+        # Apply overrides from kwargs
+        metadata_dict.update(kwargs)
+
+        # Filter out any keys that are not valid for FeatureMetadata
+        from dataclasses import fields
+        valid_fields = {f.name for f in fields(FeatureMetadata)}
+        filtered_dict = {}
+        for k, v in metadata_dict.items():
+            if k in valid_fields:
+                # Special handling for Timedelta conversion
+                if k in ['epoch_window_length', 'epoch_step_size'] and isinstance(v, str):
+                    try:
+                        filtered_dict[k] = pd.Timedelta(v)
+                    except ValueError:
+                        raise ValueError(f"Invalid format for {k}: '{v}'. Use pandas Timedelta string format (e.g., '30s', '5m').")
+                # Special handling for FeatureType enum conversion
+                elif k == 'feature_type' and isinstance(v, str):
+                     from ..signal_types import FeatureType # Local import
+                     from ..utils import str_to_enum # Local import
+                     try:
+                          filtered_dict[k] = str_to_enum(v, FeatureType)
+                     except ValueError:
+                          raise ValueError(f"Invalid FeatureType value: '{v}'")
+                else:
+                    filtered_dict[k] = v
+
+        # Create the FeatureMetadata instance
+        metadata = FeatureMetadata(**filtered_dict)
+
+        # Ensure required fields are set (for FeatureMetadata)
+        for field in self.required_feature_fields:
+            # Check if attribute exists and is not None (or empty list for list fields)
+            value = getattr(metadata, field, None)
+            is_missing = value is None or (isinstance(value, list) and not value)
+            if is_missing:
+                raise ValueError(f"Required FeatureMetadata field '{field}' is missing or empty")
+
+        return metadata
+    # --- End new method ---
+
 
     # Updated type hint to handle both metadata types
     def update_metadata(self, metadata: Union[TimeSeriesMetadata, FeatureMetadata], **kwargs) -> None:

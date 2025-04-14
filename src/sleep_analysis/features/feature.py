@@ -94,7 +94,8 @@ class Feature: # Renamed from FeatureSignal, removed inheritance from SignalData
 
         # Create the FeatureMetadata instance
         # Filter metadata_dict to only include valid FeatureMetadata fields
-        valid_fields = {f.name for f in FeatureMetadata.__dataclass_fields__}
+        # Corrected: Iterate over the keys directly
+        valid_fields = set(FeatureMetadata.__dataclass_fields__.keys())
         filtered_metadata_dict = {k: v for k, v in metadata_dict.items() if k in valid_fields}
         try:
             # Ensure feature_id is generated if not provided

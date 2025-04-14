@@ -12,6 +12,11 @@ target_timezone: "system" # Standardize all timestamps to the system's local tim
 # Collection-level settings (applied before import/steps)
 collection_settings:
   index_config: ["signal_type", "sensor_model", "body_position", "name"]
+  # --- ADD THIS SECTION ---
+  epoch_grid_config: # Global settings for feature epoch grid
+    window_length: "30s" # Default window length for features
+    step_size: "10s"     # Step size defines epoch start frequency
+  # --- END ADDED SECTION ---
 
 import:
   # Heart Rate data from Polar H10 - using MergingImporter
@@ -150,38 +155,44 @@ steps:
   # --- Feature Extraction Steps ---
   # Prerequisite: generate_alignment_grid and apply_grid_alignment must have run
 
-  # Step 4: Compute basic statistics for Heart Rate signals
+  # Step 4: Generate the common epoch grid for all feature extraction steps
+  # This uses the epoch_grid_config defined in collection_settings
+  - type: collection
+    operation: "generate_epoch_grid"
+    parameters: {} # Optional: start_time, end_time overrides
+
+  # Step 5: Compute basic statistics for Heart Rate signals
   - type: multi_signal # Assuming feature ops are registered in multi_signal_registry
     operation: "feature_statistics"
     inputs: ["hr"] # Use base name to get all HR signals
     parameters:
-      window_length: "30s"
-      step_size: "10s"
+      # window_length: "30s" # Optional: Uses global "30s" from epoch_grid_config if omitted
+      # step_size: "10s"     # REMOVED: Step size is now global, defined by epoch_grid_index
       aggregations: ["mean", "std", "min", "max"]
     output: "hr_features" # Base name for HR feature signals
 
-  # Step 5: Compute basic statistics for Accelerometer Magnitude signals
+  # Step 6: Compute basic statistics for Accelerometer Magnitude signals
   - type: multi_signal
     operation: "feature_statistics"
     inputs: ["accel_magnitude"] # Use base name
     parameters:
-      window_length: "30s"
-      step_size: "10s"
+      # window_length: "30s" # Optional: Uses global
+      # step_size: "10s"     # REMOVED
       aggregations: ["mean", "std"]
     output: "accel_mag_features"
 
-  # Step 6: Compute basic statistics for Accelerometer Angle signals (e.g., pitch/roll)
+  # Step 7: Compute basic statistics for Accelerometer Angle signals (e.g., pitch/roll)
   # Assuming 'accel_angle' contains columns like 'pitch', 'roll'
   - type: multi_signal
     operation: "feature_statistics"
     inputs: ["accel_angle"] # Use base name
     parameters:
-      window_length: "30s"
-      step_size: "10s"
+      # window_length: "30s" # Optional: Uses global
+      # step_size: "10s"     # REMOVED
       aggregations: ["mean", "std"] # Apply to pitch, roll etc.
     output: "accel_angle_features"
 
-  # Step 7: Compute features for Sleep Stage signals
+  # Step 8: Compute features for Sleep Stage signals
   # NOTE: feature_statistics currently calculates numeric stats (mean, std).
   # Applying this to categorical sleep stages might not be ideal.
   # Consider implementing a dedicated feature operation (e.g., mode, stage fractions).
@@ -189,21 +200,22 @@ steps:
     operation: "feature_statistics"
     inputs: ["sleep_stage"] # Use base name for EnchantedWave_SleepStage
     parameters:
-      window_length: "30s" # Must match other feature steps for combination
-      step_size: "10s"     # Must match other feature steps for combination
+      # window_length: "30s" # Optional: Uses global
+      # step_size: "10s"     # REMOVED
       # Aggregations like 'mean', 'std' on stage numbers might not be meaningful.
       # Mode calculation would require changes to feature_statistics.
       # For now, let's use default aggregations, expecting potential NaNs or less useful results for 'stage'.
       aggregations: ["mean", "std"] # Example: Keep default, review output
     output: "sleep_stage_features"
 
-  # Step 8: Combine all generated feature signals into a single matrix
+  # Step 9: Combine all generated feature signals into a single matrix
   - type: collection
     operation: "combine_features"
     inputs: ["hr_features", "accel_mag_features", "accel_angle_features", "sleep_stage_features"] # Added sleep_stage_features
-    output: "final_features" # Key for the combined feature matrix
+    # output: "final_features" # REMOVED: combine_features stores result internally
+    parameters: {} # No parameters needed currently
 
-  # Step 9: Generate and store a summary of all signals in the collection
+  # Step 10: Generate and store a summary of all signals in the collection
   - type: collection
     operation: "summarize_signals"
     parameters:
@@ -224,7 +236,9 @@ export:
   # Export the final combined feature matrix
   - formats: ["csv"]
     output_dir: "results/polar_data/features"
-    signals: ["final_features"] # Specify the key of the FeatureSignal to export
+    # signals: ["final_features"] # REMOVED: ExportModule needs update to export _combined_feature_matrix
+    # Add the flag to export the combined feature matrix:
+    include_combined_features: true
     # include_combined: false # Default or explicitly false when exporting specific signals
 
   # Export all individual non-temporary signals to CSV
