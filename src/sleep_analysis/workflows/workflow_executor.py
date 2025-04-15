@@ -590,7 +590,8 @@ class WorkflowExecutor:
                     "formats": config_item["formats"],
                     "output_dir": config_item["output_dir"],
                     "include_combined": config_item.get("include_combined", False),
-                    "include_summary": config_item.get("include_summary", False) # Add include_summary flag
+                    "include_summary": config_item.get("include_summary", False), # Add include_summary flag
+                    "include_combined_features": config_item.get("include_combined_features", False) # Add missing flag
                 }
 
                 # Only add signals parameter if it exists in the config

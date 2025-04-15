@@ -46,7 +46,8 @@ class ExportModule:
 
     def export(self, formats: List[str], output_dir: str,
                include_combined: bool = False,
-               include_summary: bool = False, # Added include_summary
+               include_summary: bool = False,
+               include_combined_features: bool = False, # Added include_combined_features
                signals: Optional[List[str]] = None) -> None:
         """
         Export signals, metadata, and optionally the summary table to specified formats.
@@ -75,20 +76,25 @@ class ExportModule:
 
         os.makedirs(output_dir, exist_ok=True)
 
-        export_individual = True
-        export_combined = False
+        # --- Refactored Logic for Export Flags ---
+        export_individual = False # Default to false initially
+        export_combined_ts = False # For time-series combined
+        export_combined_feat = False # For feature combined
         export_summary = include_summary # Determine if summary needs export
         signals_to_process = {}
         metadata_keys_to_include = None # For filtering metadata
+        combined_features_df = None # Initialize
 
         if signals:
             logger.info(f"Exporting specific signals: {signals}")
             export_individual = True # Export the specified signals individually
-            export_combined = False # Explicit signals override combined export for this task
+            # Explicit signals override combined export for this task
             if include_combined:
                 logger.warning(f"Both 'signals' and 'include_combined=True' specified for export to '{output_dir}'. Exporting specified signals/features only.")
+            if include_combined_features:
+                 logger.warning(f"Both 'signals' and 'include_combined_features=True' specified for export to '{output_dir}'. Exporting specified signals/features only.")
 
-            # Resolve signal/feature keys from both dictionaries
+            # Resolve signal/feature keys from both dictionaries (existing logic seems okay)
             resolved_keys = []
             missing_keys = []
             search_space = {**self.collection.time_series_signals, **self.collection.features}
@@ -117,17 +123,29 @@ class ExportModule:
             signals_to_process = {key: search_space[key] for key in resolved_keys}
             metadata_keys_to_include = resolved_keys # Filter metadata
 
-        elif include_combined:
+        elif include_combined: # Check for combined time-series export FIRST
             logger.info("Exporting combined time-series signal only.")
-            export_individual = False # Don't export individual signals/features
-            export_combined = True # This flag specifically refers to the time-series combined df
+            export_combined_ts = True
             # Include metadata for all non-temporary time-series signals for context
             metadata_keys_to_include = [k for k, s in self.collection.time_series_signals.items() if not s.metadata.temporary]
 
-        else:
+        elif include_combined_features: # Check for combined features export SECOND
+             logger.info("Exporting combined feature matrix only.")
+             export_combined_feat = True
+             # Include metadata for all features for context
+             metadata_keys_to_include = list(self.collection.features.keys())
+             # Retrieve the combined feature matrix *here*
+             combined_features_df = self.collection.get_stored_combined_feature_matrix()
+             if combined_features_df is None:
+                  logger.warning("Combined feature matrix requested but not found. Skipping combined feature export.")
+                  export_combined_feat = False # Disable if not found
+             elif combined_features_df.empty:
+                  logger.warning("Combined feature matrix requested but is empty. Proceeding with export.")
+                  # Keep export_combined_feat = True to export the empty file
+
+        else: # Default: Export all individuals
             logger.info("Exporting all individual non-temporary TimeSeriesSignals and Features.")
             export_individual = True
-            export_combined = False # Default is not to export combined unless requested
             # Select all non-temporary signals and features
             signals_to_process = {
                 **{k: s for k, s in self.collection.time_series_signals.items() if not s.metadata.temporary},
@@ -155,21 +173,37 @@ class ExportModule:
                  logger.warning("Summary export requested, but stored summary dataframe is empty.")
                  export_summary = False # Disable summary export if empty
 
+        # Retrieve combined feature matrix if requested
+        combined_features_df = None
+        if include_combined_features:
+             combined_features_df = self.collection.get_stored_combined_feature_matrix()
+             if combined_features_df is None:
+                  logger.warning("Combined feature matrix requested but not found in collection. Skipping combined feature export.")
+                  # Don't disable flag, just means it won't be passed to export functions
 
         # Export in each requested format
         for fmt in formats:
             fmt = fmt.lower()
             signals_arg = signals_to_process if export_individual else {}
-            summary_arg = summary_df if export_summary else None # Pass summary df if exporting
+            summary_arg = summary_df if export_summary else None
+            # Pass combined TS df only if that flag was set
+            combined_ts_arg = self.collection.get_stored_combined_dataframe() if export_combined_ts else None
+            # Pass combined Features df only if that flag was set AND it was retrieved (or empty)
+            combined_features_arg = combined_features_df if export_combined_feat else None
+
             try:
                 if fmt == "excel":
-                    self._export_excel(output_dir, signals_arg, export_combined, summary_arg, serialized_metadata)
+                    # Pass BOTH combined args - the function handles None
+                    self._export_excel(output_dir, signals_arg, combined_ts_arg, combined_features_arg, summary_arg, serialized_metadata)
                 elif fmt == "csv":
-                    self._export_csv(output_dir, signals_arg, export_combined, summary_arg, serialized_metadata)
+                    # Pass BOTH combined args
+                    self._export_csv(output_dir, signals_arg, combined_ts_arg, combined_features_arg, summary_arg, serialized_metadata)
                 elif fmt == "pickle":
-                    self._export_pickle(output_dir, signals_arg, export_combined, summary_arg, serialized_metadata)
+                    # Pass BOTH combined args (Pickle function needs update to handle both)
+                    self._export_pickle(output_dir, signals_arg, combined_ts_arg, combined_features_arg, summary_arg, serialized_metadata)
                 elif fmt == "hdf5":
-                    self._export_hdf5(output_dir, signals_arg, export_combined, summary_arg, serialized_metadata)
+                    # Pass BOTH combined args (HDF5 function needs update to handle both)
+                    self._export_hdf5(output_dir, signals_arg, combined_ts_arg, combined_features_arg, summary_arg, serialized_metadata)
             except Exception as e:
                  logger.error(f"Failed to export to format '{fmt}' in directory '{output_dir}': {e}", exc_info=True)
                  # Re-raise or handle based on strictness? Re-raise for now.
@@ -246,24 +280,54 @@ class ExportModule:
         logger = logging.getLogger(__name__) # Keep logger init here for use within this method
 
         # Helper function to recursively convert non-serializable types
-        def make_json_serializable(obj):
+        def make_json_serializable(obj, _depth=0, _path="root"): # Add depth and path tracking
+            # Limit recursion depth manually as an extra safeguard, though the root cause needs fixing
+            if _depth > 50: # Adjust limit as needed
+                logger.warning(f"Serialization depth limit exceeded at path: {_path}. Returning string representation.")
+                return f"<Serialization Depth Limit Exceeded: {type(obj).__name__}>"
+
+            logger.debug(f"{'  ' * _depth}Serializing path: {_path}, type: {type(obj).__name__}, value (preview): {str(obj)[:100]}") # Log entry
+
             if isinstance(obj, dict):
-                return {key: make_json_serializable(value) for key, value in obj.items()}
+                logger.debug(f"{'  ' * _depth}Entering dict at path: {_path}")
+                return {key: make_json_serializable(value, _depth + 1, f"{_path}.{key}") for key, value in obj.items()}
             elif isinstance(obj, list):
-                return [make_json_serializable(item) for item in obj]
+                logger.debug(f"{'  ' * _depth}Entering list at path: {_path}")
+                return [make_json_serializable(item, _depth + 1, f"{_path}[{i}]") for i, item in enumerate(obj)]
             elif isinstance(obj, tuple):
-                return [make_json_serializable(item) for item in obj]
+                 logger.debug(f"{'  ' * _depth}Entering tuple at path: {_path}")
+                 return [make_json_serializable(item, _depth + 1, f"{_path}[{i}]") for i, item in enumerate(obj)]
             elif hasattr(obj, 'isoformat') and callable(obj.isoformat):  # datetime-like objects
+                logger.debug(f"{'  ' * _depth}Serializing datetime-like object at path: {_path}")
                 return obj.isoformat()
-            elif hasattr(obj, 'name') and hasattr(obj, 'value') and isinstance(obj.value, str):  # Enum objects
+            elif isinstance(obj, Enum): # More robust Enum check
+                logger.debug(f"{'  ' * _depth}Serializing Enum object at path: {_path}")
                 return obj.name
-            elif hasattr(obj, '__dict__'):  # Other custom objects
-                return make_json_serializable(obj.__dict__)
+            elif isinstance(obj, type(dict.__dict__)): # Detect mappingproxy
+                 logger.debug(f"{'  ' * _depth}Entering mappingproxy (converting to dict) at path: {_path}")
+                 return {key: make_json_serializable(value, _depth + 1, f"{_path}.{key}") for key, value in obj.items()} # Convert to dict
+            elif hasattr(obj, '__dict__') and not isinstance(obj, type): # Avoid serializing class objects themselves
+                logger.debug(f"{'  ' * _depth}Entering object.__dict__ at path: {_path}")
+                # Pass the object's class name into the path for clarity
+                return make_json_serializable(obj.__dict__, _depth + 1, f"{_path}<{type(obj).__name__}>.__dict__")
             else:
-                return obj
-                
+                # Fallback: Convert unknown types to string to avoid JSON errors
+                logger.debug(f"{'  ' * _depth}Attempting fallback serialization for path: {_path}, type: {type(obj).__name__}")
+                try:
+                    # Attempt direct JSON serialization first for basic types
+                    json.dumps(obj)
+                    # Attempt direct JSON serialization first for basic types
+                    json.dumps(obj)
+                    logger.debug(f"{'  ' * _depth}Fallback successful (direct JSON) for path: {_path}")
+                    return obj
+                except TypeError:
+                    # If direct serialization fails, convert to string
+                    logger.warning(f"{'  ' * _depth}Converting non-serializable type {type(obj).__name__} to string at path: {_path}.")
+                    return str(obj)
+
         # Serialize collection metadata
-        collection_metadata = make_json_serializable(asdict(self.collection.metadata))
+        logger.debug("Starting metadata serialization for 'collection'")
+        collection_metadata = make_json_serializable(asdict(self.collection.metadata), _path="collection")
 
         # Serialize metadata for TimeSeriesSignals and Features separately
         time_series_metadata = {}
@@ -275,15 +339,18 @@ class ExportModule:
                 signal = self.collection.time_series_signals[key]
                 # Only include if key was requested or if all keys are included
                 if signal_keys_to_include is None or key in signal_keys_to_include:
-                    time_series_metadata[key] = make_json_serializable(asdict(signal.metadata))
+                    logger.debug(f"Starting metadata serialization for time_series_signal: {key}")
+                    time_series_metadata[key] = make_json_serializable(asdict(signal.metadata), _path=f"time_series_signals.{key}")
             elif key in self.collection.features:
                 feature = self.collection.features[key]
                 # Only include if key was requested or if all keys are included
                 if signal_keys_to_include is None or key in signal_keys_to_include:
-                    feature_metadata[key] = make_json_serializable(asdict(feature.metadata))
+                    logger.debug(f"Starting metadata serialization for feature: {key}")
+                    feature_metadata[key] = make_json_serializable(asdict(feature.metadata), _path=f"features.{key}")
             else:
                 # This case should ideally not happen if keys are validated before calling
                 logger.warning(f"Key '{key}' requested for metadata serialization not found in time_series_signals or features.")
+        logger.debug("Finished serializing individual signal/feature metadata.")
 
         # Prepare combined metadata structure
         metadata = {
@@ -296,7 +363,8 @@ class ExportModule:
 
     # Updated type hint for signals_to_export
     def _export_excel(self, output_dir: str, signals_to_export: Dict[str, Union[TimeSeriesSignal, Feature]],
-                      export_combined: bool, summary_df: Optional[pd.DataFrame],
+                      combined_df: Optional[pd.DataFrame], combined_features_df: Optional[pd.DataFrame], # Added combined_features_df
+                      summary_df: Optional[pd.DataFrame],
                       serialized_metadata: Dict[str, Any]) -> None:
         """
         Export signals, metadata, and optionally summary to Excel format.
@@ -361,12 +429,14 @@ class ExportModule:
                     empty_df.to_excel(writer, sheet_name="Info", index=False)
 
         # --- Export Combined Dataframe to Separate File ---
-        if export_combined:
+        # Check if combined_df was passed (controlled by include_combined flag in main export method)
+        if combined_df is not None:
             logger.info("Exporting combined dataframe to separate Excel file.")
             combined_file = os.path.join(output_dir, "combined.xlsx")
-            combined_df = self.collection.get_stored_combined_dataframe()
+            # combined_df is already passed as an argument, no need to retrieve again
+            # combined_df = self.collection.get_stored_combined_dataframe() # REMOVED
 
-            if combined_df is not None and not combined_df.empty:
+            if not combined_df.empty: # Check if the passed dataframe is not empty
                 logger.info(f"Retrieved stored combined dataframe (shape: {combined_df.shape}) for Excel export.")
 
                 # Check if columns are MultiIndex
@@ -403,6 +473,29 @@ class ExportModule:
                 logger.warning("Stored combined dataframe is empty. Skipping export of combined Excel file.")
                 warnings.warn("Stored combined dataframe is empty. Skipping export of combined Excel file.")
 
+        # --- Export Combined Feature Matrix to Separate File ---
+        if combined_features_df is not None:
+            logger.info("Exporting combined feature matrix to separate Excel file.")
+            features_excel_path = os.path.join(output_dir, "combined_features.xlsx")
+            try:
+                if not isinstance(combined_features_df, pd.DataFrame):
+                     logger.warning("Stored combined feature matrix is not a DataFrame. Skipping Excel export.")
+                elif combined_features_df.empty:
+                     logger.warning("Stored combined feature matrix is empty. Skipping Excel export.")
+                else:
+                     logger.info(f"Retrieved stored combined feature matrix (shape: {combined_features_df.shape}) for Excel export.")
+                     df_to_export = combined_features_df.copy() # Use copy
+                     # Remove timezone from DatetimeIndex for Excel compatibility
+                     if isinstance(df_to_export.index, pd.DatetimeIndex) and df_to_export.index.tz is not None:
+                          logger.debug("Removing timezone from DatetimeIndex for Excel export.")
+                          df_to_export.index = df_to_export.index.tz_localize(None)
+                     # Write with index=True for epoch grid index
+                     df_to_export.to_excel(features_excel_path, sheet_name="Combined_Features", index=True, na_rep='')
+                     logger.info(f"Successfully exported combined features data with {'MultiIndex' if isinstance(df_to_export.columns, pd.MultiIndex) else 'simple'} columns to {features_excel_path}")
+            except Exception as e:
+                logger.error(f"Failed to export combined feature matrix to Excel: {e}", exc_info=True)
+                warnings.warn("Failed to export combined feature matrix to Excel.")
+
         # --- Export Summary Dataframe to Separate File ---
         if summary_df is not None:
             logger.info("Exporting summary dataframe to separate Excel file.")
@@ -428,7 +521,8 @@ class ExportModule:
 
     # Updated type hint for signals_to_export
     def _export_csv(self, output_dir: str, signals_to_export: Dict[str, Union[TimeSeriesSignal, Feature]],
-                    export_combined: bool, summary_df: Optional[pd.DataFrame],
+                    combined_df: Optional[pd.DataFrame], combined_features_df: Optional[pd.DataFrame], # Added combined_features_df
+                    summary_df: Optional[pd.DataFrame],
                     serialized_metadata: Dict[str, Any]) -> None:
         """
         Export signals, metadata, and optionally summary to CSV format.
@@ -503,14 +597,15 @@ class ExportModule:
             warnings.warn("Failed to export metadata.")
 
         # Export combined dataframe if requested
-        if export_combined:
+        # Check if combined_df was passed (controlled by include_combined flag in main export method)
+        if combined_df is not None:
             combined_file = os.path.join(output_dir, "combined.csv")
             logger.info(f"Attempting to export combined dataframe to {combined_file}")
 
-            # Retrieve the stored combined dataframe
-            combined_df = self.collection.get_stored_combined_dataframe()
+            # combined_df is already passed as an argument, no need to retrieve again
+            # combined_df = self.collection.get_stored_combined_dataframe() # REMOVED
 
-            if combined_df is not None and not combined_df.empty:
+            if not combined_df.empty: # Check if the passed dataframe is not empty
                 logger.info(f"Retrieved stored combined dataframe with {len(combined_df)} rows and {len(combined_df.columns)} columns for CSV export.")
 
                 # Check if columns are MultiIndex
@@ -536,6 +631,25 @@ class ExportModule:
                 logger.warning("Stored combined dataframe is empty. Skipping export of combined CSV file.")
                 warnings.warn("Stored combined dataframe is empty. Skipping export of combined CSV file.")
 
+        # --- Export Combined Feature Matrix ---
+        if combined_features_df is not None:
+            features_csv_path = os.path.join(output_dir, "combined_features.csv")
+            logger.info(f"Attempting to export combined feature matrix to {features_csv_path}")
+            try:
+                if not isinstance(combined_features_df, pd.DataFrame):
+                     logger.warning("Stored combined feature matrix is not a DataFrame. Skipping export.")
+                elif combined_features_df.empty:
+                     logger.warning("Stored combined feature matrix is empty. Skipping export.")
+                else:
+                     logger.info(f"Retrieved stored combined feature matrix with {len(combined_features_df)} rows and {len(combined_features_df.columns)} columns for CSV export.")
+                     # Features usually have DatetimeIndex from epoch grid
+                     # Use pandas native date_format
+                     combined_features_df.to_csv(features_csv_path, date_format='%Y-%m-%d %H:%M:%S.%f', na_rep='', index=True) # index=True for epoch grid index
+                     logger.info(f"Exported combined feature matrix with {'MultiIndex' if isinstance(combined_features_df.columns, pd.MultiIndex) else 'simple'} columns and {len(combined_features_df)} rows to {features_csv_path}")
+            except Exception as e:
+                logger.error(f"Failed to export combined feature matrix to CSV: {e}", exc_info=True)
+                warnings.warn(f"Failed to export combined feature matrix to CSV: {e}")
+
         # Export summary dataframe if requested
         if summary_df is not None:
             summary_file = os.path.join(output_dir, "summary.csv")
@@ -560,11 +674,12 @@ class ExportModule:
     # MultiIndex creation for combined features is handled by SignalCollection.combine_features.
 
 
-    def _export_pickle(self, output_dir: str, signals_to_export: Dict[str, Union[TimeSeriesSignal, Feature]], # Updated type hint
-                       export_combined: bool, summary_df: Optional[pd.DataFrame],
+    def _export_pickle(self, output_dir: str, signals_to_export: Dict[str, Union[TimeSeriesSignal, Feature]],
+                       combined_df: Optional[pd.DataFrame], combined_features_df: Optional[pd.DataFrame], # Added combined_features_df
+                       summary_df: Optional[pd.DataFrame],
                        serialized_metadata: Dict[str, Any]) -> None:
         """
-        Export signals, metadata, and optionally summary to Pickle format.
+        Export signals, metadata, combined dataframes, and optionally summary to Pickle format.
 
         Args:
             output_dir: Directory where Pickle file(s) will be saved.
@@ -594,19 +709,25 @@ class ExportModule:
                     logger.error(f"Failed to get data for signal '{key}' for Pickle export: {e}", exc_info=True)
                     warnings.warn(f"Failed to include signal '{key}' in Pickle export.")
 
-        # Add combined dataframe if requested
-        if export_combined:
-            logger.info("Including combined dataframe in Pickle export.")
-            # Retrieve the stored combined dataframe
-            combined_df = self.collection.get_stored_combined_dataframe()
-            if combined_df is not None: # Include even if empty, as None indicates failure
-                logger.info(f"Adding stored combined dataframe (shape: {combined_df.shape}) to Pickle export.")
-                export_data["combined"] = combined_df
-            else:
-                logger.warning("Stored combined dataframe not found or generation failed. Storing None for 'combined' in Pickle.")
-                export_data["combined"] = None # Explicitly set to None if failed
+        # Add combined time-series dataframe if available
+        if combined_df is not None:
+            logger.info("Including combined time-series dataframe in Pickle export.")
+            logger.info(f"Adding stored combined time-series dataframe (shape: {combined_df.shape}) to Pickle export.")
+            export_data["combined_time_series"] = combined_df # Use specific key
+        else:
+            # Only log if it was expected (i.e., export_combined_ts was True in calling function)
+            # We don't have that flag here, so just store None if it's None
+            export_data["combined_time_series"] = None
 
-        # Add summary dataframe if requested
+        # Add combined feature matrix if available
+        if combined_features_df is not None:
+            logger.info("Including combined feature matrix in Pickle export.")
+            logger.info(f"Adding stored combined feature matrix (shape: {combined_features_df.shape}) to Pickle export.")
+            export_data["combined_features"] = combined_features_df # Use specific key
+        else:
+            export_data["combined_features"] = None
+
+        # Add summary dataframe if available
         if summary_df is not None:
             logger.info("Including summary dataframe in Pickle export.")
             export_data["summary"] = summary_df # Store the actual DataFrame
@@ -622,10 +743,11 @@ class ExportModule:
 
     # Updated type hint for signals_to_export
     def _export_hdf5(self, output_dir: str, signals_to_export: Dict[str, Union[TimeSeriesSignal, Feature]],
-                     export_combined: bool, summary_df: Optional[pd.DataFrame],
+                     combined_df: Optional[pd.DataFrame], combined_features_df: Optional[pd.DataFrame], # Added combined_features_df
+                     summary_df: Optional[pd.DataFrame],
                      serialized_metadata: Dict[str, Any]) -> None:
         """
-        Export signals, metadata, and optionally summary to HDF5 format.
+        Export signals, metadata, combined dataframes, and optionally summary to HDF5 format.
 
         Args:
             output_dir: Directory where HDF5 file(s) will be saved.
@@ -663,21 +785,27 @@ class ExportModule:
                             logger.error(f"Failed to store signal '{key}' in HDF5: {e}", exc_info=True)
                             warnings.warn(f"Failed to store signal '{key}' in HDF5.")
 
-                # Store combined dataframe if requested
-                if export_combined:
-                    logger.info("Storing combined dataframe in HDF5 export.")
-                    # Retrieve the stored combined dataframe
-                    combined_df = self.collection.get_stored_combined_dataframe()
-                    if combined_df is not None and not combined_df.empty:
-                        logger.info(f"Storing combined dataframe (shape: {combined_df.shape}) to HDF5 key 'combined'.")
-                        store.put("combined", combined_df, format='table', data_columns=True) # Use put
-                    elif combined_df is None:
-                        logger.warning("Stored combined dataframe not found or generation failed. Skipping combined HDF5 storage.")
-                    else: # combined_df is empty
-                        logger.warning("Stored combined dataframe is empty. Skipping storage in HDF5 file.")
-                        # Optionally store an empty dataframe? store.put("combined", pd.DataFrame(), format='table')
+                # Store combined time-series dataframe if available
+                if combined_df is not None and not combined_df.empty:
+                    logger.info("Storing combined time-series dataframe in HDF5 export.")
+                    logger.info(f"Storing combined time-series dataframe (shape: {combined_df.shape}) to HDF5 key 'combined_time_series'.")
+                    store.put("combined_time_series", combined_df, format='table', data_columns=True) # Use specific key
+                elif combined_df is None:
+                    logger.debug("Combined time-series dataframe is None. Skipping HDF5 storage.")
+                else: # combined_df is empty
+                    logger.warning("Combined time-series dataframe is empty. Skipping storage in HDF5 file.")
 
-                # Store summary dataframe if requested
+                # Store combined feature matrix if available
+                if combined_features_df is not None and not combined_features_df.empty:
+                    logger.info("Storing combined feature matrix in HDF5 export.")
+                    logger.info(f"Storing combined feature matrix (shape: {combined_features_df.shape}) to HDF5 key 'combined_features'.")
+                    store.put("combined_features", combined_features_df, format='table', data_columns=True) # Use specific key
+                elif combined_features_df is None:
+                    logger.debug("Combined feature matrix is None. Skipping HDF5 storage.")
+                else: # combined_features_df is empty
+                    logger.warning("Combined feature matrix is empty. Skipping storage in HDF5 file.")
+
+                # Store summary dataframe if available
                 if summary_df is not None:
                     logger.info("Storing summary dataframe in HDF5 export.")
                     try:

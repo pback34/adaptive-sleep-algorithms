@@ -196,22 +196,17 @@ steps:
   # NOTE: feature_statistics currently calculates numeric stats (mean, std).
   # Applying this to categorical sleep stages might not be ideal.
   # Consider implementing a dedicated feature operation (e.g., mode, stage fractions).
+  # Step 8: Compute mode feature for Sleep Stage signals
   - type: multi_signal
-    operation: "feature_statistics"
+    operation: "compute_sleep_stage_mode" # <--- Use the new operation
     inputs: ["sleep_stage"] # Use base name for EnchantedWave_SleepStage
-    parameters:
-      # window_length: "30s" # Optional: Uses global
-      # step_size: "10s"     # REMOVED
-      # Aggregations like 'mean', 'std' on stage numbers might not be meaningful.
-      # Mode calculation would require changes to feature_statistics.
-      # For now, let's use default aggregations, expecting potential NaNs or less useful results for 'stage'.
-      aggregations: ["mean", "std"] # Example: Keep default, review output
-    output: "sleep_stage_features"
+    parameters: {} # <--- No aggregations needed for mode
+    output: "sleep_stage_mode" # <--- Updated output name
 
   # Step 9: Combine all generated feature signals into a single matrix
   - type: collection
     operation: "combine_features"
-    inputs: ["hr_features", "accel_mag_features", "accel_angle_features", "sleep_stage_features"] # Added sleep_stage_features
+    inputs: ["hr_features", "accel_mag_features", "accel_angle_features", "sleep_stage_mode"] # <--- Use the updated feature key
     # output: "final_features" # REMOVED: combine_features stores result internally
     parameters: {} # No parameters needed currently
 
@@ -234,7 +229,7 @@ export:
     include_combined: true # Exports the result of combine_aligned_signals
 
   # Export the final combined feature matrix
-  - formats: ["csv"]
+  - formats: ["csv", "excel"] # <-- Request both formats
     output_dir: "results/polar_data/features"
     # signals: ["final_features"] # REMOVED: ExportModule needs update to export _combined_feature_matrix
     # Add the flag to export the combined feature matrix:
