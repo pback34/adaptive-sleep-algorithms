@@ -1889,11 +1889,14 @@ for _method_name, _method_obj in inspect.getmembers(SignalCollection, predicate=
 # --- Register Multi-Signal Operations ---
 SignalCollection.multi_signal_registry = {} # Reset registry before population
 try:
-    from ..operations.feature_extraction import compute_feature_statistics #, compute_feature_correlation # Add others later
-    from ..features.feature import Feature # Import Feature from new location
+    # Import feature extraction functions
+    from ..operations.feature_extraction import compute_feature_statistics, compute_sleep_stage_mode # Added compute_sleep_stage_mode
+    # Import the Feature class (output type for these operations)
+    from ..features.feature import Feature
 
     SignalCollection.multi_signal_registry.update({
-        "feature_statistics": (compute_feature_statistics, Feature), # Output is Feature
+        "feature_statistics": (compute_feature_statistics, Feature),
+        "compute_sleep_stage_mode": (compute_sleep_stage_mode, Feature), # Register the new operation
         # "feature_correlation": (compute_feature_correlation, Feature), # Uncomment when implemented
     })
     logger.debug("Registered multi-signal feature operations.")

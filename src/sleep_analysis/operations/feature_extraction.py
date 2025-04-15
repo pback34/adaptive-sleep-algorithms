@@ -6,15 +6,16 @@ import logging
 from typing import List, Dict, Any, Callable
 import pandas as pd
 import numpy as np
+# Removed scipy.stats.mode import
 
 import itertools
-import warnings # Added import
+import warnings
 
 # Removed SignalData import
 from ..signals.time_series_signal import TimeSeriesSignal
 # Import Feature and FeatureMetadata from their correct locations
 from ..features.feature import Feature
-from ..core.metadata import FeatureMetadata, OperationInfo, FeatureType
+from ..core.metadata import FeatureMetadata, OperationInfo, FeatureType # Import FeatureType
 
 logger = logging.getLogger(__name__)
 
@@ -336,4 +337,189 @@ def compute_feature_statistics(
 
     # Instantiate the Feature object
     # The Feature.__init__ handles metadata validation and creation
+    return Feature(data=feature_df, metadata=metadata_dict)
+
+
+# --- Add the new function ---
+def compute_sleep_stage_mode(
+    signals: List[TimeSeriesSignal],
+    epoch_grid_index: pd.DatetimeIndex,
+    parameters: Dict[str, Any],
+    # Add explicit arguments for global parameters
+    global_window_length: pd.Timedelta,
+    global_step_size: pd.Timedelta
+) -> Feature:
+    """
+    Computes the modal (most frequent) sleep stage over epochs for EEGSleepStageSignals.
+
+    Uses the provided global `epoch_grid_index` for epoch start times.
+    The `window_length` can be specified in `parameters` to override the global
+    setting, but `step_size` is determined solely by the `epoch_grid_index`.
+
+    Args:
+        signals: List containing the input TimeSeriesSignal objects (expected EEGSleepStageSignal).
+        epoch_grid_index: The pre-calculated DatetimeIndex defining epoch start times.
+        parameters: Dictionary containing operation parameters (currently unused for mode).
+        global_window_length: Global window length from collection settings.
+        global_step_size: Global step size from collection settings.
+
+    Returns:
+        A Feature object containing the computed modal sleep stage, indexed by epoch_start_time.
+
+    Raises:
+        ValueError: If input signals are invalid, epoch_grid_index is missing/empty.
+        TypeError: If input signals are not EEGSleepStageSignals or don't have 'sleep_stage'.
+    """
+    if not signals:
+        raise ValueError("No input signals provided for sleep stage mode calculation.")
+    # Add specific type check if desired, or rely on column check below
+    # from ..signals.eeg_sleep_stage_signal import EEGSleepStageSignal # Import if type checking
+    # if not all(isinstance(s, EEGSleepStageSignal) for s in signals):
+    #     raise TypeError("All input signals must be EEGSleepStageSignal instances.")
+    if epoch_grid_index is None or epoch_grid_index.empty:
+        raise ValueError("A valid epoch_grid_index must be provided.")
+
+    # Determine effective window length (same logic as feature_statistics)
+    window_length_str = parameters.get('window_length')
+    if window_length_str:
+        effective_window_length = pd.Timedelta(window_length_str)
+        logger.info(f"Using step-specific window_length override: {effective_window_length}")
+    else:
+        effective_window_length = global_window_length
+        logger.info(f"Using global collection window_length: {effective_window_length}")
+
+    if effective_window_length <= pd.Timedelta(0):
+        raise ValueError("Effective window_length must be positive.")
+
+    epoch_step_size = global_step_size # Use passed global arg
+
+    logger.info(f"Computing sleep stage mode: effective_window={effective_window_length}, step={epoch_step_size} (from grid)")
+
+    # --- Handle Empty Epoch Grid ---
+    if epoch_grid_index.empty:
+        logger.warning("Provided epoch_grid_index is empty. Returning empty Feature object.")
+        # Create expected MultiIndex columns for the empty DataFrame
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(s.metadata.name, 'sleep_stage_mode') for s in signals],
+            names=['signal_key', 'feature']
+        )
+        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
+        empty_data.index.name = 'timestamp'
+
+        metadata_dict = {
+            "epoch_window_length": global_window_length,
+            "epoch_step_size": global_step_size,
+            "feature_names": ['sleep_stage_mode'],
+            "feature_type": FeatureType.CATEGORICAL_MODE, # Use new type
+            "source_signal_keys": [s.metadata.name for s in signals],
+            "source_signal_ids": [s.metadata.signal_id for s in signals],
+            "operations": [OperationInfo("compute_sleep_stage_mode", parameters)]
+        }
+        return Feature(data=empty_data, metadata=metadata_dict)
+
+    # --- Feature Calculation Loop ---
+    all_epoch_results = []
+    processed_epochs = 0
+    skipped_epochs = 0
+
+    for epoch_start in epoch_grid_index:
+        epoch_end = epoch_start + effective_window_length
+        epoch_features = {'epoch_start': epoch_start}
+        valid_epoch = True
+
+        for signal in signals:
+            signal_key = signal.metadata.name
+            try:
+                segment = signal.get_data()[epoch_start:epoch_end]
+
+                # Check if the required column exists
+                if 'sleep_stage' not in segment.columns:
+                     raise TypeError(f"Signal '{signal_key}' missing required 'sleep_stage' column.")
+
+                # Drop NaNs before calculating mode
+                stages_in_epoch = segment['sleep_stage'].dropna()
+
+                if stages_in_epoch.empty:
+                    modal_stage = np.nan # Or specific code for empty/all NaN
+                else:
+                    # Use pandas Series.mode() for categorical data
+                    mode_result = stages_in_epoch.mode()
+                    if not mode_result.empty:
+                        # .mode() can return multiple values if ties exist; take the first one.
+                        modal_stage = mode_result.iloc[0]
+                    else: # Handle case where input was all NaN or empty after dropna
+                        modal_stage = np.nan
+
+                # Store result using tuple key (signal_key, feature_name)
+                epoch_features[(signal_key, 'sleep_stage_mode')] = modal_stage
+
+            except TypeError as e:
+                 # Catch TypeErrors specifically, often related to unexpected data types
+                 logger.warning(f"TypeError processing signal '{signal_key}' in epoch {epoch_start}: {e}. Ensure 'sleep_stage' column contains expected data. Skipping epoch.")
+                 valid_epoch = False
+                 break
+            except Exception as e:
+                # Log other exceptions with traceback for debugging
+                logger.warning(f"Error processing signal '{signal_key}' in epoch {epoch_start}: {e}. Skipping epoch.", exc_info=True)
+                valid_epoch = False
+                break # Stop processing this epoch
+
+        if valid_epoch:
+            all_epoch_results.append(epoch_features)
+            processed_epochs += 1
+        else:
+            skipped_epochs += 1
+
+    logger.info(f"Sleep stage mode calculation complete. Processed epochs: {processed_epochs}, Skipped epochs: {skipped_epochs}")
+
+    if not all_epoch_results:
+        logger.warning("No sleep stage mode features were successfully computed for any epoch.")
+        # Return empty Feature object (using the same logic as above for empty grid)
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(s.metadata.name, 'sleep_stage_mode') for s in signals],
+            names=['signal_key', 'feature']
+        )
+        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
+        empty_data.index.name = 'timestamp'
+        metadata_dict = {
+            "epoch_window_length": global_window_length,
+            "epoch_step_size": global_step_size,
+            "feature_names": ['sleep_stage_mode'],
+            "feature_type": FeatureType.CATEGORICAL_MODE,
+            "source_signal_keys": [s.metadata.name for s in signals],
+            "source_signal_ids": [s.metadata.signal_id for s in signals],
+            "operations": [OperationInfo("compute_sleep_stage_mode", parameters)]
+        }
+        return Feature(data=empty_data, metadata=metadata_dict)
+
+    # --- Assemble Final DataFrame ---
+    feature_df = pd.DataFrame(all_epoch_results)
+    feature_df = feature_df.set_index('epoch_start')
+
+    # Convert tuple columns to MultiIndex
+    if not feature_df.empty:
+        feature_df.columns = pd.MultiIndex.from_tuples(feature_df.columns, names=['signal_key', 'feature'])
+    else:
+        # Recreate expected columns if df is empty after processing
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(s.metadata.name, 'sleep_stage_mode') for s in signals],
+            names=['signal_key', 'feature']
+        )
+        feature_df = pd.DataFrame(index=feature_df.index, columns=expected_multiindex_cols)
+
+    # Reindex to match the epoch grid exactly, filling skips with NaN
+    feature_df = feature_df.reindex(epoch_grid_index)
+    feature_df.index.name = 'timestamp'
+
+    # --- Create Feature ---
+    metadata_dict = {
+        "epoch_window_length": global_window_length,
+        "epoch_step_size": global_step_size,
+        "feature_names": ['sleep_stage_mode'], # Simple feature name
+        "feature_type": FeatureType.CATEGORICAL_MODE, # Use new type
+        "source_signal_keys": [s.metadata.name for s in signals],
+        "source_signal_ids": [s.metadata.signal_id for s in signals],
+        "operations": [OperationInfo("compute_sleep_stage_mode", parameters)]
+    }
+
     return Feature(data=feature_df, metadata=metadata_dict)

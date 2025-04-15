@@ -12,11 +12,10 @@ target_timezone: "system" # Standardize all timestamps to the system's local tim
 # Collection-level settings (applied before import/steps)
 collection_settings:
   index_config: ["signal_type", "sensor_model", "body_position", "name"]
-  # --- ADD THIS SECTION ---
   epoch_grid_config: # Global settings for feature epoch grid
     window_length: "30s" # Default window length for features
-    step_size: "10s"     # Step size defines epoch start frequency
-  # --- END ADDED SECTION ---
+    step_size: "15s"     # Step size defines epoch start frequency
+
 
 import:
   # Heart Rate data from Polar H10 - using MergingImporter

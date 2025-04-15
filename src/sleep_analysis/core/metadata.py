@@ -16,12 +16,16 @@ from sleep_analysis import __version__
 
 class FeatureType(Enum):
     """Enumeration for different categories of features."""
-    STATISTICAL = auto()
-    SPECTRAL = auto()
-    HRV = auto()
-    CORRELATION = auto()
-    CUSTOM = auto()
+    STATISTICAL = "statistical" # Changed from auto() to string
+    SPECTRAL = "spectral"
+    HRV = "hrv"
+    CORRELATION = "correlation"
+    CATEGORICAL_MODE = "categorical_mode" # Added for sleep stage mode
+    CUSTOM = "custom"
     # Add more types as needed
+
+    def __str__(self):
+        return self.value
 
 @dataclass
 class OperationInfo:
