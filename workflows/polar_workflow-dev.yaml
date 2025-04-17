@@ -222,29 +222,35 @@ steps:
 # The exporter can retrieve the combined dataframe and/or the summary dataframe
 # index_config moved to collection_settings
 export:
-  # Export the combined aligned time-series data
+  # Export ONLY the combined aligned time-series data
   - formats: ["csv"]
     output_dir: "results/polar_data/aligned_timeseries"
-    include_combined: true # Exports the result of combine_aligned_signals
+    content: ["combined_ts"] # Explicitly request combined time series
 
-  # Export the final combined feature matrix
-  - formats: ["csv", "excel"] # <-- Request both formats
-    output_dir: "results/polar_data/features"
-    # signals: ["final_features"] # REMOVED: ExportModule needs update to export _combined_feature_matrix
-    # Add the flag to export the combined feature matrix:
-    include_combined_features: true
-    # include_combined: false # Default or explicitly false when exporting specific signals
-
-  # Export all individual non-temporary signals to CSV
-  - formats: ["csv"]
-    output_dir: "results/polar_data/individual_signals"
-    # No 'signals' or 'include_combined' means export all individuals
-
-  # Example: Export the combined dataframe AND the summary table
+  # Export ONLY the final combined feature matrix and the summary table
   - formats: ["csv", "excel"]
-    output_dir: "results/polar_data/combined_and_summary"
-    include_combined: true
-    include_summary: true # Add this flag to export the summary table
+    output_dir: "results/polar_data/features_and_summary"
+    content: ["combined_features", "summary"] # Explicitly request combined features and summary
+
+  # Export ONLY all individual non-temporary TimeSeriesSignals to CSV
+  - formats: ["csv"]
+    output_dir: "results/polar_data/individual_timeseries"
+    content: ["all_ts"] # Explicitly request all individual time series
+
+  # Export ONLY all individual Features to Excel
+  - formats: ["excel"]
+    output_dir: "results/polar_data/individual_features"
+    content: ["all_features"] # Explicitly request all individual features
+
+  # Export specific signals/features by key
+  - formats: ["pickle"]
+    output_dir: "results/polar_data/specific_items"
+    content: ["hr_0", "accel_mag_features_0"] # Corrected key: Use _0 for the first feature
+
+  # Example: Export individual TS AND combined features in one task
+  - formats: ["csv"]
+    output_dir: "results/polar_data/individual_ts_and_combined_features"
+    content: ["all_ts", "combined_features"]
 
 # Visualization section - creates plots of selected signals
 visualization:

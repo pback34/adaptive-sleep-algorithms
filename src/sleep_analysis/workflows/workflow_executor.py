@@ -9,6 +9,7 @@ import os
 import importlib
 import warnings
 import os # Added os import
+import re # Added re import
 from typing import Dict, Any, List, Optional, Type, Union, Callable
 
 from ..core.signal_collection import SignalCollection
@@ -330,16 +331,30 @@ class WorkflowExecutor:
                     # Determine output key for non-inplace operations
                     current_output_key = None
                     if not inplace:
-                        # Handle list vs single output key spec
+                        source_key = signal.metadata.name # Get the key of the signal being processed
+
                         if isinstance(output_key, list):
+                            # User provided an explicit list of output keys
                             if i < len(output_key):
                                 current_output_key = output_key[i]
                             else:
                                 raise ValueError(f"Output key list length mismatch for input spec '{input_spec}'")
-                        else: # Single output key string
-                            current_output_key = f"{output_key}_{i}" if len(signals) > 1 else output_key
+                        elif isinstance(output_key, str):
+                            # User provided a single string (could be base name or explicit)
+                            # Apply indexing consistently based on the *source* signal's index
+                            match = re.match(r"(.+)_(\d+)$", source_key)
+                            if match:
+                                # Source signal had an index, append it to the output string
+                                source_index = match.group(2)
+                                current_output_key = f"{output_key}_{source_index}"
+                            else:
+                                # Source signal did not have an index, use the output string directly
+                                current_output_key = output_key
+                        else:
+                            # Should be caught by earlier validation, but handle defensively
+                            raise TypeError(f"Invalid type for 'output' key specification: {type(output_key)}")
 
-                        if current_output_key is None: # Should not happen if validation passed
+                        if current_output_key is None: # Final check
                              raise ValueError("Could not determine output key.")
 
                     # Apply the operation
@@ -567,13 +582,15 @@ class WorkflowExecutor:
         # Iterate through each export configuration in the list
         for config_item in export_config:
             # Validate required fields for each item in the list
-            required_fields = ["formats", "output_dir"]
+            # 'content' is now required instead of the old flags/signals param
+            required_fields = ["formats", "output_dir", "content"]
             missing_fields = [f for f in required_fields if f not in config_item]
             if missing_fields:
                 logger.error(f"Export configuration item missing required fields: {missing_fields}. Item: {config_item}")
                 raise ValueError(f"Export configuration item missing required fields: {missing_fields}")
 
             # Set index configuration if provided for this specific export
+            # (This part remains the same)
             if "index_config" in config_item:
                 try:
                     self.container.set_index_config(config_item["index_config"])
@@ -581,22 +598,23 @@ class WorkflowExecutor:
                 except ValueError as e:
                     logger.error(f"Invalid index_config in export item {config_item}: {e}")
                     raise  # Re-raise error
+            if "feature_index_config" in config_item: # Added for feature index config
+                try:
+                    self.container.set_feature_index_config(config_item["feature_index_config"])
+                    logger.debug(f"Temporarily set feature_index_config for export to {config_item['output_dir']}")
+                except ValueError as e:
+                    logger.error(f"Invalid feature_index_config in export item {config_item}: {e}")
+                    raise # Re-raise error
 
             # Call exporter's export method for the current configuration item
             logger.info(f"Executing export task to: {config_item['output_dir']}")
             try:
-                # Extract parameters that match the ExportModule.export signature
+                # Extract parameters that match the NEW ExportModule.export signature
                 export_params = {
                     "formats": config_item["formats"],
                     "output_dir": config_item["output_dir"],
-                    "include_combined": config_item.get("include_combined", False),
-                    "include_summary": config_item.get("include_summary", False), # Add include_summary flag
-                    "include_combined_features": config_item.get("include_combined_features", False) # Add missing flag
+                    "content": config_item["content"] # Pass the content list directly
                 }
-
-                # Only add signals parameter if it exists in the config
-                if "signals" in config_item:
-                    export_params["signals"] = config_item["signals"]
 
                 # Call export with the properly constructed parameters
                 exporter.export(**export_params)
