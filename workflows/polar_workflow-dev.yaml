@@ -233,7 +233,7 @@ export:
     content: ["combined_features", "summary"] # Explicitly request combined features and summary
 
   # Export ONLY all individual non-temporary TimeSeriesSignals to CSV
-  - formats: ["csv"]
+  - formats: ["excel"]
     output_dir: "results/polar_data/individual_timeseries"
     content: ["all_ts"] # Explicitly request all individual time series
 
@@ -245,7 +245,7 @@ export:
   # Export specific signals/features by key
   - formats: ["pickle"]
     output_dir: "results/polar_data/specific_items"
-    content: ["hr_0", "accel_mag_features_0"] # Corrected key: Use _0 for the first feature
+    content: ["hr_0", "accel_mag_features"] # Corrected key: Use _0 for the first feature
 
   # Example: Export individual TS AND combined features in one task
   - formats: ["csv"]
