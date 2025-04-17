@@ -1210,70 +1210,118 @@ class SignalCollection:
         metadata_attr = 'metadata' # Both Feature and TimeSeriesSignal have .metadata
 
         combined_df: pd.DataFrame
-        if index_config:
-            logger.info(f"Using MultiIndex for combined {'feature' if is_feature else 'time-series'} columns.")
-            multi_index_tuples = []
-            final_columns_data = {}
 
-            for key, signal_aligned_df in aligned_dfs.items():
-                # Get the original signal/feature object to access metadata
-                signal_obj = source_dict.get(key)
-                if not signal_obj:
-                     logger.warning(f"Could not find original object for key '{key}' during concatenation. Skipping.")
-                     continue
+        if is_feature:
+            # --- Feature Concatenation Logic ---
+            logger.info("Using simplified concatenation for features (pd.concat with keys).")
+            # aligned_dfs keys are feature set names ("hr_features", "accel_mag_features")
+            # Values are DataFrames from feat.get_data(), which already have MultiIndex columns (signal_key, feature)
+            try:
+                # Concatenate using the feature set keys as the top level
+                combined_df = pd.concat(aligned_dfs, axis=1)
+                # Ensure the index matches the grid index exactly
+                combined_df = combined_df.reindex(grid_index)
+                # Name the levels appropriately (top level is the feature set key)
+                if isinstance(combined_df.columns, pd.MultiIndex):
+                     # Check if existing levels have names, preserve if possible, otherwise assign default
+                     current_names = list(combined_df.columns.names)
+                     # Expected structure: [None, 'signal_key', 'feature'] if source had 2 levels
+                     # Or just [None, 'feature'] if source had 1 level (e.g., sleep_stage_mode)
+                     # We want: ['feature_set', 'signal_key', 'feature'] or ['feature_set', 'feature']
 
-                metadata_obj = getattr(signal_obj, metadata_attr)
+                     # Determine expected number of levels from the first non-empty df
+                     expected_levels = 0
+                     for df_val in aligned_dfs.values():
+                          if not df_val.empty and isinstance(df_val.columns, pd.MultiIndex):
+                               expected_levels = df_val.columns.nlevels
+                               break
+                          elif not df_val.empty: # Simple index
+                               expected_levels = 1
+                               break
 
-                for col_name in signal_aligned_df.columns:
-                    metadata_values = []
-                    for field in index_config:
-                        value = getattr(metadata_obj, field, None)
-                        value = key if value is None and field == 'name' else value # Fallback for name
-                        value = "N/A" if value is None else value
-                        # Handle Enums and other potential non-string types
-                        value = value.name if isinstance(value, Enum) else str(value)
-                        metadata_values.append(value)
+                     if expected_levels == 2: # e.g., from feature_statistics
+                          combined_df.columns.names = ['feature_set'] + ['signal_key', 'feature']
+                     elif expected_levels == 1: # e.g., from sleep_stage_mode
+                          combined_df.columns.names = ['feature_set'] + ['feature']
+                     else: # Fallback or empty case
+                          # Assign names based on actual number of levels created by concat
+                          num_levels = combined_df.columns.nlevels
+                          if num_levels > 0:
+                               new_names = ['feature_set'] + [f'level_{i+1}' for i in range(num_levels - 1)]
+                               combined_df.columns.names = new_names[:num_levels] # Ensure correct length
 
-                    # Add the original column name as the last level
-                    metadata_values.append(col_name)
-                    tuple_key = tuple(metadata_values)
-                    multi_index_tuples.append(tuple_key)
-                    final_columns_data[tuple_key] = signal_aligned_df[col_name]
+                     logger.debug(f"Feature concatenation resulted in MultiIndex columns with names: {combined_df.columns.names}")
 
-            if final_columns_data:
-                level_names = index_config + ['column'] # Name levels
-                multi_idx = pd.MultiIndex.from_tuples(multi_index_tuples, names=level_names)
-                combined_df = pd.DataFrame(final_columns_data, index=grid_index)
-                if not combined_df.empty:
-                     combined_df.columns = multi_idx
-                else:
-                     combined_df = pd.DataFrame(index=grid_index, columns=multi_idx)
-                logger.debug(f"Applied MultiIndex. Final level names: {combined_df.columns.names}")
-            else:
-                logger.warning("No data available to create MultiIndex columns.")
-                level_names = index_config + ['column']
-                empty_multi_idx = pd.MultiIndex.from_tuples([], names=level_names)
-                combined_df = pd.DataFrame(index=grid_index, columns=empty_multi_idx)
+            except Exception as e:
+                logger.error(f"Error during feature concatenation using pd.concat: {e}", exc_info=True)
+                # Fallback to empty dataframe with grid index
+                combined_df = pd.DataFrame(index=grid_index)
+
         else:
-            logger.info(f"Using simple column names (key_colname) for combined {'feature' if is_feature else 'time-series'} dataframe.")
-            simple_concat_list = []
-            for key, signal_aligned_df in aligned_dfs.items():
-                 prefix = key
-                 if len(signal_aligned_df.columns) == 1:
-                      renamed_df = signal_aligned_df.rename(columns={signal_aligned_df.columns[0]: prefix})
-                      simple_concat_list.append(renamed_df)
-                 else:
-                      prefixed_df = signal_aligned_df.add_prefix(f"{prefix}_")
-                      simple_concat_list.append(prefixed_df)
+            # --- Time-Series Concatenation Logic (Existing) ---
+            index_config = self.metadata.index_config
+            source_dict = self.time_series_signals
+            metadata_attr = 'metadata'
 
-            if not simple_concat_list:
-                 logger.warning("No data available for simple column concatenation.")
-                 combined_df = pd.DataFrame(index=grid_index)
+            if index_config:
+                logger.info("Using MultiIndex for combined time-series columns.")
+                multi_index_tuples = []
+                final_columns_data = {}
+
+                for key, signal_aligned_df in aligned_dfs.items():
+                    signal_obj = source_dict.get(key)
+                    if not signal_obj:
+                         logger.warning(f"Could not find original object for key '{key}' during concatenation. Skipping.")
+                         continue
+                    metadata_obj = getattr(signal_obj, metadata_attr)
+
+                    for col_name in signal_aligned_df.columns: # col_name is simple string here
+                        metadata_values = []
+                        for field in index_config:
+                            value = getattr(metadata_obj, field, None)
+                            value = key if value is None and field == 'name' else value
+                            value = "N/A" if value is None else value
+                            value = value.name if isinstance(value, Enum) else str(value)
+                            metadata_values.append(value)
+                        metadata_values.append(col_name)
+                        tuple_key = tuple(metadata_values)
+                        multi_index_tuples.append(tuple_key)
+                        final_columns_data[tuple_key] = signal_aligned_df[col_name]
+
+                if final_columns_data:
+                    level_names = index_config + ['column']
+                    multi_idx = pd.MultiIndex.from_tuples(multi_index_tuples, names=level_names)
+                    combined_df = pd.DataFrame(final_columns_data, index=grid_index)
+                    if not combined_df.empty:
+                         combined_df.columns = multi_idx
+                    else:
+                         combined_df = pd.DataFrame(index=grid_index, columns=multi_idx)
+                    logger.debug(f"Applied MultiIndex. Final level names: {combined_df.columns.names}")
+                else:
+                    logger.warning("No data available to create MultiIndex columns.")
+                    level_names = index_config + ['column']
+                    empty_multi_idx = pd.MultiIndex.from_tuples([], names=level_names)
+                    combined_df = pd.DataFrame(index=grid_index, columns=empty_multi_idx)
             else:
-                 combined_df = pd.concat(simple_concat_list, axis=1)
-                 combined_df = combined_df.reindex(grid_index)
+                logger.info("Using simple column names (key_colname) for combined time-series dataframe.")
+                simple_concat_list = []
+                for key, signal_aligned_df in aligned_dfs.items():
+                     prefix = key
+                     if len(signal_aligned_df.columns) == 1:
+                          renamed_df = signal_aligned_df.rename(columns={signal_aligned_df.columns[0]: prefix})
+                          simple_concat_list.append(renamed_df)
+                     else:
+                          prefixed_df = signal_aligned_df.add_prefix(f"{prefix}_")
+                          simple_concat_list.append(prefixed_df)
 
-        # Final Cleanup: Remove rows where *all* values are NaN
+                if not simple_concat_list:
+                     logger.warning("No data available for simple column concatenation.")
+                     combined_df = pd.DataFrame(index=grid_index)
+                else:
+                     combined_df = pd.concat(simple_concat_list, axis=1)
+                     combined_df = combined_df.reindex(grid_index)
+
+        # Final Cleanup (applies to both feature and time-series)
         if not combined_df.empty:
             initial_rows = len(combined_df)
             combined_df = combined_df.dropna(axis=0, how='all')
