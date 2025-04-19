@@ -563,91 +563,89 @@ class TimeSeriesSignal(SignalData):
             logger.warning("No numeric columns found to apply low-pass filter.")
     
         return processed_data
-    
-    
-    # --- Registered Operations (Defined as Static Methods) ---
-    
-    # Define as static method first, register explicitly after class definition
-    @staticmethod
-    def _reindex_to_grid_logic(data_list: List[pd.DataFrame], parameters: Dict[str, Any]) -> pd.DataFrame:
+
+    def reindex_to_grid(self, grid_index: pd.DatetimeIndex, method: str = 'nearest') -> pd.DataFrame:
         """
-        Core logic for reindexing a signal's DataFrame to a target grid.
-        Expects 'grid_index' and 'method' in parameters.
+        Reindexes the signal's DataFrame to a target grid (instance method version).
 
         Handles 'nearest' method specifically to map original points to their
         closest grid point, leaving others NaN. Other methods use standard reindex.
+        Drops rows where all columns become NaN after reindexing.
+
+        Args:
+            grid_index: The target DatetimeIndex grid.
+            method: Reindexing method ('nearest', 'pad', 'ffill', etc.). Defaults to 'nearest'.
+
+        Returns:
+            A new DataFrame reindexed to the grid, with all-NaN rows removed.
+
+        Raises:
+            ValueError: If grid_index is invalid or input data is None/empty in a way
+                        that prevents processing.
         """
-        logger = logging.getLogger(__name__) # Get logger within static method
-
-        if not data_list:
-            raise ValueError("No data provided for reindexing.")
-        data = data_list[0] # Expecting only one DataFrame
-
-        grid_index = parameters.get('grid_index')
-        method = parameters.get('method', 'nearest') # Default to nearest
+        logger = logging.getLogger(__name__)
+        data = self.get_data() # Access data directly using self
 
         if not isinstance(grid_index, pd.DatetimeIndex):
             raise ValueError("Missing or invalid 'grid_index' parameter (must be pd.DatetimeIndex).")
         if grid_index.empty:
              raise ValueError("'grid_index' parameter cannot be empty.")
-        if data.empty:
-             logger.warning("Input data is empty, returning empty DataFrame with grid index.")
-             return pd.DataFrame(index=grid_index, columns=data.columns)
-
+        if data is None or data.empty:
+             logger.warning("Input data is None or empty, returning empty DataFrame with grid index.")
+             # Return an empty DataFrame with the correct columns and the target grid index
+             columns = self.required_columns if hasattr(self, 'required_columns') else []
+             return pd.DataFrame(index=grid_index, columns=columns)
 
         # Ensure data index timezone matches grid timezone before processing
         grid_tz = grid_index.tz
-        if data.index.tz is None:
-            logger.debug("Localizing timezone-naive index to grid timezone for reindexing.")
-            # Work on a copy to avoid modifying original signal data unexpectedly here
-            data = data.copy().tz_localize(grid_tz)
-        elif data.index.tz != grid_tz:
-            logger.debug(f"Converting index timezone from {data.index.tz} to {grid_tz} for reindexing.")
-            # Work on a copy
-            data = data.copy().tz_convert(grid_tz)
-        # else: # Timezones match, potentially make a copy if we want to be extra safe
-        #    data = data.copy()
-
+        data_index = data.index
+        # Work on a copy to avoid modifying original signal data unexpectedly here
+        data = data.copy()
+        if data_index.tz is None:
+            if grid_tz is not None:
+                logger.debug(f"Localizing timezone-naive index to grid timezone ({grid_tz}) for reindexing.")
+                data = data.tz_localize(grid_tz)
+            # else: both are naive, nothing to do
+        elif data_index.tz != grid_tz:
+            logger.debug(f"Converting index timezone from {data_index.tz} to {grid_tz} for reindexing.")
+            data = data.tz_convert(grid_tz)
+        # else: timezones match
 
         # --- Specific logic for 'nearest' to achieve NaN filling ---
         if method == 'nearest':
             logger.debug("Using 'nearest' method: mapping original points to nearest grid points, leaving others NaN.")
 
             # 1. Snap: Find nearest grid index labels for each original timestamp
-            # get_indexer returns integer positions in grid_index
             nearest_indices = grid_index.get_indexer(data.index, method='nearest')
 
-            # Handle case where get_indexer returns -1 (shouldn't happen with 'nearest' unless grid is empty?)
+            # Handle case where get_indexer returns -1
             valid_mask = nearest_indices != -1
             if not np.all(valid_mask):
-                 logger.warning(f"Could not find nearest grid point for {np.sum(~valid_mask)} original timestamps. Skipping them.")
+                 num_skipped = np.sum(~valid_mask)
+                 logger.warning(f"Could not find nearest grid point for {num_skipped} original timestamp(s). Skipping them.")
                  data = data[valid_mask]
                  nearest_indices = nearest_indices[valid_mask]
                  if data.empty:
                       logger.warning("No valid original timestamps remaining after filtering.")
-                      return pd.DataFrame(index=grid_index, columns=data.columns)
-
+                      return pd.DataFrame(index=grid_index, columns=data.columns) # Return empty with grid index
 
             snapped_index = grid_index[nearest_indices]
 
             # 2. Aggregate: Handle collisions (multiple original points mapping to the same grid point)
-            temp_df = data.copy() # Create a working copy
+            temp_df = data # Use the (potentially filtered) data copy
             temp_df.index = snapped_index # Assign the snapped grid timestamps as the index
 
-            # Check for duplicates before aggregation
             if temp_df.index.has_duplicates:
-                logger.debug(f"Found {temp_df.index.duplicated().sum()} duplicate timestamps after snapping. Aggregating...")
-                # Define aggregation strategy based on dtype
+                num_duplicates = temp_df.index.duplicated().sum()
+                logger.debug(f"Found {num_duplicates} duplicate timestamp(s) after snapping. Aggregating...")
                 agg_dict = {}
                 for col in temp_df.columns:
                     if pd.api.types.is_numeric_dtype(temp_df[col]):
-                        agg_dict[col] = 'mean' # Average numeric columns
+                        agg_dict[col] = 'mean'
                     else:
-                        agg_dict[col] = 'first' # Keep first occurrence for non-numeric (e.g., sleep stage)
-                # Perform aggregation
+                        agg_dict[col] = 'first'
                 temp_df_unique = temp_df.groupby(level=0).agg(agg_dict)
-                # Ensure original column order
-                temp_df_unique = temp_df_unique[data.columns]
+                temp_df_unique = temp_df_unique[data.columns] # Ensure original column order
                 logger.debug("Aggregation complete.")
             else:
                 logger.debug("No duplicate timestamps found after snapping.")
@@ -660,19 +658,19 @@ class TimeSeriesSignal(SignalData):
         # --- Standard reindex logic for other methods ---
         else:
             logger.debug(f"Using standard reindex method: {method}")
-            # Perform the standard reindexing (which might fill gaps depending on method)
             final_aligned_data = data.reindex(grid_index, method=method)
 
-        # --- ADDED: Drop rows where all columns are NaN ---
-        # This modifies the DataFrame *before* it's returned and used for inplace update
+        # --- Drop rows where all columns are NaN ---
         final_aligned_data_dropped = final_aligned_data.dropna(how='all')
         if len(final_aligned_data) != len(final_aligned_data_dropped):
-             logger.debug(f"Dropped {len(final_aligned_data) - len(final_aligned_data_dropped)} all-NaN rows before returning.")
-        # --- END ADDED ---
+             dropped_count = len(final_aligned_data) - len(final_aligned_data_dropped)
+             logger.debug(f"Dropped {dropped_count} all-NaN row(s) after reindexing.")
 
         logger.debug("Reindexing complete.")
-        # Return the DataFrame with NaNs dropped
-        return final_aligned_data_dropped # MODIFIED RETURN VALUE
+        return final_aligned_data_dropped
+
+    # --- Registered Operations (Defined as Static Methods) ---
+    # (Static method _reindex_to_grid_logic removed)
 
 # Explicitly register the static method after the class definition is complete
-TimeSeriesSignal.register("reindex_to_grid")(TimeSeriesSignal._reindex_to_grid_logic)
+# TimeSeriesSignal.register("reindex_to_grid")(TimeSeriesSignal._reindex_to_grid_logic) # Registration removed
