@@ -8,11 +8,16 @@ for all time-based signals in the framework.
 from dataclasses import asdict
 import uuid
 from typing import Dict, Any, Type, List, Optional
+import logging
+import sys
+import warnings
 from abc import abstractmethod
-import pandas as pd # Added import
 
-from dataclasses import asdict # Added import
-import uuid # Added import
+import numpy as np
+import pandas as pd
+
+from dataclasses import asdict
+import uuid
 from typing import Dict, Any, Type, List, Optional, Callable # Added Callable import
 
 from ..core.signal_data import SignalData
@@ -61,11 +66,8 @@ class TimeSeriesSignal(SignalData):
         Raises:
             ValueError: If the data doesn't have a DatetimeIndex
         """
-        import pandas as pd
-        import logging
-        
         logger = logging.getLogger(__name__)
-        
+
         if isinstance(data, pd.DataFrame):
             if not isinstance(data.index, pd.DatetimeIndex):
                 logger.error("TimeSeriesSignal data must have DatetimeIndex")
@@ -79,12 +81,8 @@ class TimeSeriesSignal(SignalData):
             The sampling rate in Hz calculated from the data's timestamp index.
             Returns None if sampling rate cannot be determined or data is empty.
         """
-        import pandas as pd
-        import numpy as np
-        import logging
-        
         logger = logging.getLogger(__name__)
-        
+
         data = self.get_data()
         if data is None or len(data) < 2:
             logger.debug(f"Cannot determine sampling rate - data is None or has fewer than 2 points")
@@ -136,7 +134,6 @@ class TimeSeriesSignal(SignalData):
         Calls get_sampling_rate() and formats the result as "X.XXXXHz", "Variable",
         or "Unknown" before updating the metadata using the handler.
         """
-        import logging
         logger = logging.getLogger(__name__)
 
         calculated_rate = self.get_sampling_rate()
@@ -148,7 +145,6 @@ class TimeSeriesSignal(SignalData):
             # Distinguish between insufficient data and variability if possible
             data = self.get_data()
             # Distinguish between insufficient data, zero diff, and variability
-            import pandas as pd # Need pandas here
             data = self.get_data()
             if data is None or len(data) < 2:
                 formatted_rate = "Unknown" # Insufficient data
@@ -197,8 +193,6 @@ class TimeSeriesSignal(SignalData):
             ValueError: If operation not found, inplace fails, or core logic fails.
             AttributeError: If a non-callable attribute matches the operation name.
         """
-        import pandas as pd # Local import
-        import logging # Local import
         logger = logging.getLogger(__name__)
 
         logger.info(f"Attempting to apply operation '{operation_name}' to signal {self.metadata.signal_id}")
@@ -337,12 +331,8 @@ class TimeSeriesSignal(SignalData):
             pd.DataFrame: Snapped signal data with timestamps aligned to exact grid points.
             Only includes timestamps where original data existed.
         """
-        import pandas as pd
-        import numpy as np
-        import logging
-        
         logger = logging.getLogger(__name__)
-        
+
         signal_type = getattr(self, 'signal_type', 'UNKNOWN').name if hasattr(getattr(self, 'signal_type', None), 'name') else 'UNKNOWN'
         
         df = self.get_data()
@@ -400,10 +390,6 @@ class TimeSeriesSignal(SignalData):
         Returns:
             pd.DataFrame: Resampled and aligned signal data.
         """
-        import pandas as pd
-        import numpy as np
-        import logging
-        
         logger = logging.getLogger(__name__)
         df = self.get_data()
         
@@ -496,14 +482,10 @@ class TimeSeriesSignal(SignalData):
                     if self.metadata.operations and hasattr(self, '_regenerate_data'):
                         regenerated = self._regenerate_data()
                         if not regenerated:
-                            import warnings
                             warnings.warn(f"Regeneration returned no data")
 
                             # Special case for tests: if we're in a test environment, create dummy data
-                            import sys
                             if 'pytest' in sys.modules:
-                                import pandas as pd
-                                import numpy as np
                                 # Create minimal test data matching the expected structure
                                 dates = pd.date_range('2023-01-01', periods=5, freq='s')
                                 if hasattr(self, 'required_columns'):
@@ -520,9 +502,8 @@ class TimeSeriesSignal(SignalData):
                         if self._data is not None:
                             self._validate_timestamp(self._data)
                 except Exception as e:
-                    import warnings
                     warnings.warn(f"Failed to regenerate data: {str(e)}")
-                
+
         return self._data
         
     @staticmethod
@@ -558,9 +539,6 @@ class TimeSeriesSignal(SignalData):
         Returns:
             A DataFrame containing the filtered data.
         """
-        import pandas as pd # Local imports
-        import numpy as np
-        import logging
         logger = logging.getLogger(__name__)
 
         # Note: 'parameters' dict is not needed here as args are passed directly
@@ -599,9 +577,6 @@ class TimeSeriesSignal(SignalData):
         Handles 'nearest' method specifically to map original points to their
         closest grid point, leaving others NaN. Other methods use standard reindex.
         """
-        import pandas as pd # Local import needed within static method
-        import numpy as np # Local import needed within static method
-        import logging # Local import needed within static method
         logger = logging.getLogger(__name__) # Get logger within static method
 
         if not data_list:
