@@ -40,11 +40,14 @@ def sample_feature(ppg_signal): # Depends on ppg_signal for source info
     }, index=epoch_index)
     # Set column multi-index names
     feature_data.columns = pd.MultiIndex.from_tuples(feature_data.columns, names=['signal_key', 'feature'])
+    # Extract feature names from the MultiIndex
+    feature_names = feature_data.columns.get_level_values('feature').unique().tolist()
 
     # Basic metadata
     metadata = {
         "feature_id": str(uuid.uuid4()),
         "feature_type": FeatureType.STATISTICAL, # Example type
+        "feature_names": feature_names, # Add the required feature names
         "source_signal_ids": [ppg_signal.metadata.signal_id],
         "source_signal_keys": ["ppg_0"], # Assume ppg_signal was added with this key
         "epoch_window_length": pd.Timedelta("2s"),
@@ -305,6 +308,7 @@ def test_get_signals_filter_features(signal_collection, ppg_signal, sample_featu
         "source_signal_keys": ["hypnogram_raw"], # Different source key
         "epoch_window_length": pd.Timedelta("30s"), # Different epoch length
         "epoch_step_size": pd.Timedelta("30s"),
+        "feature_names": feature_data2.columns.tolist(), # Add feature_names here too
         "name": "stages_0" # Explicitly set name
     }
     feature2 = Feature(data=feature_data2, metadata=metadata2)
