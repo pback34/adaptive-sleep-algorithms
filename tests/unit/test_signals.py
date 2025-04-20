@@ -3,7 +3,7 @@
 import pytest
 import pandas as pd
 from sleep_analysis.signals import TimeSeriesSignal, PPGSignal, AccelerometerSignal
-from sleep_analysis.core.metadata import SignalMetadata
+from sleep_analysis.core.metadata import TimeSeriesMetadata # Changed SignalMetadata to TimeSeriesMetadata
 from sleep_analysis.signal_types import SignalType
 
 def test_time_series_signal_abstract():
