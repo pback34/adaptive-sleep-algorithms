@@ -120,7 +120,7 @@ def test_add_signal_unique_signal_id(signal_collection, ppg_signal):
                           metadata={"signal_id": ppg_signal.metadata.signal_id})
     
     # Add to collection - should get a new signal_id
-    signal_collection.add_signal("ppg_1", ppg_signal2)
+    signal_collection.add_time_series_signal("ppg_1", ppg_signal2)
     
     # Verify the signal_ids are different
     assert ppg_signal.metadata.signal_id != ppg_signal2.metadata.signal_id
