@@ -333,7 +333,4 @@ def test_sanitize_parameters():
     # Test with non-dict input (should return as is, though unlikely in practice)
     assert handler._sanitize_parameters(None) is None
     assert handler._sanitize_parameters(123) == 123
-    
-    # Update with new values
-    handler.update_metadata(metadata, name="Updated Name", units=Unit.BPM)
 # (This section is removed as the tests were updated and moved above)
