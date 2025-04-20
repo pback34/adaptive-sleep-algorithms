@@ -75,7 +75,7 @@ def test_feature_metadata():
         source_signal_ids=["uuid-ppg-1", "uuid-accel-x"],
         sensor_type=SensorType.PPG, # Example propagated field
         sensor_model="Mixed", # Example propagated field
-        body_position=BodyPosition.WRIST # Example propagated field
+        body_position=BodyPosition.LEFT_WRIST # Example propagated field (Changed WRIST to LEFT_WRIST)
     )
     assert full_metadata.feature_id == "test_feature_001"
     assert full_metadata.name == "PPG Features"
@@ -87,7 +87,7 @@ def test_feature_metadata():
     assert full_metadata.source_signal_ids == ["uuid-ppg-1", "uuid-accel-x"]
     assert full_metadata.sensor_type == SensorType.PPG
     assert full_metadata.sensor_model == "Mixed"
-    assert full_metadata.body_position == BodyPosition.WRIST
+    assert full_metadata.body_position == BodyPosition.LEFT_WRIST # Changed WRIST to LEFT_WRIST
     assert full_metadata.framework_version == __version__
     assert full_metadata.operations == [] # Default
 
