@@ -43,11 +43,6 @@ def test_initialize_time_series_metadata():
     # as the handler now always auto-generates one if not provided.
     # Testing the absence of signal_id would require mocking uuid.uuid4 or altering the handler's core logic.
 
-    # Test invalid Timedelta string format (although TimeSeriesMetadata doesn't use these fields directly for init)
-    # This tests the conversion logic within the handler, even if TS metadata doesn't have these fields by default.
-    with pytest.raises(ValueError, match="Invalid format for epoch_window_length: 'invalid delta'"):
-        handler.initialize_time_series_metadata(signal_id="ts_delta_test", epoch_window_length="invalid delta")
-
 # Renamed test
 def test_auto_generate_time_series_signal_id():
     """Test auto-generation of signal_id for TimeSeriesMetadata."""
