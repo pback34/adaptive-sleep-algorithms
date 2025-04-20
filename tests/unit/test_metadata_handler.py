@@ -253,7 +253,7 @@ def test_set_name():
     # Test fallback (no key, no name)
     feature_metadata.name = None # Reset
     handler.set_name(feature_metadata)
-    assert feature_metadata.name == "feature_feat_def4" # Uses feature_id prefix
+    assert feature_metadata.name == "feature_feat_def" # Uses feature_id prefix [:8]
     # Test precedence (key over name)
     feature_metadata.name = None # Reset
     handler.set_name(feature_metadata, name="Explicit Feature Name", key="feature_key_priority")
