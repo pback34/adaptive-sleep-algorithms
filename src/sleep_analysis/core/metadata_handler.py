@@ -186,7 +186,8 @@ class MetadataHandler:
             if isinstance(metadata, TimeSeriesMetadata):
                 metadata.name = f"signal_{metadata.signal_id[:8]}" # Use first 8 chars of signal_id
             elif isinstance(metadata, FeatureMetadata):
-                 metadata.name = f"feature_{metadata.feature_id[:8]}" # Use first 8 chars of feature_id
+                 # Ensure slicing is exactly [:8] for feature_id fallback name
+                 metadata.name = f"feature_{metadata.feature_id[:8]}"
             # else: handle other potential future metadata types or raise error
         # If key is None, name is None, and metadata.name already exists, we do nothing (preserve existing name).
         # --- END MODIFIED LOGIC ---
