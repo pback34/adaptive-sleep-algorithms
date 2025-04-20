@@ -4,6 +4,7 @@ import pytest
 import uuid
 import pandas as pd
 import logging # Added for caplog tests
+from dataclasses import replace # Import replace for copying dataclasses
 from sleep_analysis.core.signal_collection import SignalCollection, STANDARD_RATES
 from sleep_analysis.signals.ppg_signal import PPGSignal
 from sleep_analysis.signals.accelerometer_signal import AccelerometerSignal
@@ -212,9 +213,10 @@ def test_add_feature_duplicate_key(signal_collection, sample_feature):
     """Test that adding a feature with an existing key raises ValueError."""
     key = "stats_0"
     signal_collection.add_feature(key, sample_feature)
-    # Create another feature instance (can reuse data/meta for simplicity here)
-    feature2 = Feature(data=sample_feature.get_data().copy(), metadata=sample_feature.metadata.copy())
-    feature2.metadata.feature_id = str(uuid.uuid4()) # Ensure different ID
+    # Create another feature instance using replace for metadata copy
+    feature2_metadata = replace(sample_feature.metadata)
+    feature2_metadata.feature_id = str(uuid.uuid4()) # Ensure different ID
+    feature2 = Feature(data=sample_feature.get_data().copy(), metadata=feature2_metadata)
 
     with pytest.raises(ValueError, match=f"Feature with key '{key}' already exists"):
         signal_collection.add_feature(key, feature2)
@@ -226,10 +228,10 @@ def test_add_feature_unique_id(signal_collection, sample_feature, caplog):
     signal_collection.add_feature(key1, sample_feature)
     original_id = sample_feature.metadata.feature_id
 
-    # Create another feature instance with the *same* ID
+    # Create another feature instance with the *same* ID initially
     feature2_data = sample_feature.get_data().copy() + 1 # Different data
-    feature2_meta = sample_feature.metadata.copy()
-    # feature2_meta.feature_id = original_id # ID is already the same
+    # Use replace to create a new metadata instance with the same initial values (including ID)
+    feature2_meta = replace(sample_feature.metadata)
     feature2 = Feature(data=feature2_data, metadata=feature2_meta)
 
     key2 = "stats_1"
@@ -282,8 +284,9 @@ def test_add_signal_with_base_name_feature(signal_collection, sample_feature):
     assert signal_collection.features["stats_0"] is sample_feature
 
     # Add another feature with the same base name
-    feature2 = Feature(data=sample_feature.get_data().copy() + 1, metadata=sample_feature.metadata.copy())
-    feature2.metadata.feature_id = str(uuid.uuid4())
+    feature2_metadata = replace(sample_feature.metadata) # Use replace for metadata copy
+    feature2_metadata.feature_id = str(uuid.uuid4()) # Ensure different ID
+    feature2 = Feature(data=sample_feature.get_data().copy() + 1, metadata=feature2_metadata)
     key2 = signal_collection.add_signal_with_base_name("stats", feature2)
     assert key2 == "stats_1"
     assert "stats_1" in signal_collection.features
