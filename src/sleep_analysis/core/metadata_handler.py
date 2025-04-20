@@ -181,8 +181,12 @@ class MetadataHandler:
             # If no key, but explicit name is given, use that.
             metadata.name = name
         elif not metadata.name:
-            # If no key and no explicit name, and name isn't already set, fallback to signal_id.
-            metadata.name = f"signal_{metadata.signal_id[:8]}"
+            # If no key and no explicit name, and name isn't already set, fallback to id.
+            if isinstance(metadata, TimeSeriesMetadata):
+                metadata.name = f"signal_{metadata.signal_id[:8]}"
+            elif isinstance(metadata, FeatureMetadata):
+                 metadata.name = f"feature_{metadata.feature_id[:8]}"
+            # else: handle other potential future metadata types or raise error
         # If key is None, name is None, and metadata.name already exists, we do nothing (preserve existing name).
         # --- END MODIFIED LOGIC ---
 
