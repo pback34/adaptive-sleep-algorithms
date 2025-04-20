@@ -11,6 +11,8 @@ from sleep_analysis.signals.heart_rate_signal import HeartRateSignal
 # Import Feature and related types
 from sleep_analysis.features.feature import Feature
 from sleep_analysis.core.metadata import FeatureType # Assuming FeatureType is here
+# Import base TimeSeriesSignal class
+from sleep_analysis.signals.time_series_signal import TimeSeriesSignal
 from sleep_analysis.signal_types import SignalType, SensorModel, BodyPosition
 
 @pytest.fixture
@@ -284,6 +286,85 @@ def test_add_signal_with_base_name_feature(signal_collection, sample_feature):
     assert "stats_1" in signal_collection.features
     assert len(signal_collection.features) == 2
     assert not signal_collection.time_series_signals # Ensure none went to TS dict
+
+def test_get_signals_filter_features(signal_collection, ppg_signal, sample_feature):
+    """Test filtering Feature objects using get_signals."""
+    # Add a time series signal for context
+    signal_collection.add_time_series_signal("ppg_0", ppg_signal)
+
+    # Add the sample feature (STATISTICAL type, source ppg_0)
+    signal_collection.add_feature("stats_0", sample_feature)
+
+    # Add another feature (different type, different source key)
+    epoch_index2 = pd.date_range(start="2023-01-01", periods=2, freq="2s", name='epoch_start_time')
+    feature_data2 = pd.DataFrame({'sleep_stage': [1, 2]}, index=epoch_index2)
+    metadata2 = {
+        "feature_id": str(uuid.uuid4()),
+        "feature_type": FeatureType.SLEEP_STAGE, # Different type
+        "source_signal_ids": ["some_other_id"],
+        "source_signal_keys": ["hypnogram_raw"], # Different source key
+        "epoch_window_length": pd.Timedelta("30s"), # Different epoch length
+        "epoch_step_size": pd.Timedelta("30s"),
+        "name": "stages_0" # Explicitly set name
+    }
+    feature2 = Feature(data=feature_data2, metadata=metadata2)
+    signal_collection.add_feature("stages_0", feature2)
+
+    # Add a third feature with the same base name as the first
+    feature3 = Feature(data=sample_feature.get_data() + 10, metadata=sample_feature.metadata.copy())
+    feature3.metadata.feature_id = str(uuid.uuid4())
+    feature3.metadata.source_signal_keys = ["ppg_1"] # Different source key
+    signal_collection.add_signal_with_base_name("stats", feature3) # Adds as "stats_1"
+
+    # --- Test Filtering ---
+
+    # 1. Filter by feature_type (enum)
+    stat_features = signal_collection.get_signals(feature_type=FeatureType.STATISTICAL)
+    assert len(stat_features) == 2
+    assert all(isinstance(f, Feature) for f in stat_features)
+    assert set(f.metadata.feature_type for f in stat_features) == {FeatureType.STATISTICAL}
+    assert set(f.metadata.name for f in stat_features) == {"stats_0", "stats_1"}
+
+    # 2. Filter by feature_type (string)
+    stage_features = signal_collection.get_signals(feature_type="SLEEP_STAGE")
+    assert len(stage_features) == 1
+    assert stage_features[0].metadata.feature_type == FeatureType.SLEEP_STAGE
+    assert stage_features[0].metadata.name == "stages_0"
+
+    # 3. Filter by criteria (targeting feature metadata)
+    ppg0_source_features = signal_collection.get_signals(criteria={"source_signal_keys": ["ppg_0"]})
+    assert len(ppg0_source_features) == 1
+    assert ppg0_source_features[0].metadata.name == "stats_0"
+
+    # 4. Filter by base_name (targeting features)
+    stats_base_features = signal_collection.get_signals(base_name="stats")
+    assert len(stats_base_features) == 2
+    assert set(f.metadata.name for f in stats_base_features) == {"stats_0", "stats_1"}
+
+    # 5. Combine feature_type and criteria
+    stats_from_ppg1 = signal_collection.get_signals(
+        feature_type=FeatureType.STATISTICAL,
+        criteria={"source_signal_keys": ["ppg_1"]}
+    )
+    assert len(stats_from_ppg1) == 1
+    assert stats_from_ppg1[0].metadata.name == "stats_1"
+
+    # 6. Criteria that only matches features
+    epoch_30s_features = signal_collection.get_signals(criteria={"epoch_window_length": pd.Timedelta("30s")})
+    assert len(epoch_30s_features) == 1
+    assert epoch_30s_features[0].metadata.name == "stages_0"
+
+    # 7. Criteria that only matches time series signals
+    ppg_type_signals = signal_collection.get_signals(criteria={"signal_type": SignalType.PPG})
+    assert len(ppg_type_signals) == 1
+    assert isinstance(ppg_type_signals[0], TimeSeriesSignal)
+    assert ppg_type_signals[0].metadata.name == "ppg_0"
+
+    # 8. No filters - should return all items (1 TS, 3 Features)
+    all_items = signal_collection.get_signals()
+    assert len(all_items) == 4
+    assert sum(1 for item in all_items if isinstance(item, TimeSeriesSignal)) == 1
+    assert sum(1 for item in all_items if isinstance(item, Feature)) == 3
 
 # --- End Feature Handling Tests ---
 
