@@ -3,7 +3,7 @@
 import pytest
 import pandas as pd
 from sleep_analysis.core.signal_data import SignalData
-from sleep_analysis.core.metadata import SignalMetadata
+from sleep_analysis.core.metadata import TimeSeriesMetadata # Changed SignalMetadata to TimeSeriesMetadata
 from sleep_analysis.signal_types import SignalType
 from sleep_analysis import __version__
 from sleep_analysis.signals import PPGSignal
@@ -128,12 +128,18 @@ def test_regenerate_data_after_clear(sample_metadata, sample_dataframe):
     assert len(regenerated_data) > 0
 
 def test_signal_metadata_optional_fields():
-    """Test that SignalMetadata handles optional fields correctly."""
+    """Test that TimeSeriesMetadata handles optional fields correctly."""
     # Create metadata with only required fields
-    metadata = SignalMetadata(signal_id="minimal_signal")
+    # Note: TimeSeriesMetadata initialization is handled by MetadataHandler in SignalData.__init__
+    # We can test the structure by creating a minimal dictionary first.
+    metadata_dict = {"signal_id": "minimal_signal"}
+    # In a real scenario, this would be passed to SignalData.__init__ which uses the handler.
+    # For testing the structure conceptually:
+    metadata = TimeSeriesMetadata(signal_id="minimal_signal", signal_type=SignalType.PPG, framework_version=__version__) # Need signal_type and version
     assert metadata.signal_id == "minimal_signal"
     assert metadata.start_time is None
-    assert metadata.operations == []
+    # Default empty lists are initialized by SignalData.__init__ or handler
+    assert metadata.operations == [] # Default value in dataclass
     assert not metadata.temporary
     assert metadata.framework_version == __version__
 
