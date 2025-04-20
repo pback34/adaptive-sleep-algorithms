@@ -609,58 +609,67 @@ class WorkflowExecutor:
             # Call exporter's export method for the current configuration item
             logger.info(f"Executing export task to: {config_item['output_dir']}")
             try:
-                # --- Translate content dictionary to list of strings ---
-                content_config = config_item["content"] # This is the dictionary
-                export_content_list = [] # This will be the List[str] for exporter.export
+                content_config = config_item["content"]
+                export_content_list = [] # Initialize list for exporter
 
-                # Translate time_series
-                ts_content = content_config.get("time_series")
-                if ts_content == "all":
-                    export_content_list.append("all_ts")
-                elif isinstance(ts_content, list):
-                    if "all" in ts_content: # Check if list contains "all"
+                # Check if content is provided as a dictionary (needs translation) or a list (use directly)
+                if isinstance(content_config, dict):
+                    logger.debug("Translating dictionary-based export content configuration.")
+                    # --- Translate content dictionary to list of strings ---
+                    # Translate time_series
+                    ts_content = content_config.get("time_series")
+                    if ts_content == "all":
                         export_content_list.append("all_ts")
-                    else:
-                        export_content_list.extend(ts_content) # Add specific keys if "all" is not present
+                    elif isinstance(ts_content, list):
+                        if "all" in ts_content: # Check if list contains "all"
+                            export_content_list.append("all_ts")
+                        else:
+                            export_content_list.extend(ts_content) # Add specific keys if "all" is not present
 
-                # Translate features
-                feat_content = content_config.get("features")
-                if feat_content == "all":
-                    export_content_list.append("all_features")
-                elif isinstance(feat_content, list):
-                    if "all" in feat_content: # Check if list contains "all"
+                    # Translate features
+                    feat_content = content_config.get("features")
+                    if feat_content == "all":
                         export_content_list.append("all_features")
-                    else:
-                        export_content_list.extend(feat_content) # Add specific keys if "all" is not present
+                    elif isinstance(feat_content, list):
+                        if "all" in feat_content: # Check if list contains "all"
+                            export_content_list.append("all_features")
+                        else:
+                            export_content_list.extend(feat_content) # Add specific keys if "all" is not present
 
-                # Translate combined_time_series
-                if content_config.get("combined_time_series") is True:
-                    export_content_list.append("combined_ts")
+                    # Translate combined_time_series
+                    if content_config.get("combined_time_series") is True:
+                        export_content_list.append("combined_ts")
 
-                # Translate combined_features
-                if content_config.get("combined_features") is True:
-                    export_content_list.append("combined_features")
+                    # Translate combined_features
+                    if content_config.get("combined_features") is True:
+                        export_content_list.append("combined_features")
 
-                # Translate summary
-                if content_config.get("summary") is True:
-                    export_content_list.append("summary")
+                    # Translate summary
+                    if content_config.get("summary") is True:
+                        export_content_list.append("summary")
 
-                # Translate metadata flag (Note: metadata export is often implicit in ExportModule)
-                # We don't add "metadata" to the content list itself, but the flag might
-                # be used elsewhere in ExportModule if needed. For now, just log.
-                if content_config.get("metadata") is True:
-                    logger.debug("Metadata export requested in configuration.")
-                
-                # Remove duplicates just in case
+                    # Translate metadata flag (Note: metadata export is often implicit in ExportModule)
+                    if content_config.get("metadata") is True:
+                        logger.debug("Metadata export requested in configuration (dictionary format).")
+                    # --- End Translation ---
+
+                elif isinstance(content_config, list):
+                    logger.debug("Using list-based export content configuration directly.")
+                    # Content is already provided as the list of strings the exporter expects
+                    export_content_list = content_config
+                else:
+                    # Handle unexpected type for content
+                    raise TypeError(f"Export 'content' must be a dictionary or a list, but got {type(content_config).__name__} for output_dir '{config_item['output_dir']}'")
+
+                # Remove duplicates just in case (applies to both paths)
                 export_content_list = list(dict.fromkeys(export_content_list))
-                logger.debug(f"Translated export content config to list: {export_content_list}")
-                # --- End Translation ---
+                logger.debug(f"Final export content list for exporter: {export_content_list}")
 
-                # Extract parameters using the translated content list
+                # Extract parameters using the final content list
                 export_params = {
                     "formats": config_item["formats"],
                     "output_dir": config_item["output_dir"],
-                    "content": export_content_list # Pass the translated list
+                    "content": export_content_list # Pass the final list
                 }
 
                 # Call export with the properly constructed parameters
