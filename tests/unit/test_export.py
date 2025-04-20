@@ -73,9 +73,9 @@ def sample_signal_collection():
         "signal_type": SignalType.PPG
     })
     
-    collection.add_signal("ppg_0", ppg_signal)
-    collection.add_signal("accelerometer_0", accel_signal)
-    collection.add_signal("temp_0", temp_signal)
+    collection.add_time_series_signal("ppg_0", ppg_signal)
+    collection.add_time_series_signal("accelerometer_0", accel_signal)
+    collection.add_time_series_signal("temp_0", temp_signal)
     
     return collection
 

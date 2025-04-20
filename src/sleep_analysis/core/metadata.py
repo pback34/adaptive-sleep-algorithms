@@ -20,6 +20,7 @@ class FeatureType(Enum):
     SPECTRAL = "spectral"
     HRV = "hrv"
     CORRELATION = "correlation"
+    SLEEP_STAGE = "sleep_stage" # Added for sleep stage classification
     CATEGORICAL_MODE = "categorical_mode" # Added for sleep stage mode
     CUSTOM = "custom"
     # Add more types as needed

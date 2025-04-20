@@ -4,7 +4,7 @@ import pytest
 import uuid
 import pandas as pd
 import logging # Added for caplog tests
-from dataclasses import replace # Import replace for copying dataclasses
+from dataclasses import replace, asdict # Import replace and asdict for copying dataclasses
 from sleep_analysis.core.signal_collection import SignalCollection, STANDARD_RATES
 from sleep_analysis.signals.ppg_signal import PPGSignal
 from sleep_analysis.signals.accelerometer_signal import AccelerometerSignal
@@ -213,10 +213,10 @@ def test_add_feature_duplicate_key(signal_collection, sample_feature):
     """Test that adding a feature with an existing key raises ValueError."""
     key = "stats_0"
     signal_collection.add_feature(key, sample_feature)
-    # Create another feature instance using replace for metadata copy
-    feature2_metadata = replace(sample_feature.metadata)
-    feature2_metadata.feature_id = str(uuid.uuid4()) # Ensure different ID
-    feature2 = Feature(data=sample_feature.get_data().copy(), metadata=feature2_metadata)
+    # Create another feature instance using replace and asdict for metadata copy
+    feature2_metadata_obj = replace(sample_feature.metadata)
+    feature2_metadata_obj.feature_id = str(uuid.uuid4()) # Ensure different ID
+    feature2 = Feature(data=sample_feature.get_data().copy(), metadata=asdict(feature2_metadata_obj))
 
     with pytest.raises(ValueError, match=f"Feature with key '{key}' already exists"):
         signal_collection.add_feature(key, feature2)
@@ -230,9 +230,9 @@ def test_add_feature_unique_id(signal_collection, sample_feature, caplog):
 
     # Create another feature instance with the *same* ID initially
     feature2_data = sample_feature.get_data().copy() + 1 # Different data
-    # Use replace to create a new metadata instance with the same initial values (including ID)
-    feature2_meta = replace(sample_feature.metadata)
-    feature2 = Feature(data=feature2_data, metadata=feature2_meta)
+    # Use replace and asdict to create a new metadata dict with the same initial values (including ID)
+    feature2_meta_obj = replace(sample_feature.metadata)
+    feature2 = Feature(data=feature2_data, metadata=asdict(feature2_meta_obj))
 
     key2 = "stats_1"
     signal_collection.add_feature(key2, feature2)
@@ -284,9 +284,9 @@ def test_add_signal_with_base_name_feature(signal_collection, sample_feature):
     assert signal_collection.features["stats_0"] is sample_feature
 
     # Add another feature with the same base name
-    feature2_metadata = replace(sample_feature.metadata) # Use replace for metadata copy
-    feature2_metadata.feature_id = str(uuid.uuid4()) # Ensure different ID
-    feature2 = Feature(data=sample_feature.get_data().copy() + 1, metadata=feature2_metadata)
+    feature2_metadata_obj = replace(sample_feature.metadata) # Use replace for metadata copy
+    feature2_metadata_obj.feature_id = str(uuid.uuid4()) # Ensure different ID
+    feature2 = Feature(data=sample_feature.get_data().copy() + 1, metadata=asdict(feature2_metadata_obj))
     key2 = signal_collection.add_signal_with_base_name("stats", feature2)
     assert key2 == "stats_1"
     assert "stats_1" in signal_collection.features
@@ -318,9 +318,11 @@ def test_get_signals_filter_features(signal_collection, ppg_signal, sample_featu
     signal_collection.add_feature("stages_0", feature2)
 
     # Add a third feature with the same base name as the first
-    feature3 = Feature(data=sample_feature.get_data() + 10, metadata=sample_feature.metadata.copy())
-    feature3.metadata.feature_id = str(uuid.uuid4())
-    feature3.metadata.source_signal_keys = ["ppg_1"] # Different source key
+    # Use replace and asdict for consistent metadata copying/modification
+    feature3_metadata_obj = replace(sample_feature.metadata)
+    feature3_metadata_obj.feature_id = str(uuid.uuid4())
+    feature3_metadata_obj.source_signal_keys = ["ppg_1"] # Different source key
+    feature3 = Feature(data=sample_feature.get_data() + 10, metadata=asdict(feature3_metadata_obj))
     signal_collection.add_signal_with_base_name("stats", feature3) # Adds as "stats_1"
 
     # --- Test Filtering ---

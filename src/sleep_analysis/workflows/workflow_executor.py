@@ -609,11 +609,58 @@ class WorkflowExecutor:
             # Call exporter's export method for the current configuration item
             logger.info(f"Executing export task to: {config_item['output_dir']}")
             try:
-                # Extract parameters that match the NEW ExportModule.export signature
+                # --- Translate content dictionary to list of strings ---
+                content_config = config_item["content"] # This is the dictionary
+                export_content_list = [] # This will be the List[str] for exporter.export
+
+                # Translate time_series
+                ts_content = content_config.get("time_series")
+                if ts_content == "all":
+                    export_content_list.append("all_ts")
+                elif isinstance(ts_content, list):
+                    if "all" in ts_content: # Check if list contains "all"
+                        export_content_list.append("all_ts")
+                    else:
+                        export_content_list.extend(ts_content) # Add specific keys if "all" is not present
+
+                # Translate features
+                feat_content = content_config.get("features")
+                if feat_content == "all":
+                    export_content_list.append("all_features")
+                elif isinstance(feat_content, list):
+                    if "all" in feat_content: # Check if list contains "all"
+                        export_content_list.append("all_features")
+                    else:
+                        export_content_list.extend(feat_content) # Add specific keys if "all" is not present
+
+                # Translate combined_time_series
+                if content_config.get("combined_time_series") is True:
+                    export_content_list.append("combined_ts")
+
+                # Translate combined_features
+                if content_config.get("combined_features") is True:
+                    export_content_list.append("combined_features")
+
+                # Translate summary
+                if content_config.get("summary") is True:
+                    export_content_list.append("summary")
+
+                # Translate metadata flag (Note: metadata export is often implicit in ExportModule)
+                # We don't add "metadata" to the content list itself, but the flag might
+                # be used elsewhere in ExportModule if needed. For now, just log.
+                if content_config.get("metadata") is True:
+                    logger.debug("Metadata export requested in configuration.")
+                
+                # Remove duplicates just in case
+                export_content_list = list(dict.fromkeys(export_content_list))
+                logger.debug(f"Translated export content config to list: {export_content_list}")
+                # --- End Translation ---
+
+                # Extract parameters using the translated content list
                 export_params = {
                     "formats": config_item["formats"],
                     "output_dir": config_item["output_dir"],
-                    "content": config_item["content"] # Pass the content list directly
+                    "content": export_content_list # Pass the translated list
                 }
 
                 # Call export with the properly constructed parameters
