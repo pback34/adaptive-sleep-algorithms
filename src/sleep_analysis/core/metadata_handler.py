@@ -124,11 +124,12 @@ class MetadataHandler:
                         raise ValueError(f"Invalid format for {k}: '{v}'. Use pandas Timedelta string format (e.g., '30s', '5m').")
                 # Special handling for FeatureType enum conversion
                 elif k == 'feature_type' and isinstance(v, str):
-                     from ..signal_types import FeatureType # Local import
-                     from ..utils import str_to_enum # Local import
+                     # Corrected local imports
+                     from ..core.metadata import FeatureType
+                     from ..utils import str_to_enum
                      try:
                           filtered_dict[k] = str_to_enum(v, FeatureType)
-                     except ValueError:
+                     except ValueError: # Keep specific error for invalid enum value
                           raise ValueError(f"Invalid FeatureType value: '{v}'")
                 else:
                     filtered_dict[k] = v
