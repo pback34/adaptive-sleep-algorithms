@@ -2,7 +2,8 @@
 
 import pytest
 from datetime import datetime
-from sleep_analysis.core.metadata import SignalMetadata, CollectionMetadata, OperationInfo
+# Updated import to use TimeSeriesMetadata
+from sleep_analysis.core.metadata import TimeSeriesMetadata, CollectionMetadata, OperationInfo, FeatureMetadata # Added FeatureMetadata for potential future use
 from sleep_analysis.signal_types import SignalType, SensorType, SensorModel, BodyPosition, Unit
 from sleep_analysis import __version__
 
@@ -12,19 +13,20 @@ def test_operation_info():
     assert op.operation_name == "filter_lowpass"
     assert op.parameters == {"cutoff": 5.0}
 
-def test_signal_metadata(sample_metadata):
-    """Test the SignalMetadata class."""
+# Updated test name and class usage
+def test_time_series_metadata(sample_metadata):
+    """Test the TimeSeriesMetadata class."""
     # Create with minimal required fields
-    metadata = SignalMetadata(signal_id="test_signal_002")
+    metadata = TimeSeriesMetadata(signal_id="test_signal_002")
     assert metadata.signal_id == "test_signal_002"
     assert metadata.framework_version == __version__
-    
+
     # Create with full sample metadata
     # Create with sample metadata, excluding sample_rate which is auto-calculated
-    metadata = SignalMetadata(
+    metadata = TimeSeriesMetadata(
         signal_id=sample_metadata["signal_id"],
         name=sample_metadata["name"],
-        # sample_rate=sample_metadata["sample_rate"], # Removed
+        # sample_rate=sample_metadata["sample_rate"], # Removed - sample_rate is now derived
         units=sample_metadata["units"],
         start_time=sample_metadata["start_time"],
         end_time=sample_metadata["end_time"],
