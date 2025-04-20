@@ -37,7 +37,8 @@ def test_add_signal_with_base_name(signal_collection, ppg_signal):
     
     assert key1 == "ppg_0"
     assert key2 == "ppg_1"
-    assert len(signal_collection.signals) == 2
+    # Check the specific dictionary for time series signals
+    assert len(signal_collection.time_series_signals) == 2
     
     # Test error handling
     with pytest.raises(ValueError):
@@ -78,7 +79,7 @@ def test_get_signals_by_base_name(signal_collection, ppg_signal):
 
 def test_get_signals_by_criteria(signal_collection, ppg_signal):
     """Test retrieving signals by metadata criteria."""
-    signal_collection.add_signal("ppg_0", ppg_signal)
+    signal_collection.add_time_series_signal("ppg_0", ppg_signal)
     
     # Get by signal type
     signals = signal_collection.get_signals(criteria={"signal_type": SignalType.PPG})
@@ -95,9 +96,9 @@ def test_get_signals_by_criteria(signal_collection, ppg_signal):
     custom_data.index.name = 'timestamp'
     custom_signal = PPGSignal(data=custom_data, 
                            metadata={"signal_id": str(uuid.uuid4()), 
-                                    "signal_type": SignalType.PPG, 
+                                    "signal_type": SignalType.PPG,
                                     "sensor_info": {"custom_field": "test_value"}})
-    signal_collection.add_signal("custom", custom_signal)
+    signal_collection.add_time_series_signal("custom", custom_signal)
     
     signals = signal_collection.get_signals(criteria={
         "signal_type": SignalType.PPG,
@@ -108,8 +109,8 @@ def test_get_signals_by_criteria(signal_collection, ppg_signal):
     assert signals[0].metadata.sensor_info["custom_field"] == "test_value"
 
 def test_add_signal_unique_signal_id(signal_collection, ppg_signal):
-    """Test that add_signal ensures unique signal_id values."""
-    signal_collection.add_signal("ppg_0", ppg_signal)
+    """Test that add_time_series_signal ensures unique signal_id values."""
+    signal_collection.add_time_series_signal("ppg_0", ppg_signal)
     
     # Create a second signal with the same signal_id
     index = pd.date_range(start="2023-01-01", periods=3, freq="1s")
@@ -124,9 +125,9 @@ def test_add_signal_unique_signal_id(signal_collection, ppg_signal):
     # Verify the signal_ids are different
     assert ppg_signal.metadata.signal_id != ppg_signal2.metadata.signal_id
     
-    # Verify both signals are in the collection
-    assert "ppg_0" in signal_collection.signals
-    assert "ppg_1" in signal_collection.signals
+    # Verify both signals are in the collection (check the correct dict)
+    assert "ppg_0" in signal_collection.time_series_signals
+    assert "ppg_1" in signal_collection.time_series_signals
 
 def test_combined_functionality(signal_collection, ppg_signal):
     """Test the combination of base name indexing and criteria filtering."""
@@ -154,7 +155,7 @@ def test_combined_functionality(signal_collection, ppg_signal):
 def test_new_get_signals_functionality(signal_collection, ppg_signal):
     """Test the new consolidated get_signals method with various input types."""
     # Set up test signals
-    signal_collection.add_signal("ppg_0", ppg_signal)
+    signal_collection.add_time_series_signal("ppg_0", ppg_signal)
     
     # Create an accelerometer signal
     accel_dates = pd.date_range('2023-01-01', periods=3, freq='1s')
@@ -170,7 +171,7 @@ def test_new_get_signals_functionality(signal_collection, ppg_signal):
         "signal_type": SignalType.ACCELEROMETER,
         "body_position": BodyPosition.CHEST
     })
-    signal_collection.add_signal("accel_0", accel_signal)
+    signal_collection.add_time_series_signal("accel_0", accel_signal)
     
     # Test retrieving by signal type (enum)
     ppg_signals = signal_collection.get_signals(signal_type=SignalType.PPG)
@@ -209,7 +210,7 @@ def test_new_get_signals_functionality(signal_collection, ppg_signal):
         "signal_type": SignalType.PPG,
         "body_position": BodyPosition.CHEST
     })
-    signal_collection.add_signal("ppg_1", ppg_signal2)
+    signal_collection.add_time_series_signal("ppg_1", ppg_signal2)
     
     # Test filtering by signal_type and other criteria
     result = signal_collection.get_signals(
@@ -240,7 +241,7 @@ def test_get_combined_dataframe_multiindex(signal_collection):
         "sensor_model": SensorModel.POLAR_H10,
         "body_position": BodyPosition.CHEST
     })
-    signal_collection.add_signal("accelerometer_0", accel_signal)
+    signal_collection.add_time_series_signal("accelerometer_0", accel_signal)
     
     # Add a heart rate signal
     hr_dates = pd.date_range('2023-01-01', periods=5, freq='1s')
@@ -255,7 +256,7 @@ def test_get_combined_dataframe_multiindex(signal_collection):
         "sensor_model": SensorModel.POLAR_H10,
         "body_position": BodyPosition.CHEST
     })
-    signal_collection.add_signal("hr_0", hr_signal)
+    signal_collection.add_time_series_signal("hr_0", hr_signal)
 
     # --- Generate and retrieve the combined dataframe using the new workflow ---
     # 1. Calculate alignment grid parameters (using default highest rate)
@@ -327,15 +328,15 @@ def test_alignment_workflow(signal_collection):
     low_df = pd.DataFrame({"value": range(50)}, index=low_freq)
 
     # Add signals to the collection
-    signal_collection.add_signal("high_rate", MockSignal(high_df))
-    signal_collection.add_signal("low_rate", MockSignal(low_df))
+    signal_collection.add_time_series_signal("high_rate", MockSignal(high_df))
+    signal_collection.add_time_series_signal("low_rate", MockSignal(low_df))
     
     # Set the index configuration to include the signal name
     signal_collection.metadata.index_config = ["name"]
     
-    # Update the signals' metadata with names matching their keys
-    signal_collection.signals["high_rate"].metadata.name = "high_rate"
-    signal_collection.signals["low_rate"].metadata.name = "low_rate"
+    # Update the signals' metadata with names matching their keys (access via correct dict)
+    signal_collection.time_series_signals["high_rate"].metadata.name = "high_rate"
+    signal_collection.time_series_signals["low_rate"].metadata.name = "low_rate"
 
     # --- Test 1: Align to highest sample rate (100 Hz) using apply_grid_alignment + combine ---
     # Step 1: Generate grid (should default to 100 Hz)
@@ -408,9 +409,9 @@ def test_alignment_workflow(signal_collection):
     none_df = pd.DataFrame({"value": range(20)}, index=pd.date_range("2023-01-01", periods=20, freq="50ms"))
     # Add the signal only once
     none_rate_signal_instance = NoneRateSignal(none_df)
-    signal_collection.add_signal("none_rate", none_rate_signal_instance)
-    # Update metadata directly on the instance stored in the collection
-    signal_collection.signals["none_rate"].metadata.name = "none_rate"
+    signal_collection.add_time_series_signal("none_rate", none_rate_signal_instance)
+    # Update metadata directly on the instance stored in the collection (access via correct dict)
+    signal_collection.time_series_signals["none_rate"].metadata.name = "none_rate"
 
     # Align should still work, using the valid rates (100 Hz)
     # Step 1: Generate grid (should ignore None rate signal and use 100 Hz)
@@ -452,7 +453,7 @@ def test_apply_collection_operation(signal_collection):
     dates = pd.date_range('2023-01-01', periods=5, freq='1s')
     data = pd.DataFrame({'value': range(5)}, index=dates)
     signal = PPGSignal(data=data, metadata={"signal_id": str(uuid.uuid4()), "signal_type": SignalType.PPG})
-    signal_collection.add_signal("dummy_0", signal)
+    signal_collection.add_time_series_signal("dummy_0", signal)
 
     # --- Test Success Case ---
     # Use generate_alignment_grid as an example registered operation
@@ -500,7 +501,7 @@ def test_add_signal_timezone_warning(caplog):
     naive_signal = PPGSignal(data=naive_data, metadata={"signal_id": str(uuid.uuid4()), "signal_type": SignalType.PPG})
 
     # Add the naive signal - should trigger a warning
-    collection.add_signal("naive_signal", naive_signal)
+    collection.add_time_series_signal("naive_signal", naive_signal)
 
     # Check captured logs for the expected warning
     assert "has a naive timestamp index (timezone: None)" in caplog.text
@@ -513,7 +514,7 @@ def test_add_signal_timezone_warning(caplog):
     aware_data = pd.DataFrame({'value': range(5)}, index=aware_dates)
     aware_signal = PPGSignal(data=aware_data, metadata={"signal_id": str(uuid.uuid4()), "signal_type": SignalType.PPG})
 
-    naive_collection.add_signal("aware_signal", aware_signal)
+    naive_collection.add_time_series_signal("aware_signal", aware_signal)
     # Check the specific warning message for aware signal -> naive collection
     assert "timezone string ('UTC') does not match collection timezone string ('None')" in caplog.text
 
@@ -521,6 +522,6 @@ def test_add_signal_timezone_warning(caplog):
     caplog.clear()
     collection_aware = SignalCollection(metadata={"timezone": "America/New_York"})
     # aware_signal is UTC
-    collection_aware.add_signal("aware_signal_mismatch", aware_signal)
+    collection_aware.add_time_series_signal("aware_signal_mismatch", aware_signal)
     # Check the specific warning message for mismatching aware timezones
     assert "timezone string ('UTC') does not match collection timezone string ('America/New_York')" in caplog.text
