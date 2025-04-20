@@ -3,10 +3,14 @@
 import pytest
 import uuid
 import pandas as pd
+import logging # Added for caplog tests
 from sleep_analysis.core.signal_collection import SignalCollection, STANDARD_RATES
 from sleep_analysis.signals.ppg_signal import PPGSignal
 from sleep_analysis.signals.accelerometer_signal import AccelerometerSignal
 from sleep_analysis.signals.heart_rate_signal import HeartRateSignal
+# Import Feature and related types
+from sleep_analysis.features.feature import Feature
+from sleep_analysis.core.metadata import FeatureType # Assuming FeatureType is here
 from sleep_analysis.signal_types import SignalType, SensorModel, BodyPosition
 
 @pytest.fixture
@@ -22,6 +26,37 @@ def ppg_signal():
     data = pd.DataFrame({"value": [1, 2, 3]}, index=index)
     data.index.name = 'timestamp'  # Name the index 'timestamp'
     return PPGSignal(data=data, metadata={"signal_id": str(uuid.uuid4()), "signal_type": SignalType.PPG})
+
+@pytest.fixture
+def sample_feature(ppg_signal): # Depends on ppg_signal for source info
+    """Return a sample Feature object."""
+    # Create epoch index aligned with ppg_signal for simplicity in later tests
+    epoch_index = pd.date_range(start="2023-01-01", periods=2, freq="2s", name='epoch_start_time')
+    feature_data = pd.DataFrame({
+        ('ppg_0', 'mean'): [1.5, 2.5],
+        ('ppg_0', 'std'): [0.5, 0.5]
+    }, index=epoch_index)
+    # Set column multi-index names
+    feature_data.columns = pd.MultiIndex.from_tuples(feature_data.columns, names=['signal_key', 'feature'])
+
+    # Basic metadata
+    metadata = {
+        "feature_id": str(uuid.uuid4()),
+        "feature_type": FeatureType.STATISTICAL, # Example type
+        "source_signal_ids": [ppg_signal.metadata.signal_id],
+        "source_signal_keys": ["ppg_0"], # Assume ppg_signal was added with this key
+        "epoch_window_length": pd.Timedelta("2s"),
+        "epoch_step_size": pd.Timedelta("2s"),
+        "operations": [ # Example operation record
+            {
+                "operation_name": "feature_statistics",
+                "parameters": {"stats": ["mean", "std"]},
+                "timestamp": pd.Timestamp.now(tz='UTC')
+            }
+        ]
+    }
+    return Feature(data=feature_data, metadata=metadata)
+
 
 def test_add_signal_with_base_name(signal_collection, ppg_signal):
     """Test adding signals with a base name and automatic indexing."""
@@ -151,6 +186,107 @@ def test_combined_functionality(signal_collection, ppg_signal):
     
     assert len(signals) == 1
     assert signals[0].metadata.sensor_info["custom_field"] == "special"
+
+# --- Tests for Feature Handling ---
+
+def test_add_feature_success(signal_collection, sample_feature):
+    """Test adding a valid Feature object."""
+    key = "stats_0"
+    signal_collection.add_feature(key, sample_feature)
+    assert key in signal_collection.features
+    assert signal_collection.features[key] is sample_feature
+    assert signal_collection.features[key].metadata.name == key # Check name is set
+    assert not signal_collection.time_series_signals # Ensure it didn't go to the wrong dict
+
+def test_add_feature_type_error(signal_collection, ppg_signal):
+    """Test that adding a non-Feature object raises TypeError."""
+    with pytest.raises(TypeError, match="Object provided for key 'ts_signal' is not a Feature"):
+        signal_collection.add_feature("ts_signal", ppg_signal) # Try adding a TimeSeriesSignal
+
+def test_add_feature_duplicate_key(signal_collection, sample_feature):
+    """Test that adding a feature with an existing key raises ValueError."""
+    key = "stats_0"
+    signal_collection.add_feature(key, sample_feature)
+    # Create another feature instance (can reuse data/meta for simplicity here)
+    feature2 = Feature(data=sample_feature.get_data().copy(), metadata=sample_feature.metadata.copy())
+    feature2.metadata.feature_id = str(uuid.uuid4()) # Ensure different ID
+
+    with pytest.raises(ValueError, match=f"Feature with key '{key}' already exists"):
+        signal_collection.add_feature(key, feature2)
+
+def test_add_feature_unique_id(signal_collection, sample_feature, caplog):
+    """Test adding a feature with a conflicting ID assigns a new one."""
+    caplog.set_level(logging.WARNING)
+    key1 = "stats_0"
+    signal_collection.add_feature(key1, sample_feature)
+    original_id = sample_feature.metadata.feature_id
+
+    # Create another feature instance with the *same* ID
+    feature2_data = sample_feature.get_data().copy() + 1 # Different data
+    feature2_meta = sample_feature.metadata.copy()
+    # feature2_meta.feature_id = original_id # ID is already the same
+    feature2 = Feature(data=feature2_data, metadata=feature2_meta)
+
+    key2 = "stats_1"
+    signal_collection.add_feature(key2, feature2)
+
+    assert key2 in signal_collection.features
+    new_id = signal_collection.features[key2].metadata.feature_id
+    assert new_id != original_id
+    assert f"Feature ID '{original_id}' conflicts" in caplog.text
+    assert f"Assigning new ID: {new_id}" in caplog.text
+
+def test_get_feature_success(signal_collection, sample_feature):
+    """Test retrieving a feature successfully."""
+    key = "stats_0"
+    signal_collection.add_feature(key, sample_feature)
+    retrieved_feature = signal_collection.get_feature(key)
+    assert retrieved_feature is sample_feature
+
+def test_get_feature_not_found(signal_collection):
+    """Test retrieving a non-existent feature raises KeyError."""
+    with pytest.raises(KeyError, match="No Feature with key 'not_a_feature' found"):
+        signal_collection.get_feature("not_a_feature")
+
+def test_get_signal_retrieves_feature(signal_collection, sample_feature):
+    """Test that get_signal can retrieve a Feature object."""
+    key = "stats_0"
+    signal_collection.add_feature(key, sample_feature)
+    retrieved_item = signal_collection.get_signal(key)
+    assert isinstance(retrieved_item, Feature)
+    assert retrieved_item is sample_feature
+
+def test_get_signal_retrieves_timeseries(signal_collection, ppg_signal):
+    """Test that get_signal can retrieve a TimeSeriesSignal object."""
+    key = "ppg_0"
+    signal_collection.add_time_series_signal(key, ppg_signal)
+    retrieved_item = signal_collection.get_signal(key)
+    assert isinstance(retrieved_item, TimeSeriesSignal)
+    assert retrieved_item is ppg_signal
+
+def test_get_signal_not_found(signal_collection):
+    """Test get_signal raises KeyError if key matches neither type."""
+    with pytest.raises(KeyError, match="No TimeSeriesSignal or Feature with key 'missing_key' found"):
+        signal_collection.get_signal("missing_key")
+
+def test_add_signal_with_base_name_feature(signal_collection, sample_feature):
+    """Test add_signal_with_base_name correctly handles Feature objects."""
+    key1 = signal_collection.add_signal_with_base_name("stats", sample_feature)
+    assert key1 == "stats_0"
+    assert "stats_0" in signal_collection.features
+    assert signal_collection.features["stats_0"] is sample_feature
+
+    # Add another feature with the same base name
+    feature2 = Feature(data=sample_feature.get_data().copy() + 1, metadata=sample_feature.metadata.copy())
+    feature2.metadata.feature_id = str(uuid.uuid4())
+    key2 = signal_collection.add_signal_with_base_name("stats", feature2)
+    assert key2 == "stats_1"
+    assert "stats_1" in signal_collection.features
+    assert len(signal_collection.features) == 2
+    assert not signal_collection.time_series_signals # Ensure none went to TS dict
+
+# --- End Feature Handling Tests ---
+
 
 def test_new_get_signals_functionality(signal_collection, ppg_signal):
     """Test the new consolidated get_signals method with various input types."""
