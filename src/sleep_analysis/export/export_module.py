@@ -212,12 +212,13 @@ class ExportModule:
                  export_summary = False # Disable summary export if empty
 
         # --- Serialize Metadata ---
-        # Pass the final list of keys whose metadata should be included
-        final_metadata_keys = sorted(list(metadata_keys_to_include))
-        serialized_metadata = self._serialize_metadata(signal_keys_to_include=final_metadata_keys)
+        # Always serialize metadata for ALL signals in the collection, regardless of export content flags.
+        # Pass None to _serialize_metadata to trigger inclusion of all signals.
+        logger.debug("Serializing metadata for all signals in the collection.")
+        serialized_metadata = self._serialize_metadata(signal_keys_to_include=None)
 
         # --- Perform Export for Each Format ---
-        # Check if there's anything to export at all
+        # Check if there's anything to export at all (based on data, not metadata)
         if not signals_to_process and combined_ts_df is None and combined_features_df is None and summary_df is None:
              logger.warning(f"Nothing to export for task targeting directory '{output_dir}' based on content specification: {content_list}. Skipping format processing.")
              return
@@ -386,12 +387,16 @@ class ExportModule:
                 logger.warning(f"Key '{key}' requested for metadata serialization not found in time_series_signals or features.")
         logger.debug("Finished serializing individual signal/feature metadata.")
 
-        # Prepare combined metadata structure
+        # Prepare combined metadata structure, merging time series and features under 'signals'
+        combined_signals_metadata = {**time_series_metadata, **feature_metadata}
         metadata = {
             "collection": collection_metadata,
-            "time_series_signals": time_series_metadata,
-            "features": feature_metadata
+            "signals": combined_signals_metadata
         }
+        logger.debug(f"Final serialized metadata structure keys: {list(metadata.keys())}")
+        if "signals" in metadata:
+            logger.debug(f"Serialized 'signals' metadata keys: {list(metadata['signals'].keys())}")
+
 
         return metadata
 
@@ -655,12 +660,13 @@ class ExportModule:
             warnings.warn("Failed to export metadata.")
 
         # Export combined dataframe if requested
-        # Check if combined_df was passed (controlled by include_combined flag in main export method)
+        # Check if combined_df was passed (controlled by the 'combined_ts' content keyword)
         if combined_df is not None:
-            combined_file = os.path.join(output_dir, "combined.csv")
+            # Use the filename corresponding to the content keyword
+            combined_file = os.path.join(output_dir, "combined_ts.csv")
             logger.info(f"Attempting to export combined dataframe to {combined_file}")
 
-            # combined_df is already passed as an argument, no need to retrieve again
+            # combined_df is already passed as an argument
             # combined_df = self.collection.get_stored_combined_dataframe() # REMOVED
 
             if not combined_df.empty: # Check if the passed dataframe is not empty

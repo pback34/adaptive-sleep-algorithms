@@ -481,7 +481,8 @@ class TestWorkflowExecutor:
             assert os.path.exists(os.path.join(temp_output_dir, "signals", "ppg_0.csv")) # Original input signal
             assert os.path.exists(os.path.join(temp_output_dir, "signals", "filtered_ppg_0.csv")) # Check for indexed output key
             assert os.path.exists(os.path.join(temp_output_dir, "metadata.json"))
-            assert os.path.exists(os.path.join(temp_output_dir, "combined.csv")) # Combined TS export
+            # Check for the correct combined time-series filename
+            assert os.path.exists(os.path.join(temp_output_dir, "combined_ts.csv")) # Combined TS export
         finally:
             # Restore original operation or clean up
             if original_op:

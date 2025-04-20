@@ -114,10 +114,10 @@ def signal_collection_with_multiindex():
         "sensor_model": SensorModel.POLAR_H10,
         "body_position": BodyPosition.CHEST
     })
-    
-    collection.add_signal("hr_0", hr_signal)
-    collection.add_signal("accelerometer_0", accel_signal)
-    
+
+    collection.add_time_series_signal("hr_0", hr_signal)
+    collection.add_time_series_signal("accelerometer_0", accel_signal)
+
     return collection
 
 def test_simple_multiindex_to_csv(temp_output_dir, sample_multiindex_df, logger):
@@ -206,10 +206,12 @@ def test_collection_multiindex_export(temp_output_dir, signal_collection_with_mu
     
     # Export using ExportModule
     exporter = ExportModule(signal_collection_with_multiindex)
-    exporter.export(formats=["csv"], output_dir=temp_output_dir, include_combined=True)
+    # Use the 'content' argument to specify exporting the combined time-series data
+    exporter.export(formats=["csv"], output_dir=temp_output_dir, content=["combined_ts"])
     
     # Check the exported CSV file
-    csv_path = os.path.join(temp_output_dir, "combined.csv")
+    # The combined time-series file is now named 'combined_ts.csv' by default
+    csv_path = os.path.join(temp_output_dir, "combined_ts.csv")
     assert os.path.exists(csv_path), "Combined CSV file should exist"
     
     # Log the raw CSV content
@@ -369,11 +371,12 @@ def test_export_functions_multiindex(temp_output_dir, signal_collection_with_mul
             if i > 10: break
             logger.debug(f"Line {i}: {line.strip()}")
     
-    # Use ExportModule to export to CSV
-    exporter.export(formats=["csv"], output_dir=temp_output_dir, include_combined=True)
+    # Use ExportModule to export to CSV, specifying 'combined_ts' in content
+    exporter.export(formats=["csv"], output_dir=temp_output_dir, content=["combined_ts"])
     
     # Log the ExportModule CSV content
-    module_csv_path = os.path.join(temp_output_dir, "combined.csv")
+    # The combined time-series file is now named 'combined_ts.csv' by default
+    module_csv_path = os.path.join(temp_output_dir, "combined_ts.csv")
     logger.debug("ExportModule CSV content:")
     with open(module_csv_path, 'r') as f:
         for i, line in enumerate(f):

@@ -119,7 +119,8 @@ def test_export_excel(sample_signal_collection, temp_output_dir):
     sample_signal_collection.combine_aligned_signals()
 
     exporter = ExportModule(sample_signal_collection)
-    exporter.export(formats=["excel"], output_dir=temp_output_dir, include_combined=True)
+    # Specify content to export: all time series signals and the combined TS dataframe
+    exporter.export(formats=["excel"], output_dir=temp_output_dir, content=["all_ts", "combined_ts"])
 
     # Check files were created
     assert os.path.exists(os.path.join(temp_output_dir, "signals.xlsx"))
@@ -156,15 +157,17 @@ def test_export_csv(sample_signal_collection, temp_output_dir):
     sample_signal_collection.combine_aligned_signals()
 
     exporter = ExportModule(sample_signal_collection)
-    exporter.export(formats=["csv"], output_dir=temp_output_dir, include_combined=True)
+    # Specify content to export: all time series signals and the combined TS dataframe
+    exporter.export(formats=["csv"], output_dir=temp_output_dir, content=["all_ts", "combined_ts"])
 
     # Check files were created
     assert os.path.isdir(os.path.join(temp_output_dir, "signals"))
     assert os.path.exists(os.path.join(temp_output_dir, "signals", "ppg_0.csv"))
     assert os.path.exists(os.path.join(temp_output_dir, "signals", "accelerometer_0.csv"))
     assert os.path.exists(os.path.join(temp_output_dir, "metadata.json"))
-    assert os.path.exists(os.path.join(temp_output_dir, "combined.csv"))
-    
+    # Check for the correct combined time-series filename
+    assert os.path.exists(os.path.join(temp_output_dir, "combined_ts.csv"))
+
     # Verify CSV content
     ppg_df = pd.read_csv(os.path.join(temp_output_dir, "signals", "ppg_0.csv"))
     assert "value" in ppg_df.columns
@@ -177,22 +180,27 @@ def test_export_csv(sample_signal_collection, temp_output_dir):
     assert len(accel_df) == 5  # 5 data points
 
     # Verify combined CSV content
-    combined_path = os.path.join(temp_output_dir, "combined.csv")
-    # The export process resets the index, so the first column in the CSV
-    # is the default 0-based index. Read it using index_col=0.
-    combined_df = pd.read_csv(combined_path, index_col=0)
+    # Use the correct combined time-series filename
+    combined_path = os.path.join(temp_output_dir, "combined_ts.csv")
+    # Read the combined CSV. Check if it has MultiIndex header based on export logic.
+    # Assuming standard export for this test fixture (no MultiIndex config)
+    # The _export_csv logic for non-MultiIndex uses index=False after _format_timestamp
+    # So, we should NOT use index_col=0 here. The first column should be 'timestamp'.
+    combined_df = pd.read_csv(combined_path) # Read without index_col=0
 
     # Check content length - should match the input signals
     assert len(combined_df) == 5  # 5 data points
 
     # Verify some column data is present, regardless of structure
     # Check for columns related to ppg_0 and accelerometer_0
-    # The exact column names depend on whether multi-index was used,
-    # so check for substrings.
-    cols_str = str(combined_df.columns)
-    assert 'ppg_0' in cols_str or 'PPG Signal' in cols_str # Check for PPG data
-    assert 'accelerometer_0' in cols_str or 'Accelerometer Signal' in cols_str # Check for Accel data
-    assert 'temp_0' not in cols_str # Ensure temporary signal is excluded
+    # Since we read without index_col=0, 'timestamp' should be the first column
+    assert 'timestamp' in combined_df.columns
+    # Check for the data columns (assuming simple column names from fixture)
+    assert 'ppg_0' in combined_df.columns # Check for PPG data
+    assert 'accelerometer_0_x' in combined_df.columns # Check for Accel data
+    assert 'accelerometer_0_y' in combined_df.columns
+    assert 'accelerometer_0_z' in combined_df.columns
+    assert 'temp_0' not in combined_df.columns # Ensure temporary signal is excluded
 
     # Verify metadata
     with open(os.path.join(temp_output_dir, "metadata.json"), 'r') as f:
@@ -208,10 +216,11 @@ def test_export_pickle(sample_signal_collection, temp_output_dir):
     sample_signal_collection.combine_aligned_signals()
 
     exporter = ExportModule(sample_signal_collection)
-    exporter.export(formats=["pickle"], output_dir=temp_output_dir, include_combined=True)
+    # Specify content to export: all time series signals and the combined TS dataframe
+    exporter.export(formats=["pickle"], output_dir=temp_output_dir, content=["all_ts", "combined_ts"])
 
     # Check file was created
-    pickle_path = os.path.join(temp_output_dir, "signals.pkl")
+    pickle_path = os.path.join(temp_output_dir, "data.pkl") # Filename changed in export module
     assert os.path.exists(pickle_path)
     
     # Verify pickle content
@@ -219,21 +228,24 @@ def test_export_pickle(sample_signal_collection, temp_output_dir):
         data = pickle.load(f)
     
     assert "metadata" in data
-    assert "signals" in data
-    assert "combined" in data
+    assert "signals" in data # Individual signals data
+    assert "combined_time_series" in data # Combined TS data key changed
     
     assert data["metadata"]["collection"]["collection_id"] == "test_collection"
-    assert "ppg_0" in data["signals"]
+    assert "ppg_0" in data["signals"] # Check individual signal data
     assert "accelerometer_0" in data["signals"]
-    assert "temp_0" in data["signals"]
+    assert "temp_0" not in data["signals"] # Temporary signal data should NOT be exported here
     
-    # Check the combined dataframe structure - we're more interested in the presence
-    # of the right data and absence of temporary signals than the exact MultiIndex structure
-    assert data["combined"] is not None # Ensure combined data is not None
-    cols_str = str(data["combined"].columns)
+    # Check the combined time series dataframe structure
+    combined_ts_df = data["combined_time_series"]
+    assert combined_ts_df is not None # Ensure combined data is not None
+    cols_str = str(combined_ts_df.columns)
     assert 'ppg_0' in cols_str or 'PPG Signal' in cols_str # Check for PPG data (handles MultiIndex)
     assert 'accelerometer_0' in cols_str or 'Accelerometer Signal' in cols_str # Check for Accel data
-    assert 'temp_0' not in cols_str  # Temporary signal should not be included
+    # Check that the temporary signal's *data* is not in the combined df
+    # Note: The temporary signal's *metadata* might still be present in data["metadata"]["signals"]
+    # if it was included in the metadata serialization step, but its data shouldn't be combined.
+    assert 'temp_0' not in cols_str # Temporary signal data should not be included in combined_ts
 
 def test_export_hdf5(sample_signal_collection, temp_output_dir):
     """Test HDF5 export functionality."""
@@ -248,10 +260,11 @@ def test_export_hdf5(sample_signal_collection, temp_output_dir):
     sample_signal_collection.combine_aligned_signals()
 
     exporter = ExportModule(sample_signal_collection)
-    exporter.export(formats=["hdf5"], output_dir=temp_output_dir, include_combined=True)
+    # Specify content to export: all time series signals and the combined TS dataframe
+    exporter.export(formats=["hdf5"], output_dir=temp_output_dir, content=["all_ts", "combined_ts"])
 
     # Check file was created
-    h5_path = os.path.join(temp_output_dir, "signals.h5")
+    h5_path = os.path.join(temp_output_dir, "data.h5") # Filename changed in export module
     assert os.path.exists(h5_path)
     
     # Verify HDF5 content using pandas HDFStore
@@ -259,7 +272,7 @@ def test_export_hdf5(sample_signal_collection, temp_output_dir):
         # Check signals data
         assert "/signals/ppg_0" in store
         assert "/signals/accelerometer_0" in store
-        assert "/combined" in store
+        assert "/combined_time_series" in store # Key changed
         
         # Check data integrity
         ppg_df = store["/signals/ppg_0"]
@@ -272,7 +285,7 @@ def test_export_hdf5(sample_signal_collection, temp_output_dir):
         assert "z" in accel_df.columns
         
         # Check combined dataframe
-        combined_df = store["/combined"]
+        combined_df = store["/combined_time_series"] # Key changed
         # Check the presence of expected columns and absence of temporary signal
         cols_str = str(combined_df.columns)
         assert 'ppg_0' in cols_str or 'PPG Signal' in cols_str # Check for PPG data (handles MultiIndex)
@@ -293,7 +306,8 @@ def test_unsupported_format(sample_signal_collection, temp_output_dir):
     """Test that using an unsupported format raises ValueError."""
     exporter = ExportModule(sample_signal_collection)
     with pytest.raises(ValueError, match="Unsupported format"):
-        exporter.export(formats=["invalid_format"], output_dir=temp_output_dir)
+        # Add the required 'content' argument
+        exporter.export(formats=["invalid_format"], output_dir=temp_output_dir, content=["all_ts"])
 
 def test_multiple_formats(sample_signal_collection, temp_output_dir):
     """Test exporting to multiple formats at once."""
@@ -303,19 +317,22 @@ def test_multiple_formats(sample_signal_collection, temp_output_dir):
     sample_signal_collection.combine_aligned_signals()
 
     exporter = ExportModule(sample_signal_collection)
-    exporter.export(formats=["excel", "csv"], output_dir=temp_output_dir, include_combined=True)
+    # Specify content to export: all time series signals and the combined TS dataframe
+    exporter.export(formats=["excel", "csv"], output_dir=temp_output_dir, content=["all_ts", "combined_ts"])
 
     # Check that both formats were exported
     assert os.path.exists(os.path.join(temp_output_dir, "signals.xlsx"))
     assert os.path.isdir(os.path.join(temp_output_dir, "signals"))
     assert os.path.exists(os.path.join(temp_output_dir, "metadata.json"))
-    assert os.path.exists(os.path.join(temp_output_dir, "combined.xlsx"))
-    assert os.path.exists(os.path.join(temp_output_dir, "combined.csv"))
+    assert os.path.exists(os.path.join(temp_output_dir, "combined.xlsx")) # Excel name is correct
+    # Check for the correct combined time-series CSV filename
+    assert os.path.exists(os.path.join(temp_output_dir, "combined_ts.csv"))
 
 def test_framework_version_in_metadata(sample_signal_collection, temp_output_dir):
     """Test that framework version is included in the exported metadata."""
     exporter = ExportModule(sample_signal_collection)
-    exporter.export(formats=["csv"], output_dir=temp_output_dir)
+    # Add the required 'content' argument - export individual signals to get metadata
+    exporter.export(formats=["csv"], output_dir=temp_output_dir, content=["all_ts"])
     
     # Check framework version in metadata
     with open(os.path.join(temp_output_dir, "metadata.json"), 'r') as f:
@@ -337,27 +354,40 @@ def test_export_with_custom_multiindex(sample_signal_collection, temp_output_dir
 
     # Export with the configured indices
     exporter = ExportModule(sample_signal_collection)
-    exporter.export(formats=["csv"], output_dir=temp_output_dir, include_combined=True)
+    # Specify content to export: all time series signals and the combined TS dataframe
+    exporter.export(formats=["csv"], output_dir=temp_output_dir, content=["all_ts", "combined_ts"])
 
     # Read the combined CSV file
-    combined_path = os.path.join(temp_output_dir, "combined.csv")
+    # Use the correct combined time-series filename
+    combined_path = os.path.join(temp_output_dir, "combined_ts.csv")
     assert os.path.exists(combined_path)
 
     # Read the combined CSV using pandas to check MultiIndex columns
-    combined_df = pd.read_csv(combined_path, header=[0, 1], index_col=0) # Read with MultiIndex header
+    # The _export_csv logic for MultiIndex writes the index, so index_col=0 is correct here.
+    # The number of header rows depends on the number of levels in the MultiIndex.
+    # The index_config is ["signal_type", "body_position"], plus 'column' level = 3 levels.
+    # So header should be [0, 1, 2].
+    combined_df = pd.read_csv(combined_path, header=[0, 1, 2], index_col=0) # Read with MultiIndex header
 
     # Check that we have data
     assert not combined_df.empty
 
     # Check MultiIndex structure based on index_config
-    assert combined_df.columns.names == ["signal_type", "body_position"] # No 'column' level name
+    # The _export_csv logic adds the 'column' level name when exporting MultiIndex
+    assert combined_df.columns.names == ["signal_type", "body_position", "column"]
 
     # Check presence of expected data columns under the correct MultiIndex levels
-    # The MultiIndex now only has two levels based on the index_config
-    assert ('PPG', 'LEFT_WRIST') in combined_df.columns
-    assert ('ACCELEROMETER', 'CHEST') in combined_df.columns # Check for the base tuple
+    # The MultiIndex now has three levels
+    assert ('PPG', 'LEFT_WRIST', 'value') in combined_df.columns
+    assert ('ACCELEROMETER', 'CHEST', 'x') in combined_df.columns # Check for the full tuple
+    assert ('ACCELEROMETER', 'CHEST', 'y') in combined_df.columns
+    assert ('ACCELEROMETER', 'CHEST', 'z') in combined_df.columns
 
     # Verify no temporary data is included by checking the first level of the MultiIndex
-    assert 'TEMPORARY' not in combined_df.columns.get_level_values(0) # Assuming temporary signal has a type
+    # Assuming temporary signal has signal_type = PPG
+    # Check that the combination ('PPG', 'LEFT_WRIST', 'value') exists, but no other PPG combo
+    # A better check might be to ensure no 'temp_0' key appears anywhere if index_config included 'name'
+    # Since index_config is ["signal_type", "body_position"], check the signal_type level
+    assert 'TEMPORARY' not in combined_df.columns.get_level_values('signal_type') # Check level by name
 
 # Duplicate test removed - this test was already defined earlier in the file

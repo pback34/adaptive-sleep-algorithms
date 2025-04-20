@@ -61,46 +61,4 @@ def mock_normalize(data_list, parameters):
     return data_list[0]
 
 
-    # --- Instance Methods (Including Overrides) ---
-
-    def filter_lowpass(self, cutoff: float = 5.0, **other_params) -> pd.DataFrame:
-        """
-        Apply a low-pass filter specifically for PPG signals (core logic).
-
-        This method overrides the default TimeSeriesSignal implementation.
-        It performs the calculation and returns the resulting DataFrame.
-        Metadata updates and instance handling are managed by apply_operation.
-
-        Args:
-            cutoff: The window size for the moving average. Defaults to 5.0.
-            **other_params: Additional parameters.
-
-        Returns:
-            A DataFrame containing the filtered PPG data.
-        """
-        import pandas as pd # Local imports
-        import numpy as np
-        import logging
-        logger = logging.getLogger(__name__)
-
-        window_size = int(cutoff)
-        if window_size < 1:
-             raise ValueError("Cutoff (window size) for moving average must be at least 1.")
-
-        data = self.get_data() # Get current data
-        if data is None:
-             raise ValueError("Cannot apply PPG filter_lowpass: signal data is None.")
-
-        logger.debug(f"Applying PPG-specific rolling mean with window size {window_size}")
-        processed_data = data.copy()
-        # PPG typically has 'value' column, but apply to all numeric just in case
-        numeric_cols = data.select_dtypes(include=[np.number]).columns
-
-        if not numeric_cols.empty:
-            for col in numeric_cols:
-                processed_data[col] = data[col].rolling(window=window_size, min_periods=1).mean()
-            logger.debug(f"Applied rolling mean to PPG columns: {list(numeric_cols)}")
-        else:
-            logger.warning("No numeric columns found in PPG signal to apply low-pass filter.")
-
-        return processed_data
+   

@@ -59,16 +59,16 @@ def test_full_workflow(temp_csv_file, temp_output_dir):
         "target_timezone": "UTC" # Added target timezone
     })
     ppg_signal = importer.import_signal(temp_csv_file, "PPG")
-    collection.add_signal("ppg_raw", ppg_signal)
-    
+    collection.add_time_series_signal("ppg_raw", ppg_signal) # Use correct method
+
     # Step 3: Apply filtering operation
     filtered_signal = ppg_signal.apply_operation("filter_lowpass", cutoff=5.0)
-    collection.add_signal("ppg_filtered", filtered_signal)
-    
+    collection.add_time_series_signal("ppg_filtered", filtered_signal) # Use correct method
+
     # Step 4: Apply another operation to create a temporary signal
     temp_signal = filtered_signal.apply_operation("filter_lowpass", cutoff=2.0)
     temp_signal.metadata.temporary = True
-    collection.add_signal("ppg_temp", temp_signal)
+    collection.add_time_series_signal("ppg_temp", temp_signal) # Use correct method
 
     # Step 5: Generate the combined dataframe BEFORE exporting
     # These steps populate collection._aligned_dataframe
@@ -80,25 +80,29 @@ def test_full_workflow(temp_csv_file, temp_output_dir):
     exporter.export(
         formats=["csv", "excel"],
         output_dir=temp_output_dir,
-        include_combined=True
+        # Use the 'content' argument to specify exporting all time series and combined data
+        content=["all_ts", "combined_ts"]
     )
-    
+
     # Verify exports:
     
     # 1. Check CSV files
     assert os.path.isdir(os.path.join(temp_output_dir, "signals"))
     assert os.path.exists(os.path.join(temp_output_dir, "signals", "ppg_raw.csv"))
     assert os.path.exists(os.path.join(temp_output_dir, "signals", "ppg_filtered.csv"))
-    assert os.path.exists(os.path.join(temp_output_dir, "signals", "ppg_temp.csv"))
+    # Temporary signals are NOT exported individually when using "all_ts" content keyword
+    # assert os.path.exists(os.path.join(temp_output_dir, "signals", "ppg_temp.csv")) # REMOVED THIS ASSERTION
     assert os.path.exists(os.path.join(temp_output_dir, "metadata.json"))
-    assert os.path.exists(os.path.join(temp_output_dir, "combined.csv"))
-    
+    # Check for the correct combined time-series filename
+    assert os.path.exists(os.path.join(temp_output_dir, "combined_ts.csv"))
+
     # 2. Check Excel files
     assert os.path.exists(os.path.join(temp_output_dir, "signals.xlsx"))
     assert os.path.exists(os.path.join(temp_output_dir, "combined.xlsx"))
-    
+
     # 3. Check combined dataframe excludes temporary signals
-    combined_df = pd.read_csv(os.path.join(temp_output_dir, "combined.csv"), index_col=0)
+    # Read the correct combined time-series CSV file
+    combined_df = pd.read_csv(os.path.join(temp_output_dir, "combined_ts.csv"), index_col=0)
     # Timestamp column and one column each for ppg_raw and ppg_filtered
     # The temporary signal should be excluded
     temp_cols = [col for col in combined_df.columns if "ppg_temp" in col]
