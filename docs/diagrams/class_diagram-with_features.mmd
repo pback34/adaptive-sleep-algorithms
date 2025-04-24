@@ -1,32 +1,18 @@
 classDiagram
-    %% Base Class and Metadata
+    %% Base Classes
     class SignalData {
         <<abstract>>
+        +metadata: Union[TimeSeriesMetadata, FeatureMetadata]
         +get_data(): Any
         +apply_operation(operation_name, inplace, **parameters): SignalData
         +clear_data()
         #_regenerate_data(): bool
     }
     
-    class SignalMetadata {
-        +signal_id: str
-        +name: str
-        +signal_type: SignalType
-        +sample_rate: str
-        +units: Unit
-        +start_time: datetime
-        +end_time: datetime
-        +operations: List[OperationInfo]
-        +derived_from: List[Tuple]
-        +feature_names: List
-        +source_signal_keys: List
-        +epoch_window_length: Timedelta
-        +epoch_step_size: Timedelta
-    }
-    
-    %% TimeSeriesSignal and Implementations
+    %% TimeSeriesSignal and Metadata
     class TimeSeriesSignal {
         <<abstract>>
+        +metadata: TimeSeriesMetadata
         +get_sampling_rate(): float
         +get_data(): DataFrame
         +apply_operation(operation_name, inplace, **parameters): SignalData
@@ -35,84 +21,12 @@ classDiagram
         +resample_to_rate(new_rate, target_period, ref_time, method): DataFrame
     }
     
-    class FeatureSignal {
-        <<current implementation>>
-        +signal_type = SignalType.FEATURES
-        +required_columns = []
-        +get_data(): DataFrame
-        +apply_operation(operation_name, inplace, **parameters)
-        +get_sampling_rate(): None
-    }
-    
-    class HeartRateSignal {
-        +signal_type = SignalType.HEART_RATE
-        +required_columns = ["value"]
-    }
-    
-    class AccelerometerSignal {
-        +signal_type = SignalType.ACCELEROMETER
-        +required_columns = ["x", "y", "z"]
-    }
-    
-    %% Collection & Operations
-    class SignalCollection {
-        +signals: Dict[str, SignalData]
-        +metadata: CollectionMetadata
-        +grid_index: DatetimeIndex
-        +_aligned_dataframe: DataFrame
-        +_alignment_params_calculated: bool
-        +add_signal(key, signal)
-        +get_signal(key): SignalData
-        +get_signals(input_spec, signal_type): List[SignalData]
-        +apply_multi_signal_operation(operation_name, signal_keys, parameters): SignalData
-        +apply_operation(operation_name, **parameters)
-        +generate_alignment_grid()
-        +apply_grid_alignment()
-        +combine_aligned_signals()
-        +align_and_combine_signals()
-    }
-    
-    class CollectionMetadata {
-        +collection_id: str
-        +subject_id: str
-        +session_id: str
-        +start_datetime: datetime
-        +end_datetime: datetime
-        +index_config: List[str]
-    }
-    
-    class OperationInfo {
-        +operation_name: str
-        +parameters: Dict[str, Any]
-    }
-    
-    %% Workflow Execution
-    class WorkflowExecutor {
-        +container: SignalCollection
-        +strict_validation: bool
-        +execute_workflow(workflow_config: Dict)
-        +execute_step(step: Dict)
-        -_process_import_section(import_specs: List)
-        -_process_export_section(export_config: List)
-    }
-    
-    %% Feature Extraction
-    class FeatureExtraction {
-        <<module>>
-        +compute_feature_statistics(signals: List[SignalData], parameters: Dict): FeatureSignal
-        -_compute_basic_stats(segment: DataFrame, aggregations: List): Dict
-    }
-    
-    %% PROPOSED REFACTORED STRUCTURE
-    
-    %% New Metadata Classes
     class TimeSeriesMetadata {
-        <<proposed>>
         +signal_id: str
         +name: str
         +signal_type: SignalType
         +sample_rate: str
-        +units: Unit
+        +units: Dict[str, Unit]
         +start_time: datetime
         +end_time: datetime
         +operations: List[OperationInfo]
@@ -120,13 +34,22 @@ classDiagram
         +sensor_type: SensorType
         +sensor_model: SensorModel
         +body_position: BodyPosition
+        +source_files: List[str]
+        +temporary: bool
+    }
+    
+    %% Feature Class and Metadata
+    class Feature {
+        +metadata: FeatureMetadata
+        +_data: DataFrame
+        +get_data(): DataFrame
+        +__repr__(): str
     }
     
     class FeatureMetadata {
-        <<proposed>>
         +feature_id: str
         +name: str
-        +feature_type: str
+        +feature_type: FeatureType
         +epoch_window_length: Timedelta
         +epoch_step_size: Timedelta
         +operations: List[OperationInfo]
@@ -138,19 +61,38 @@ classDiagram
         +body_position: BodyPosition
     }
     
-    %% New Feature Class
-    class Feature {
-        <<proposed>>
-        +metadata: FeatureMetadata
-        +get_data(): DataFrame
+    %% Feature Types
+    class FeatureType {
+        <<enum>>
+        STATISTICAL
+        CATEGORICAL_MODE
+        SPECTRAL
+        CORRELATION
     }
     
-    %% Refactored Collection
-    class SignalCollectionRefactored {
-        <<proposed>>
+    %% Signal Implementations
+    class HeartRateSignal {
+        +signal_type = SignalType.HEART_RATE
+        +required_columns = ["value"]
+    }
+    
+    class AccelerometerSignal {
+        +signal_type = SignalType.ACCELEROMETER
+        +required_columns = ["x", "y", "z"]
+    }
+    
+    class EEGSleepStageSignal {
+        +signal_type = SignalType.EEG_SLEEP_STAGE
+        +required_columns = ["sleep_stage"]
+        +get_stage_distribution(): Series
+    }
+    
+    %% Collection & Operations
+    class SignalCollection {
         +time_series_signals: Dict[str, TimeSeriesSignal]
         +features: Dict[str, Feature]
         +metadata: CollectionMetadata
+        +metadata_handler: MetadataHandler
         +grid_index: DatetimeIndex
         +epoch_grid_index: DatetimeIndex
         +global_epoch_window_length: Timedelta
@@ -163,36 +105,94 @@ classDiagram
         +add_feature(key, feature)
         +get_time_series_signal(key): TimeSeriesSignal
         +get_feature(key): Feature
-        +generate_epoch_grid()
+        +get_signal(key): Union[TimeSeriesSignal, Feature]
+        +get_signals(input_spec, signal_type, feature_type, criteria, base_name): List[Union[TimeSeriesSignal, Feature]]
+        +apply_multi_signal_operation(operation_name, signal_keys, parameters): Union[TimeSeriesSignal, Feature]
+        +apply_operation(operation_name, **parameters): Any
+        +generate_alignment_grid(): SignalCollection
+        +generate_epoch_grid(): SignalCollection
+        +apply_grid_alignment(method: str)
+        +combine_aligned_signals()
+        +align_and_combine_signals()
         +combine_features(inputs: List[str], feature_index_config: List[str])
+        +summarize_signals(): DataFrame
     }
     
-    %% Refactored Feature Extraction
-    class FeatureExtractionRefactored {
-        <<proposed module>>
-        +compute_feature_statistics(signals: List[TimeSeriesSignal], epoch_grid_index: DatetimeIndex, parameters: Dict): Feature
+    class CollectionMetadata {
+        +collection_id: str
+        +subject_id: str
+        +session_id: str
+        +start_datetime: datetime
+        +end_datetime: datetime
+        +timezone: str
+        +index_config: List[str]
+        +feature_index_config: List[str]
+        +epoch_grid_config: Dict[str, str]
+    }
+    
+    class OperationInfo {
+        +operation_name: str
+        +parameters: Dict[str, Any]
+    }
+    
+    class MetadataHandler {
+        +initialize_time_series_metadata(**kwargs): TimeSeriesMetadata
+        +initialize_feature_metadata(**kwargs): FeatureMetadata
+        +update_metadata(metadata, **kwargs)
+        +set_name(metadata, name, key)
+        +record_operation(metadata, operation_name, parameters)
+    }
+    
+    %% Workflow Execution
+    class WorkflowExecutor {
+        +container: SignalCollection
+        +strict_validation: bool
+        +data_dir: str
+        +execute_workflow(workflow_config: Dict)
+        +execute_step(step: Dict)
+        -_process_import_section(import_specs: List)
+        -_process_export_section(export_config: List)
+        -_process_visualization_section(vis_specs: List)
+    }
+    
+    %% Feature Extraction
+    class FeatureExtraction {
+        <<module>>
+        +compute_feature_statistics(signals: List[TimeSeriesSignal], epoch_grid_index: DatetimeIndex, parameters: Dict, global_window, global_step): Feature
+        +compute_sleep_stage_mode(signals: List[TimeSeriesSignal], epoch_grid_index: DatetimeIndex, parameters: Dict, global_window, global_step): Feature
         -_compute_basic_stats(segment: DataFrame, aggregations: List): Dict
     }
     
-    %% Relationships - Current Implementation
+    %% Visualization
+    class VisualizerBase {
+        <<abstract>>
+        +visualize_signal(signal: Union[TimeSeriesSignal, Feature], **kwargs): Any
+        +visualize_collection(collection: SignalCollection, signals: List[str], layout: str, **kwargs): Any
+        +create_time_series_plot(signal: TimeSeriesSignal, **kwargs): Any
+        +create_hypnogram_plot(signal: EEGSleepStageSignal, **kwargs): Any
+    }
+    
+    %% Relationships
     SignalData <|-- TimeSeriesSignal
-    SignalData <|-- FeatureSignal
     TimeSeriesSignal <|-- HeartRateSignal
     TimeSeriesSignal <|-- AccelerometerSignal
-    SignalCollection "1" *-- "0..*" SignalData : contains
-    SignalCollection "1" *-- "1" CollectionMetadata : has
-    SignalData "1" *-- "1" SignalMetadata : has
-    OperationInfo --* SignalMetadata : included in operations list
-    WorkflowExecutor "1" *-- "1" SignalCollection : uses
-    SignalCollection ..> FeatureExtraction : uses
+    TimeSeriesSignal <|-- EEGSleepStageSignal
     
-    %% Relationships - Proposed Implementation 
-    SignalData <|-- TimeSeriesSignal
     TimeSeriesSignal "1" *-- "1" TimeSeriesMetadata : has
     Feature "1" *-- "1" FeatureMetadata : has
-    SignalCollectionRefactored "1" *-- "0..*" TimeSeriesSignal : contains
-    SignalCollectionRefactored "1" *-- "0..*" Feature : contains
-    SignalCollectionRefactored "1" *-- "1" CollectionMetadata : has
-    WorkflowExecutor "1" *-- "1" SignalCollectionRefactored : uses
-    SignalCollectionRefactored ..> FeatureExtractionRefactored : uses
-    Feature -- TimeSeriesSignal : derived from
+    
+    SignalCollection "1" *-- "0..*" TimeSeriesSignal : contains
+    SignalCollection "1" *-- "0..*" Feature : contains
+    SignalCollection "1" *-- "1" CollectionMetadata : has
+    SignalCollection "1" *-- "1" MetadataHandler : uses
+    
+    OperationInfo --* TimeSeriesMetadata : included in operations list
+    OperationInfo --* FeatureMetadata : included in operations list
+    
+    WorkflowExecutor "1" *-- "1" SignalCollection : uses
+    SignalCollection ..> FeatureExtraction : uses
+    Feature ..> TimeSeriesSignal : derived from
+    
+    VisualizerBase ..> TimeSeriesSignal : visualizes
+    VisualizerBase ..> Feature : visualizes
+    VisualizerBase ..> SignalCollection : visualizes
