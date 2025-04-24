@@ -15,10 +15,20 @@ flowchart TB
     EpochGrid --> |"sets"| EpochParams["epoch_grid_index : pd.DatetimeIndex\nglobal_epoch_window_length : Timedelta\nglobal_epoch_step_size : Timedelta\n_epoch_grid_calculated = True"]
     
     %% Feature Extraction Process
-    TSSignals --> |"input to"| FeatureOp["Feature Extraction Operation\n(feature_statistics, feature_hrv, etc.)"]
-    EpochParams --> |"provides epoch grid"| FeatureOp
-    FeatureOp --> |"for each epoch start time"| ProcessEpoch["Process Epoch Data\n1. Slice signal data for epoch\n2. Apply feature calculation\n3. Store results for epoch"]
-    ProcessEpoch --> |"creates"| Features["Feature\nmetadata: FeatureMetadata\ndata: DataFrame[epochs × features]"]
+    TSSignals --> |"input to"| FeatureOp["Feature Extraction Operations"]
+    
+    FeatureOp --> |"type: feature_statistics"| StatFeatures["Statistical Features\nMean, std, min, max, etc.\nFeatureType.STATISTICAL"]
+    FeatureOp --> |"type: compute_sleep_stage_mode"| StageModeFeatures["Sleep Stage Mode\nModal sleep stage per epoch\nFeatureType.CATEGORICAL_MODE"]
+    
+    EpochParams --> |"provides epoch grid"| StatFeatures
+    EpochParams --> |"provides epoch grid"| StageModeFeatures
+    
+    StatFeatures --> |"for each epoch start time"| ProcessEpochStat["Process Epoch Data\n1. Slice signal data for epoch\n2. Calculate statistics\n3. Store results with MultiIndex"]
+    StageModeFeatures --> |"for each epoch start time"| ProcessEpochMode["Process Epoch Data\n1. Slice signal data for epoch\n2. Calculate most frequent stage\n3. Store results with feature='sleep_stage_mode'"]
+    
+    ProcessEpochStat --> |"creates"| Features["Feature Objects\nmetadata: FeatureMetadata\ndata: DataFrame[epochs × features]"]
+    ProcessEpochMode --> |"creates"| Features
+    
     Features --> |"stored in"| FeatureCollection["SignalCollection\nfeatures : Dict[str, Feature]"]
     
     %% Feature Combination
@@ -27,9 +37,20 @@ flowchart TB
     FeatureIndexConfig --> |"provides column structure"| CombineFeatures
     CombineFeatures --> |"creates"| CombinedMatrix["_combined_feature_matrix\nDataFrame with MultiIndex columns"]
     
-    %% Export and Visualization
+    %% Export 
     Collection --> |"export section"| Export["ExportModule\n1. Export TimeSeriesSignals\n2. Export Features\n3. Export CombinedMatrix"]
     Export --> |"generates"| OutputFiles[/"Output Files\nCSV, Excel, etc."/]
+    
+    %% Visualization Flow
+    Collection --> |"visualization section"| Visualizer["Visualization\nBokehVisualizer/PlotlyVisualizer"]
+    TSSignals --> |"visualize_signal"| Visualizer
+    Features --> |"visualize_signal"| Visualizer
+    
+    %% Sleep Stage Overlay
+    EEGStageSignal["EEGSleepStageSignal\n(sleep stage data)"] --> |"overlay_sleep_stages"| BackgroundOverlay["Sleep Stage Background\nColored regions by stage"]
+    BackgroundOverlay --> |"added to"| Visualizer
+    
+    Visualizer --> |"produces"| VisOutput[/"Visualization Output\nHTML, PNG, etc."/]
     
     subgraph "Input Processing"
         ImportSource
@@ -48,7 +69,10 @@ flowchart TB
     
     subgraph "Feature Generation"
         FeatureOp
-        ProcessEpoch
+        StatFeatures
+        StageModeFeatures
+        ProcessEpochStat
+        ProcessEpochMode
         Features
     end
     
@@ -61,15 +85,27 @@ flowchart TB
     subgraph "Output Generation"
         Export
         OutputFiles
+        Visualizer
+        VisOutput
+        BackgroundOverlay
     end
     
     %% Data Transformation Flow
-    subgraph "TimeSeriesSignal"
-        TimeSeriesData["Data: pd.DataFrame\nwith DatetimeIndex of raw timestamps"] --> |"resampling/alignment"| AlignedData["Aligned Data: pd.DataFrame\nwith DatetimeIndex matching grid_index"]
+    subgraph "TimeSeriesSignal Data Structure"
+        TimeSeriesData["Raw Data: pd.DataFrame\nwith DatetimeIndex of raw timestamps\nColumns: signal-specific values"] 
+        --> |"apply_grid_alignment"| AlignedData["Aligned Data: pd.DataFrame\nwith DatetimeIndex matching grid_index\nData reindexed to common timepoints"]
+        TimeSeriesData --> |"align_and_combine_signals"| CombinedSignals["Combined Time-Series: pd.DataFrame\nwith DatetimeIndex matching grid_index\nColumns: combined from all signals"]
     end
     
-    subgraph "Feature"
-        FeatureData["Data: pd.DataFrame\nwith DatetimeIndex of epoch start times\nColumns: simple feature names (mean, std)"] --> |"combine_features"| CombinedFeatureData["Combined Data: pd.DataFrame\nwith DatetimeIndex of epoch start times\nColumns: MultiIndex (name, feature_type, etc.)"]
+    subgraph "Feature Data Structure"
+        FeatureData["Statistical Feature Data: pd.DataFrame\nwith DatetimeIndex of epoch start times\nColumns: (signal_key, feature) MultiIndex\ne.g., (hr_0, mean), (hr_0, std)"] 
+        
+        CategoryData["Categorical Feature Data: pd.DataFrame\nwith DatetimeIndex of epoch start times\nColumns: (signal_key, feature) MultiIndex\ne.g., (eeg_0, sleep_stage_mode)"]
+        
+        FeatureData --> |"combine_features"| CombinedFeatureData["Combined Feature Matrix: pd.DataFrame\nwith DatetimeIndex of epoch start times\nColumns: (feature_set, signal_key, feature) MultiIndex\ne.g., (hr_stats, hr_0, mean), (sleep_stages, eeg_0, sleep_stage_mode)"]
+        
+        CategoryData --> |"combine_features"| CombinedFeatureData
     end
     
-    TimeSeriesData --> |"epoch extraction"| FeatureData
+    TimeSeriesData --> |"compute_feature_statistics"| FeatureData
+    TimeSeriesData --> |"compute_sleep_stage_mode"| CategoryData
