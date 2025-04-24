@@ -3,22 +3,35 @@ flowchart TD
         direction TB
         signal_data[SignalData]
         signal_collection[SignalCollection]
-        metadata[Metadata Classes]
+        metadata[Metadata Classes (TS, Feature, Collection)]
+        metadata_handler[MetadataHandler]
     end
 
     subgraph Signal_Types ["Signal Types"]
         direction TB
-        enums[Enum Definitions]
+        enums[Enum Definitions (SignalType, FeatureType, Unit, etc.)]
     end
 
-    subgraph Signals ["Signal Classes"]
+    subgraph Signals ["TimeSeries Signal Classes"]
         direction TB
         time_series[TimeSeriesSignal]
         ppg[PPGSignal]
         acc[AccelerometerSignal]
         hr[HeartRateSignal]
+        eeg_stage[EEGSleepStageSignal]
         magnitude[MagnitudeSignal]
         angle[AngleSignal]
+    end
+
+    subgraph Features ["Feature Classes"]
+        direction TB
+        feature_class[Feature]
+    end
+
+    subgraph Operations ["Operations Module"]
+        direction TB
+        feature_extraction[Feature Extraction (stats, mode, etc.)]
+        # Add other operation modules if they exist (e.g., filtering)
     end
 
     subgraph Importers ["Importer Classes"]
@@ -26,12 +39,20 @@ flowchart TD
         importer_base[SignalImporter]
         csv_importer[CSVImporterBase]
         polar[PolarCSVImporter]
+        enchanted_wave[EnchantedWaveImporter]
         merging[MergingImporter]
     end
 
     subgraph Export ["Export Module"]
         direction TB
         export_module[ExportModule]
+    end
+
+    subgraph Visualization ["Visualization Module"]
+        direction TB
+        vis_base[VisualizerBase]
+        bokeh_vis[BokehVisualizer]
+        plotly_vis[PlotlyVisualizer]
     end
 
     subgraph Workflows ["Workflow Engine"]
@@ -50,19 +71,46 @@ flowchart TD
         data_utils[Data Utils]
     end
 
-    %% Main data flow in the system
+    %% Main data flow and dependencies
     CLI --> Workflows
+
     Workflows --> Importers
     Workflows --> Core
+    Workflows --> Operations
     Workflows --> Export
+    Workflows --> Visualization
+
     Importers --> Core
+    Importers --> Signals
+
     Core --> Signals
+    Core --> Features
     Core --> Export
-    Signals --> Core
+    Core --> Operations # Collection uses operations
+    Core --> Visualization # Collection uses visualization
+
+    Signals --> Core # Signals use Metadata
+    Features --> Core # Features use Metadata
+
+    Operations --> Core # Operations use Collection/Metadata
+    Operations --> Signals # Operations process Signals
+    Operations --> Features # Operations produce Features
+
+    Export --> Core # Export uses Collection/Metadata
+
+    Visualization --> Core # Visualization uses Collection/Metadata
+    Visualization --> Signals # Visualization plots Signals
+    Visualization --> Features # Visualization plots Features
+
     Signal_Types -.-> Core
     Signal_Types -.-> Signals
+    Signal_Types -.-> Features
     Signal_Types -.-> Importers
+    Signal_Types -.-> Operations
+
     Utils -.-> Core
     Utils -.-> Importers
     Utils -.-> Workflows
     Utils -.-> Export
+    Utils -.-> Operations
+    Utils -.-> Visualization

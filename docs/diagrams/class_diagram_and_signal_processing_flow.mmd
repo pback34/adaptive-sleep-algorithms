@@ -1,82 +1,171 @@
 classDiagram
-    %% Core Abstract Classes
+    %% Core Abstract & Base Classes
     class SignalData {
         <<abstract>>
-        +metadata: SignalMetadata
+        +metadata: Union[TimeSeriesMetadata, FeatureMetadata]
         +_data: Any
         +get_data() Any
         +apply_operation(operation_name, inplace, **parameters) SignalData
         +registry: Dict~str, Tuple~
     }
-    
+
     class TimeSeriesSignal {
         <<abstract>>
+        +metadata: TimeSeriesMetadata
         +get_sampling_rate() float
         +snap_to_grid(target_period, ref_time) DataFrame
         +resample_to_rate(new_rate, target_period, ref_time) DataFrame
-        +resample(**parameters) DataFrame
+        +reindex_to_grid(grid_index, method) DataFrame
     }
-    
+
+    class Feature {
+        +metadata: FeatureMetadata
+        +_data: DataFrame
+        +get_data() DataFrame
+    }
+
+    %% Metadata Classes
+    class TimeSeriesMetadata {
+        +signal_id: str
+        +name: str
+        +signal_type: SignalType
+        +sample_rate: str
+        +units: Dict[str, Unit]
+        +start_time: datetime
+        +end_time: datetime
+        +operations: List[OperationInfo]
+        +derived_from: List[Tuple]
+        +sensor_type: SensorType
+        +sensor_model: SensorModel
+        +body_position: BodyPosition
+        +source_files: List[str]
+    }
+
+    class FeatureMetadata {
+        +feature_id: str
+        +name: str
+        +feature_type: FeatureType
+        +epoch_window_length: Timedelta
+        +epoch_step_size: Timedelta
+        +operations: List[OperationInfo]
+        +feature_names: List[str]
+        +source_signal_keys: List[str]
+        +source_signal_ids: List[str]
+        +sensor_type: SensorType
+        +sensor_model: SensorModel
+        +body_position: BodyPosition
+    }
+
+    class CollectionMetadata {
+        +collection_id: str
+        +subject_id: str
+        +session_id: str
+        +start_datetime: datetime
+        +end_datetime: datetime
+        +timezone: str
+        +index_config: List[str]
+        +feature_index_config: List[str]
+        +epoch_grid_config: Dict[str, str]
+    }
+
+    class OperationInfo {
+        +operation_name: str
+        +parameters: Dict[str, Any]
+    }
+
+    class MetadataHandler {
+        +initialize_time_series_metadata(**kwargs) TimeSeriesMetadata
+        +initialize_feature_metadata(**kwargs) FeatureMetadata
+        +update_metadata(metadata, **kwargs)
+        +set_name(metadata, name, key)
+        +record_operation(metadata, operation_name, parameters)
+    }
+
     %% Signal Classes
     class PPGSignal {
         +signal_type = SignalType.PPG
         +required_columns = ['value']
     }
-    
+
     class AccelerometerSignal {
         +signal_type = SignalType.ACCELEROMETER
         +required_columns = ['x', 'y', 'z']
         +compute_magnitude() MagnitudeSignal
         +compute_angle() AngleSignal
     }
-    
+
     class HeartRateSignal {
         +signal_type = SignalType.HEART_RATE
         +required_columns = ['hr']
         +get_hrv_stats() Dict
     }
-    
+
     class MagnitudeSignal {
         +signal_type = SignalType.ACCELEROMETER
         +required_columns = ['magnitude']
     }
-    
+
     class AngleSignal {
         +signal_type = SignalType.ACCELEROMETER
         +required_columns = ['pitch', 'roll']
     }
-    
+
+    class EEGSleepStageSignal {
+        +signal_type = SignalType.EEG_SLEEP_STAGE
+        +required_columns = ['sleep_stage']
+        +get_stage_distribution() Series
+    }
+
     %% Collection Class
     class SignalCollection {
-        +signals: Dict~str, SignalData~
+        +time_series_signals: Dict~str, TimeSeriesSignal~
+        +features: Dict~str, Feature~
         +metadata: CollectionMetadata
-        +add_signal(key, signal)
-        +get_signal(key) SignalData
-        +get_signals(input_spec, signal_type, criteria, base_name) List~SignalData~
-        +align_signals(target_sample_rate, method) SignalCollection
-        +get_combined_dataframe() DataFrame
+        +metadata_handler: MetadataHandler
+        +grid_index: DatetimeIndex
+        +epoch_grid_index: DatetimeIndex
+        +_aligned_dataframe: DataFrame
+        +_combined_feature_matrix: DataFrame
+        +add_time_series_signal(key, signal)
+        +add_feature(key, feature)
+        +get_signal(key) Union[TimeSeriesSignal, Feature]
+        +get_signals(input_spec, signal_type, feature_type, criteria, base_name) List~Union[TimeSeriesSignal, Feature]~
+        +apply_multi_signal_operation(operation_name, signal_keys, parameters) Union[TimeSeriesSignal, Feature]
+        +apply_operation(operation_name, **parameters) Any
+        +generate_alignment_grid()
+        +generate_epoch_grid()
+        +apply_grid_alignment()
+        +combine_aligned_signals()
+        +combine_features()
+        +summarize_signals()
     }
-    
+
     %% Importer Classes
     class SignalImporter {
         <<abstract>>
         +import_signal(source, signal_type) SignalData
         +import_signals(source, signal_type) List~SignalData~
     }
-    
+
     class CSVImporterBase {
         <<abstract>>
         +_parse_csv(source) DataFrame
         +_validate_columns(data, signal_type)
         +_extract_metadata(data, source, signal_type) Dict
     }
-    
+
     class PolarCSVImporter {
         +config: Dict
         +_parse_csv(source) DataFrame
         +_extract_metadata(data, source, signal_type) Dict
     }
-    
+
+    class EnchantedWaveImporter {
+        +config: Dict
+        +_parse_csv(source) DataFrame
+        +_extract_metadata(data, source, signal_type) Dict
+    }
+
     class MergingImporter {
         +config: Dict
         +file_pattern: str
@@ -84,16 +173,16 @@ classDiagram
         +sort_by: str
         +import_signal(directory, signal_type) SignalData
     }
-    
+
     %% Export Class
     class ExportModule {
         +collection: SignalCollection
         +SUPPORTED_FORMATS: List~str~
-        +export(formats, output_dir, include_combined)
-        +_export_excel(output_dir, include_combined)
-        +_export_csv(output_dir, include_combined)
+        +export(formats, output_dir, content)
+        +_export_excel(output_dir, content)
+        +_export_csv(output_dir, content)
     }
-    
+
     %% Workflow Executor
     class WorkflowExecutor {
         +container: SignalCollection
@@ -103,8 +192,55 @@ classDiagram
         +execute_step(step)
         +_process_import_section(import_specs)
         +_process_export_section(export_config)
+        +_process_visualization_section(vis_specs)
     }
-    
+
+    %% Feature Extraction Module
+    class FeatureExtraction {
+        <<module>>
+        +compute_feature_statistics(signals: List[TimeSeriesSignal], epoch_grid_index, parameters, global_window, global_step) Feature
+        +compute_sleep_stage_mode(signals: List[TimeSeriesSignal], epoch_grid_index, parameters, global_window, global_step) Feature
+        -_compute_basic_stats(segment: DataFrame, aggregations: List): Dict
+    }
+
+    %% Visualization Classes
+    class VisualizerBase {
+        <<abstract>>
+        +create_figure(**kwargs) Any
+        +add_line_plot(figure, x, y, **kwargs) Any
+        +add_scatter_plot(figure, x, y, **kwargs) Any
+        +add_categorical_regions(figure, starts, ends, cats, cat_map, **kwargs) List[Any]
+        +visualize_hypnogram(figure, signal, **kwargs) Any
+        +create_hypnogram_plot(signal, **kwargs) Any
+        +create_time_series_plot(signal, **kwargs) Any
+        +visualize_signal(signal, **kwargs) Any
+        +visualize_collection(collection, signals, layout, **kwargs) Any
+        +create_from_config(config, collection) Any
+        +process_visualization_config(config, collection)
+        +save(figure, filename, format, **kwargs)
+        +show(figure)
+    }
+
+    class BokehVisualizer {
+        +create_figure(**kwargs) Any
+        +add_line_plot(figure, x, y, **kwargs) Any
+        +add_scatter_plot(figure, x, y, **kwargs) Any
+        +add_categorical_regions(figure, starts, ends, cats, cat_map, **kwargs) List[Any]
+        +visualize_hypnogram(figure, signal, **kwargs) Any
+        +save(figure, filename, format, **kwargs)
+        +show(figure)
+    }
+
+    class PlotlyVisualizer {
+        +create_figure(**kwargs) Any
+        +add_line_plot(figure, x, y, **kwargs) Any
+        +add_scatter_plot(figure, x, y, **kwargs) Any
+        +add_categorical_regions(figure, starts, ends, cats, cat_map, **kwargs) List[Any]
+        +visualize_hypnogram(figure, signal, **kwargs) Any
+        +save(figure, filename, format, **kwargs)
+        +show(figure)
+    }
+
     %% Class Relationships
     SignalData <|-- TimeSeriesSignal
     TimeSeriesSignal <|-- PPGSignal
@@ -112,18 +248,38 @@ classDiagram
     TimeSeriesSignal <|-- HeartRateSignal
     TimeSeriesSignal <|-- MagnitudeSignal
     TimeSeriesSignal <|-- AngleSignal
-    
+    TimeSeriesSignal <|-- EEGSleepStageSignal
+
     SignalImporter <|-- CSVImporterBase
     CSVImporterBase <|-- PolarCSVImporter
+    CSVImporterBase <|-- EnchantedWaveImporter
     SignalImporter <|-- MergingImporter
-    
-    SignalCollection o-- "*" SignalData : contains
+
+    VisualizerBase <|-- BokehVisualizer
+    VisualizerBase <|-- PlotlyVisualizer
+
+    SignalCollection o-- "*" TimeSeriesSignal : contains >
+    SignalCollection o-- "*" Feature : contains >
+    SignalCollection o-- "1" CollectionMetadata : has >
+    SignalCollection o-- "1" MetadataHandler : uses >
+
+    TimeSeriesSignal o-- "1" TimeSeriesMetadata : has >
+    Feature o-- "1" FeatureMetadata : has >
+
+    OperationInfo --* TimeSeriesMetadata : included in operations list
+    OperationInfo --* FeatureMetadata : included in operations list
+
     ExportModule --> SignalCollection : exports
     WorkflowExecutor --> SignalCollection : orchestrates
-    
+    WorkflowExecutor --> VisualizerBase : uses >
+    VisualizerBase --> SignalCollection : visualizes >
+
     %% Processing Flow
     AccelerometerSignal ..> MagnitudeSignal : creates
     AccelerometerSignal ..> AngleSignal : creates
-    SignalImporter ..> SignalData : produces
+    SignalImporter ..> TimeSeriesSignal : produces
     WorkflowExecutor ..> SignalImporter : uses
     WorkflowExecutor ..> ExportModule : uses
+    SignalCollection ..> FeatureExtraction : uses >
+    FeatureExtraction ..> Feature : produces >
+    Feature .. TimeSeriesSignal : derived from >
