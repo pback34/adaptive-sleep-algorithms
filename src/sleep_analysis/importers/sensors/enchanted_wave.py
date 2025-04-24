@@ -357,12 +357,9 @@ class EnchantedWaveImporter(CSVImporterBase):
         metadata["sensor_model"] = SensorModel.ENCHANTED_WAVE
         metadata["body_position"] = BodyPosition.HEAD # EEG is always head-worn
 
-        # Add units for known columns
-        metadata["units"] = {
-            "sleep_stage": None, # Categorical
-            "sum_power": "arbitrary", # Unit unclear from source
-            "eeg_quality": "arbitrary" # Unit unclear from source
-        }
+        # --- Remove Units Logic ---
+        # Units are now handled by the Signal class __init__ using _default_units
+        # --- End Remove Units Logic ---
 
         # Extract additional metadata from filename if pattern is specified in config
         filename_pattern = self.config.get("filename_pattern")

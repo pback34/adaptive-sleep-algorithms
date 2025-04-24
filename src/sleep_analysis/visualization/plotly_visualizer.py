@@ -5,6 +5,7 @@ This module provides a concrete implementation of VisualizerBase using the Plotl
 """
 
 import os
+import logging # Added import
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
@@ -491,28 +492,87 @@ class PlotlyVisualizer(VisualizerBase):
                 - y: Y-position of the legend
                 - bgcolor: Background color
                 - bordercolor: Border color
+                - background_legend_items: Dict mapping category names to colors for background legend
         """
         # Combine default parameters with provided kwargs
         params = {**self.default_params, **kwargs}
-        
-        # Extract legend parameters
-        orientation = params.get('legend_orientation', 'v')
-        x = params.get('legend_x', 1.02)
-        y = params.get('legend_y', 1)
-        bgcolor = params.get('legend_bgcolor', 'rgba(255, 255, 255, 0.5)')
-        bordercolor = params.get('legend_bordercolor', 'rgba(0, 0, 0, 0.2)')
-        
-        # Update legend
-        figure.update_layout(
-            showlegend=True,
-            legend=dict(
-                orientation=orientation,
-                x=x,
-                y=y,
-                bgcolor=bgcolor,
-                bordercolor=bordercolor
+
+        # Handle background legend items if provided
+        background_items = params.get('background_legend_items')
+        if background_items:
+            logger = logging.getLogger(__name__) # Initialize logger
+            logger.debug(f"Adding background legend items: {list(background_items.keys())}")
+            # Add dummy scatter traces for each background category
+            for stage, color in background_items.items():
+                figure.add_trace(go.Scatter(
+                    x=[None], y=[None], # No actual data
+                    mode='markers',
+                    marker=dict(
+                        color=color,
+                        size=10,
+                        symbol='square',
+                        opacity=params.get('alpha', 0.3) # Apply alpha to legend marker
+                    ),
+                    name=f"{stage} Stage", # Legend entry name
+                    legendgroup="background_stages", # Group these legend items
+                    showlegend=True
+                ))
+
+            # Update layout to ensure legend is visible and styled
+            # Use parameters passed in kwargs, falling back to defaults
+            orientation = params.get('legend_orientation', 'v')
+            x = params.get('legend_x', 1.02) # Default outside plot area
+            y = params.get('legend_y', 1)    # Default top aligned
+            bgcolor = params.get('legend_bgcolor', 'rgba(255, 255, 255, 0.7)') # Slightly less transparent default
+            bordercolor = params.get('legend_bordercolor', 'rgba(0, 0, 0, 0.1)') # Lighter border default
+            borderwidth = params.get('legend_borderwidth', 1)
+            font_size = params.get('legend_font_size', 10) # Consistent font size
+
+            figure.update_layout(
+                showlegend=True, # Crucial: ensure legend is shown
+                legend=dict(
+                    orientation=orientation,
+                    x=x,
+                    y=y,
+                    bgcolor=bgcolor,
+                    bordercolor=bordercolor,
+                    borderwidth=borderwidth,
+                    font=dict(size=font_size),
+                    # Group background items visually if needed (Plotly does this reasonably well)
+                    tracegroupgap=params.get('legend_tracegroupgap', 5) # Small gap between groups
+                )
             )
-        )
+        else:
+            # --- Logic for standard legends (if no background items) ---
+            # Check if there are any traces with showlegend=True before showing legend
+            has_legend_items = any(trace.showlegend for trace in figure.data)
+
+            if has_legend_items:
+                orientation = params.get('legend_orientation', 'v')
+                x = params.get('legend_x', 1.02)
+                y = params.get('legend_y', 1)
+                bgcolor = params.get('legend_bgcolor', 'rgba(255, 255, 255, 0.7)')
+                bordercolor = params.get('legend_bordercolor', 'rgba(0, 0, 0, 0.1)')
+                borderwidth = params.get('legend_borderwidth', 1)
+                font_size = params.get('legend_font_size', 10)
+
+                # Update legend
+                figure.update_layout(
+                    showlegend=True,
+                    legend=dict(
+                        orientation=orientation,
+                        x=x,
+                        y=y,
+                        bgcolor=bgcolor,
+                        bordercolor=bordercolor,
+                        borderwidth=borderwidth,
+                        font=dict(size=font_size)
+                    )
+                )
+            else:
+                # Explicitly hide legend if no items are meant to be shown
+                figure.update_layout(showlegend=False)
+            # --- End Standard logic ---
     
     def set_title(self, figure: Any, title: str, **kwargs) -> None:
         """
@@ -566,7 +626,7 @@ class PlotlyVisualizer(VisualizerBase):
         params = {**self.default_params, **kwargs}
         
         # Extract label parameters
-        font_size = params.get('axis_label_font_size', 14)
+        font_size = params.get('axis_label_font_size', 11) # Further reduced default size
         font_family = params.get('axis_label_font_family', 'Arial, sans-serif')
         
         # Set x-axis label if provided
@@ -816,64 +876,58 @@ class PlotlyVisualizer(VisualizerBase):
         return region
         
     def add_categorical_regions(self, figure: Any, start_times: Any, end_times: Any, 
-                                categories: Any, category_map: Dict[str, str], 
+                                categories: Any, category_map: Dict[str, str],
                                 **kwargs) -> List[Any]:
         """
-        Add colored regions for categorical data using shapes.
+        Add colored background regions for categorical data using Plotly shapes.
+
+        Args:
+            figure: The Plotly figure to add the regions to.
+            start_times: Series/array of start times for each interval.
+            end_times: Series/array of end times for each interval.
+            categories: Series/array of category labels for each interval.
+            category_map: Dictionary mapping category labels to colors.
+            **kwargs: Optional styling parameters (e.g., alpha).
+
+        Returns:
+            List of shape dictionaries added.
         """
-        regions = []
+        shapes = []
         # Combine default parameters with provided kwargs
         params = {**self.default_params, **kwargs}
-        alpha = params.get('alpha', 0.3)
-        y_range = params.get('y_range', (0, 1)) # Default y-range for regions
-        
-        shapes = []
-        annotations = []
-        legend_items = {} # To track items for potential manual legend
+        alpha = params.get('alpha', 0.2) # Make background more subtle by default
 
         # Add a shape for each interval
         for start, end, cat in zip(start_times, end_times, categories):
-             if pd.isna(start) or pd.isna(end):
-                 continue
-                 
-             color = category_map.get(cat, 'gray') # Default to gray
-             
-             shape = dict(
-                 type='rect',
-                 xref='x',
-                 yref='paper', # Span full y-axis
-                 x0=start,
-                 y0=y_range[0],
-                 x1=end,
-                 y1=y_range[1],
-                 fillcolor=color,
-                 opacity=alpha,
-                 layer='below',
-                 line_width=0
-             )
-             shapes.append(shape)
-             
-             # Store info for legend if needed
-             if cat not in legend_items:
-                 legend_items[cat] = color
+            if pd.isna(start) or pd.isna(end) or start == end: # Skip invalid or zero-duration intervals
+                continue
 
-        # Add all shapes at once
-        figure.update_layout(shapes=shapes)
-        
-        # Optionally add legend (Plotly doesn't directly support legends for shapes)
-        # We can add dummy traces or annotations as a workaround
-        if params.get('add_legend', False):
-            for category, color in legend_items.items():
-                 # Add dummy scatter trace for legend
-                 figure.add_trace(go.Scatter(
-                     x=[None], y=[None], # No actual data
-                     mode='markers',
-                     marker=dict(color=color, size=10),
-                     name=category,
-                     showlegend=True
-                 ))
+            color = category_map.get(cat, 'gray') # Default to gray
 
-        return shapes # Return the list of shape dicts
+            shape = dict(
+                type='rect',
+                xref='x', # Use data coordinates for x-axis
+                yref='paper', # Use paper coordinates (0 to 1) for y-axis to span vertically
+                x0=start,
+                y0=0, # Start at the bottom of the plot area
+                x1=end,
+                y1=1, # End at the top of the plot area
+                fillcolor=color,
+                opacity=alpha,
+                layer='below', # Draw behind data traces
+                line_width=0 # No border for the background shapes
+            )
+            shapes.append(shape)
+
+        # Add all shapes at once to the figure's layout
+        # Append to existing shapes if any
+        current_shapes = list(figure.layout.shapes or [])
+        current_shapes.extend(shapes)
+        figure.update_layout(shapes=current_shapes)
+
+        # Legend for background colors is handled separately in visualize_collection/add_legend
+
+        return shapes # Return the list of shape dicts added
 
     def save(self, figure: Any, filename: str, format: str = "html", **kwargs) -> None:
         """

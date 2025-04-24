@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 # Removed unused typing imports
 from .time_series_signal import TimeSeriesSignal
-from ..signal_types import SignalType
+from ..signal_types import SignalType, Unit # Import Unit
 # Removed unused signal imports
 
 class AccelerometerSignal(TimeSeriesSignal):
@@ -20,6 +20,11 @@ class AccelerometerSignal(TimeSeriesSignal):
     _is_abstract = False
     signal_type = SignalType.ACCELEROMETER
     required_columns = ['x', 'y', 'z']
+    _default_units = { # Define default units for this signal type
+        'x': Unit.MILLI_G, # Assuming milli-g as standard
+        'y': Unit.MILLI_G,
+        'z': Unit.MILLI_G
+    }
 
     # Removed get_sampling_rate override - will use TimeSeriesSignal implementation
     # Operations like compute_magnitude and compute_angle are now registered

@@ -5,11 +5,12 @@ This module defines the AngleSignal class for accelerometer-derived orientation 
 """
 
 # Added imports
+# Added imports
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Any, TYPE_CHECKING
 from .time_series_signal import TimeSeriesSignal
-from ..signal_types import SignalType
+from ..signal_types import SignalType, Unit # Import Unit
 
 # Forward reference for type hinting
 if TYPE_CHECKING:
@@ -27,6 +28,10 @@ class AngleSignal(TimeSeriesSignal):
     _is_abstract = False
     signal_type = SignalType.ANGLE # Use the dedicated ANGLE type
     required_columns = ['pitch', 'roll']
+    _default_units = { # Define default units for this signal type
+        'pitch': Unit.DEGREES,
+        'roll': Unit.DEGREES
+    }
 
     # Removed get_sampling_rate override - will use TimeSeriesSignal implementation
 

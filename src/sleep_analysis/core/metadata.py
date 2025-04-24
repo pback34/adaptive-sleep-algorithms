@@ -6,12 +6,13 @@ and collections, including signal types, operation history, and provenance.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, Any, List, Optional, Tuple, Union # Add Union
 import datetime
 import pandas as pd
 from enum import Enum, auto
 
-from sleep_analysis.signal_types import SignalType, SensorType, SensorModel, BodyPosition, Unit
+from sleep_analysis.signal_types import SignalType, SensorType, SensorModel, BodyPosition, Unit # Assuming Unit is defined here
 from sleep_analysis import __version__
 
 class FeatureType(Enum):
@@ -45,7 +46,8 @@ class TimeSeriesMetadata:
     name: Optional[str] = None  # User-friendly name for reference
     signal_type: Optional[SignalType] = None  # Type of signal (e.g., PPG, ACCELEROMETER)
     sample_rate: Optional[str] = None  # e.g., "100Hz"
-    units: Optional[Unit] = None  # Physical units (e.g., G, BPM)
+    # Change 'units' to store a dictionary mapping column names to units
+    units: Optional[Dict[str, Union[Unit, str, None]]] = field(default_factory=dict)
     start_time: Optional[datetime.datetime] = None  # Signal start time
     end_time: Optional[datetime.datetime] = None  # Signal end time
     derived_from: List[Tuple[str, int]] = field(default_factory=list)  # List of (signal_id, operation_index) tuples

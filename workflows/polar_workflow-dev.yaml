@@ -311,15 +311,37 @@ visualization:
       # height: 1800  # Taller to accommodate all subplots
       strict: false
   - type: time_series
-    signals: ["hr", "accel_magnitude", "accel_angle", "sleep_stage_0"] # Added sleep_stage_0
+    signals: ["hr", "accel_magnitude", "accel_angle"] # REMOVED sleep_stage_0
     layout: vertical
-    title: "All Signals Overview - Linked X-Axes"
+    title: "All Signals Overview - Linked X-Axes (with Sleep Stages)" # Updated title
     output: "results/visualizations/all_signals_overview-bokeh.html"
     backend: bokeh
     parameters:
       link_x_axes: true  # Ensure x-axes are linked across all subplots
       # downsample: 20000 # Limit each subplot to max 20,000 points for performance
-      # width: 1200
-      # height: 1800  # Taller to accommodate all subplots
+      # width: 1800    # REMOVED: Let stretch_width manage width
+      height: 600   # Keep fixed height for taller plots
+      sizing_mode: stretch_width # Use stretch_width for consistent width
+      overlay_sleep_stages: "sleep_stage_0" # Specify key for background stages
       strict: false
-# Removed standalone hypnogram plot configuration
+      # Optional: Customize background stage colors/alpha
+      # stage_colors: { Awake: 'red', REM: 'purple', ... }
+      # alpha: 0.15 # Make background even more subtle
+
+  # Plotly version of the overview with sleep stage background
+  - type: time_series
+    signals: ["hr", "accel_magnitude", "accel_angle"] # Exclude sleep stage itself from main plot lines
+    layout: vertical
+    title: "All Signals Overview - Plotly (with Sleep Stages Background)"
+    output: "results/visualizations/all_signals_overview_background-plotly.html"
+    backend: plotly
+    parameters:
+      link_x_axes: true
+      overlay_sleep_stages: "sleep_stage_0" # Specify key for background stages
+      strict: false
+      # Optional: Customize background stage colors/alpha for Plotly
+      # stage_colors: { Awake: 'red', REM: 'purple', ... }
+      # alpha: 0.15
+      # Optional: Adjust legend position if needed
+      # legend_x: 1.05
+      # legend_y: 0.5

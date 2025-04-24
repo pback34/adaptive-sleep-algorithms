@@ -291,6 +291,81 @@ class VisualizerBase(ABC):
         """
         pass
 
+    @staticmethod
+    def _calculate_sleep_stage_regions(signal: EEGSleepStageSignal) -> List[Tuple[pd.Timestamp, pd.Timestamp, str]]:
+        """
+        Helper to calculate contiguous sleep stage regions from signal data.
+
+        Args:
+            signal: The EEGSleepStageSignal containing the data.
+
+        Returns:
+            List of tuples, where each tuple is (start_time, end_time, stage_category).
+            Returns an empty list if data is invalid or empty.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        try:
+            df = signal.get_data().copy()
+            stage_column = 'sleep_stage' # Assuming this is the standard column name
+            if stage_column not in df.columns or df.empty:
+                logger.warning(f"Sleep stage column '{stage_column}' not found or data empty for signal '{signal.metadata.name}'.")
+                return []
+
+            # Ensure index is sorted datetime
+            if not isinstance(df.index, pd.DatetimeIndex):
+                 logger.warning(f"Index is not DatetimeIndex for signal '{signal.metadata.name}'. Cannot calculate regions.")
+                 return []
+            df = df.sort_index()
+
+            # Map unexpected stages to 'Unknown' if necessary (using a predefined set or dynamic)
+            # For simplicity, assume stages are clean strings for now. Add mapping if needed.
+            # Example: known_stages = {'Awake', 'REM', 'N1', 'N2', 'N3'}
+            # df[stage_column] = df[stage_column].apply(lambda x: x if x in known_stages else 'Unknown')
+
+            # Find blocks of consecutive identical stages
+            df['block'] = (df[stage_column] != df[stage_column].shift()).cumsum()
+
+            regions = []
+            for _, group in df.groupby('block'):
+                if not group.empty:
+                    start_time = group.index.min()
+                    # Estimate end time: Use the timestamp of the *next* point if available,
+                    # otherwise estimate based on median diff or add a default duration.
+                    last_idx_in_group = group.index.max()
+                    # Find the position of the last timestamp of the group in the original sorted index
+                    original_index_pos = df.index.get_loc(last_idx_in_group)
+
+                    if original_index_pos + 1 < len(df.index):
+                        end_time = df.index[original_index_pos + 1]
+                    else:
+                        # Estimate end: add median diff if possible, else 30s default
+                        median_diff = pd.Series(df.index).diff().median()
+                        if pd.notna(median_diff) and median_diff > pd.Timedelta(0):
+                             end_time = last_idx_in_group + median_diff
+                        else:
+                             # Fallback to a default epoch length (e.g., 30 seconds)
+                             end_time = last_idx_in_group + pd.Timedelta(seconds=30)
+                             logger.debug(f"Estimating end time for last segment of signal '{signal.metadata.name}' using 30s default.")
+
+                    stage = group[stage_column].iloc[0]
+
+                    # Skip zero-duration segments that might arise from duplicate indices
+                    if start_time < end_time:
+                        regions.append((start_time, end_time, stage))
+                    else:
+                        logger.debug(f"Skipping zero-duration segment for stage '{stage}' at {start_time} in signal '{signal.metadata.name}'.")
+
+
+            logger.debug(f"Calculated {len(regions)} sleep stage regions for signal '{signal.metadata.name}'.")
+            return regions
+
+        except Exception as e:
+            logger.error(f"Error calculating sleep stage regions for signal '{signal.metadata.name}': {e}", exc_info=True)
+            return []
+
+
     # --- High-Level Plot Creation Methods ---
 
     def create_hypnogram_plot(self, signal: EEGSleepStageSignal, **kwargs) -> Any:
@@ -317,6 +392,13 @@ class VisualizerBase(ABC):
             height=kwargs.get('height', self.default_params.get('height')),
             x_axis_type='datetime'
         )
+
+        # --- Apply x-axis limits if provided ---
+        x_min = kwargs.get('x_min')
+        x_max = kwargs.get('x_max')
+        if x_min is not None or x_max is not None:
+            self.set_axis_limits(fig, x_min=x_min, x_max=x_max)
+        # --- End x-axis limits ---
 
         # Add the hypnogram visualization
         self.visualize_hypnogram(fig, signal, **kwargs)
@@ -384,7 +466,14 @@ class VisualizerBase(ABC):
 
         # Create figure
         figure = self.create_figure(**kwargs)
-        
+
+        # --- Apply x-axis limits if provided ---
+        x_min = kwargs.get('x_min')
+        x_max = kwargs.get('x_max')
+        if x_min is not None or x_max is not None:
+            self.set_axis_limits(figure, x_min=x_min, x_max=x_max)
+        # --- End x-axis limits ---
+
         # Get data
         data = signal.get_data()
         
@@ -489,23 +578,59 @@ class VisualizerBase(ABC):
         self.set_title(figure, title)
         
         x_label = kwargs.get('x_label', 'Time')
-        
-        # Set y-label only if not categorical (handled above for categorical)
+
+        # --- Update Y-axis label logic ---
         if not is_categorical:
             y_label = kwargs.get('y_label')
-            if not y_label and hasattr(signal.metadata, 'units') and signal.metadata.units:
-                try:
-                    unit_name = signal.metadata.units.name if hasattr(signal.metadata.units, 'name') else str(signal.metadata.units)
-                    y_label = f"{signal.metadata.name or 'Value'} ({unit_name})"
-                except AttributeError: # Handle cases where units might not be an enum
-                    y_label = f"{signal.metadata.name or 'Value'} ({signal.metadata.units})"
-            elif not y_label:
-                 y_label = signal.metadata.name or 'Value'
-                 
+            # Try to get units from the metadata dictionary
+            signal_units_dict = getattr(signal.metadata, 'units', {})
+            unit_str = None # String representation of the unit
+
+            # Check if all columns share the same unit
+            unique_units = set()
+            if signal_units_dict and isinstance(signal_units_dict, dict):
+                for col in data.columns:
+                    unit_val = signal_units_dict.get(col)
+                    if unit_val: # Add unit if found for the column
+                         # Convert enum to string representation for the set
+                         unit_name = unit_val.name if hasattr(unit_val, 'name') else str(unit_val)
+                         unique_units.add(unit_name)
+                    else: # If a column has no unit defined, treat units as mixed
+                         unique_units.add(None) # Add None to indicate a missing unit
+
+            # Determine the unit string for the label
+            if len(unique_units) == 1:
+                # All columns have the same unit (or only one column exists)
+                single_unit = unique_units.pop()
+                if single_unit is not None and single_unit != 'none': # Don't add unit if it's None or 'none'
+                    unit_str = single_unit
+            elif len(unique_units) > 1:
+                # Mixed units or some columns have no units
+                unit_str = "Mixed Units" # Indicate mixed units
+            # else: No units found for any column, unit_str remains None
+
+            if not y_label: # Only construct label if not provided in kwargs
+                base_label = signal.metadata.name or 'Value'
+                if unit_str and unit_str != "Mixed Units": # Add unit if consistent and not 'none'
+                    y_label = f"{base_label} ({unit_str})"
+                elif unit_str == "Mixed Units":
+                     y_label = f"{base_label} ({unit_str})" # Explicitly state mixed units
+                else:
+                    # Fallback to signal type if units are missing
+                    if hasattr(signal.metadata, 'signal_type') and signal.metadata.signal_type:
+                        try:
+                            type_name = signal.metadata.signal_type.name.replace('_', ' ').title()
+                            y_label = f"{type_name} ({base_label})"
+                        except AttributeError:
+                            y_label = base_label
+                    else:
+                        y_label = base_label
+
             self.set_axis_labels(figure, x_label=x_label, y_label=y_label)
         else:
-            # For categorical, only set x-label (y-label set above)
+            # For categorical, only set x-label (y-label set during plotting)
              self.set_axis_labels(figure, x_label=x_label)
+        # --- End Y-axis label logic ---
         
         return figure
     
@@ -725,6 +850,7 @@ class VisualizerBase(ABC):
 
         # --- Create Figures ---
         figures = []
+        figure_items = [] # Store the (figure, item) tuple
         for i, item in enumerate(signals_to_plot):
             try:
                 # Use subplot title if available, otherwise generate default
@@ -754,6 +880,7 @@ class VisualizerBase(ABC):
                 # Visualize the item (signal or feature)
                 figure = self.visualize_signal(item, **signal_kwargs)
                 figures.append(figure)
+                figure_items.append((figure, item)) # Store for potential background addition
             except NotImplementedError as nie:
                  logger.warning(f"Skipping visualization for item '{item.metadata.name}': {nie}")
             except Exception as e:
@@ -768,18 +895,91 @@ class VisualizerBase(ABC):
             if strict: raise ValueError(msg)
             else: return self.create_figure(title="No Figures Created")
 
+        # --- Add Sleep Stage Background Overlay (if requested) ---
+        overlay_key = kwargs.get('overlay_sleep_stages')
+        legend_items_for_background = {} # To store items for a combined legend
+        if overlay_key and figures:
+            logger.info(f"Attempting to overlay sleep stages from signal '{overlay_key}' as background.")
+            try:
+                # Find the sleep stage signal in the collection
+                sleep_stage_signals = collection.get_signals(input_spec=overlay_key, signal_type=SignalType.EEG_SLEEP_STAGE)
+                if not sleep_stage_signals:
+                    logger.warning(f"Sleep stage signal '{overlay_key}' not found or not EEGSleepStageSignal type.")
+                else:
+                    sleep_signal = sleep_stage_signals[0] # Use the first one found
+                    # Define stage colors (reuse hypnogram defaults or allow override)
+                    default_colors = {
+                        'Awake': '#FF6347', 'N1': '#ADD8E6', 'N2': '#4169E1',
+                        'N3': '#00008B', 'REM': '#9400D3', 'Unknown': '#A9A9A9'
+                    }
+                    stage_colors = kwargs.get('stage_colors', default_colors)
+                    present_stages = sleep_signal.get_data()['sleep_stage'].unique()
+                    legend_items_for_background = {}
+                    for stage_name, color in stage_colors.items():
+                        # Only show stages that are actually present in the data
+                        if stage_name in present_stages:
+                            # Use plain stage name without 'Stage' suffix for cleaner legend
+                            legend_items_for_background[stage_name] = color
+
+                    # Calculate regions once using the static helper method
+                    regions_data = self._calculate_sleep_stage_regions(sleep_signal)
+
+                    if regions_data:
+                        starts, ends, cats = zip(*regions_data)
+                        # Add background regions to each created figure
+                        for fig, _ in figure_items: # Iterate through the figures we created
+                             try:
+                                 self.add_categorical_regions(fig, starts, ends, cats, stage_colors, **kwargs)
+                             except Exception as add_region_err:
+                                 logger.error(f"Failed to add categorical regions to a figure: {add_region_err}", exc_info=True)
+                                 if strict: raise
+                    else:
+                         logger.warning(f"No valid regions calculated from sleep stage signal '{overlay_key}'.")
+
+            except Exception as e:
+                logger.error(f"Failed to process or overlay sleep stages from '{overlay_key}': {e}", exc_info=True)
+                # Continue without overlay if strict is False
+
+        # --- Apply Layout ---
+        final_layout = None
         if layout == "vertical":
-            return self.create_grid_layout(figures, len(figures), 1, **kwargs)
+            final_layout = self.create_grid_layout(figures, len(figures), 1, **kwargs)
         elif layout == "horizontal":
-            return self.create_grid_layout(figures, 1, len(figures), **kwargs)
+            final_layout = self.create_grid_layout(figures, 1, len(figures), **kwargs)
         elif layout == "grid":
             cols = math.ceil(math.sqrt(len(figures)))
             rows = math.ceil(len(figures) / cols)
-            return self.create_grid_layout(figures, rows, cols, **kwargs)
-        # Removed 'overlay' layout as it's complex and not fully supported
+            final_layout = self.create_grid_layout(figures, rows, cols, **kwargs)
         else:
             logger.warning(f"Unsupported layout '{layout}'. Returning list of figures.")
-            return figures
+            final_layout = figures # Return list if layout is unknown
+
+        # --- Add Legend for Background Colors (if applicable and layout is single object) ---
+        # Pass the background legend items to the backend-specific add_legend method
+        # Only add legend if overlay was successful and we have items
+        if legend_items_for_background and isinstance(final_layout, object) and not isinstance(final_layout, list):
+            try:
+                # Pass the items and potentially other relevant kwargs
+                legend_kwargs = {
+                    'background_legend_items': legend_items_for_background,
+                    # Pass other legend styling parameters from main kwargs if needed
+                    **{k: v for k, v in kwargs.items() if k.startswith('legend_')}
+                }
+                # Ensure alpha is passed for styling dummy renderers/traces
+                legend_kwargs['alpha'] = kwargs.get('alpha', 0.3)
+                # Pass the stage colors needed for the legend item styling
+                legend_kwargs['stage_colors'] = stage_colors
+
+                # Call add_legend - it will now modify the final_layout (or its child) directly
+                self.add_legend(final_layout, **legend_kwargs)
+                logger.debug("Attempted to add background legend directly to layout/subplot.")
+
+            except Exception as legend_err:
+                logger.error(f"Failed to add background legend: {legend_err}", exc_info=True)
+                # Continue without legend if strict is False
+                if strict: raise
+
+        return final_layout
     
     def create_from_config(self, config: Dict[str, Any], collection: SignalCollection) -> Any:
         """

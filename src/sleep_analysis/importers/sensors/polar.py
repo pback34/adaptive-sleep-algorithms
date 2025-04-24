@@ -185,15 +185,20 @@ class PolarCSVImporter(CSVImporterBase):
             A dictionary of metadata key-value pairs.
         """
         self.logger.info(f"Extracting metadata for {signal_type} from {source}")
-        
-        # Get base metadata from parent class
+
+        # Import here to avoid circular imports and access enums
+        from ...signal_types import SensorModel, BodyPosition, Unit, SignalType
+
+        # Get base metadata from parent class (will include source_files, etc.)
+        # Note: Base _extract_metadata no longer sets default units.
         metadata = super()._extract_metadata(data, source, signal_type)
-        self.logger.debug(f"Base metadata: {metadata}")
-        
-        # Import here to avoid circular imports
-        from ...signal_types import SensorModel, BodyPosition
-        
-        # Add Polar-specific metadata with enum conversion
+        self.logger.debug(f"Base metadata (before adding sensor info): {metadata}")
+
+        # --- Remove Units Logic ---
+        # Units are now handled by the Signal class __init__ using _default_units
+        # --- End Remove Units Logic ---
+
+        # Add Polar-specific sensor metadata with enum conversion
         sensor_model_str = self.config.get("sensor_model", "POLAR_H10")
         body_position_str = self.config.get("body_position", "LEFT_WRIST")
         self.logger.debug(f"Using sensor model: {sensor_model_str}, body position: {body_position_str}")

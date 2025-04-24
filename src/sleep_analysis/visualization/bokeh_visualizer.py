@@ -447,33 +447,151 @@ class BokehVisualizer(VisualizerBase):
     
     def add_legend(self, figure: Any, **kwargs) -> None:
         """
-        Add or customize the legend of a Bokeh figure.
+        Add or customize the legend of a Bokeh figure or layout.
         
         Args:
-            figure: The Bokeh figure to add the legend to
+            figure: The Bokeh figure or layout object.
             **kwargs: Optional legend parameters
                 - location: Legend position ('top_left', 'top_right', etc.)
                 - orientation: Legend orientation ('horizontal', 'vertical')
                 - click_policy: How clicking on legend items affects the plot
+                - background_legend_items: Dict mapping category names to colors for background legend
         """
         # Combine default parameters with provided kwargs
         params = {**self.default_params, **kwargs}
+        logger = logging.getLogger(__name__)
         
-        # Extract legend parameters
-        location = params.get('legend_location', 'top_right')
-        orientation = params.get('legend_orientation', 'vertical')
-        click_policy = params.get('legend_click_policy', 'hide')
+        try:
+            # Handle background legend items if provided
+            background_items = params.get('background_legend_items')
+    
+            # Recursively find the first figure to attach the legend
+            def _find_fig(obj):
+                if hasattr(obj, 'add_layout'):
+                    return obj
+                # Sequence types
+                if isinstance(obj, (list, tuple)):
+                    for it in obj:
+                        found = _find_fig(it)
+                        if found:
+                            return found
+                # Layout with children
+                children = getattr(obj, 'children', None)
+                if children:
+                    for child in children:
+                        found = _find_fig(child)
+                        if found:
+                            return found
+                return None
+            actual_target_figure = _find_fig(figure)
+            if not actual_target_figure:
+                logger.warning("Could not find any figure in layout to add legend")
+                return
+    
+            # --- Add Background Legend (if requested and target found) ---
+            if background_items:
+                logger.debug(f"Adding background legend items: {list(background_items.keys())}")
+                legend_items = []
+                alpha = params.get('alpha', 0.3)
+                
+                # Use the exact same default colors as in visualize_hypnogram to ensure consistency
+                default_colors = {
+                    'Awake': '#FF6347',  # Tomato Red
+                    'N1': '#ADD8E6',     # Light Blue
+                    'N2': '#4169E1',     # Royal Blue
+                    'N3': '#00008B',     # Dark Blue
+                    'REM': '#9400D3',    # Dark Violet
+                    'Unknown': '#A9A9A9'  # Dark Gray
+                }
+                
+                # If we have stage_colors from kwargs, use those instead (passed from visualize_collection)
+                stage_colors = params.get('stage_colors', default_colors)
+                
+                # Use the same alpha as in visualize_hypnogram for consistency
+                # In visualize_hypnogram, alpha defaults to 1.0 (line 1037)
+                # We must match this value exactly to ensure visual consistency
+                plot_alpha = params.get('alpha', 1.0)  # Match default in visualize_hypnogram
+    
+                try:
+                    for stage, color in background_items.items():
+                        # Always use the canonical stage colors if available, otherwise fall back to provided color
+                        actual_color = stage_colors.get(stage, color)
+                        
+                        # Create an invisible dummy renderer on the target figure
+                        # This renderer exists solely to provide an item for the legend
+                        dummy_renderer = actual_target_figure.rect(
+                            x=0, y=0,  # Position doesn't matter for dummy renderer
+                            width=10, height=10,  # Large enough to be visible in legend
+                            fill_color=actual_color,
+                            line_color=actual_color,
+                            fill_alpha=plot_alpha,  # Use the same alpha as in the plot
+                            line_alpha=1.0,  # Keep border fully visible
+                            visible=True  # Make sure it's visible
+                        )
+                        # Create a LegendItem linking the label without 'Stage' suffix
+                        legend_items.append(LegendItem(label=stage, renderers=[dummy_renderer]))
+    
+                    # Clear existing legends to avoid duplicates
+                    if hasattr(actual_target_figure, 'legend') and actual_target_figure.legend:
+                        actual_target_figure.legend[:] = []
+    
+                    # Create and add the new legend
+                    legend = Legend(
+                        items=legend_items,
+                        location=params.get('legend_location', 'center'),
+                        orientation=params.get('legend_orientation', 'horizontal'),
+                        click_policy=params.get('legend_click_policy', 'hide'),
+                        label_text_font_size=params.get('legend_font_size', '9pt'),
+                        border_line_alpha=params.get('legend_border_alpha', 0.3),
+                        background_fill_alpha=params.get('legend_bg_alpha', 0.5),
+                        visible=True
+                    )
+                    
+                    # Add the legend to the target figure
+                    actual_target_figure.add_layout(legend, params.get('legend_position', 'above'))
+                    logger.debug(f"Successfully added background legend with {len(legend_items)} items")
+                except Exception as e:
+                    logger.error(f"Error creating background legend items: {str(e)}")
+    
+            # --- Handle Standard Legends (if no background items requested) ---
+            elif not background_items:
+                # Check if the target figure has renderers with legend labels
+                has_legend_items = False
+                if hasattr(actual_target_figure, 'renderers'):
+                    has_legend_items = any(
+                        hasattr(r, 'legend_label') and r.legend_label and getattr(r, 'visible', True)
+                        for r in actual_target_figure.renderers
+                    )
+    
+                if has_legend_items:
+                    # Configure existing legend or add a new one
+                    if (hasattr(actual_target_figure, 'legend') and 
+                        isinstance(actual_target_figure.legend, list) and 
+                        actual_target_figure.legend):
+                        legend_obj = actual_target_figure.legend[0]
+                    else:
+                        # Add a new legend if none exists
+                        actual_target_figure.add_layout(Legend(), params.get('legend_position', 'above'))
+                        legend_obj = actual_target_figure.legend[0] if actual_target_figure.legend else None
+    
+                    if legend_obj:
+                        legend_obj.location = params.get('legend_location', 'center')
+                        legend_obj.orientation = params.get('legend_orientation', 'horizontal')
+                        legend_obj.click_policy = params.get('legend_click_policy', 'hide')
+                        legend_obj.label_text_font_size = params.get('legend_font_size', '10pt')
+                        legend_obj.border_line_alpha = params.get('legend_border_alpha', 0.3)
+                        legend_obj.background_fill_alpha = params.get('legend_bg_alpha', 0.5)
+                        legend_obj.visible = True
+                else:
+                    # Hide legend if no items to show
+                    if (hasattr(actual_target_figure, 'legend') and 
+                        isinstance(actual_target_figure.legend, list) and 
+                        actual_target_figure.legend):
+                        actual_target_figure.legend[0].visible = False
         
-        # Configure the legend if it exists
-        if hasattr(figure, 'legend') and figure.legend:
-            figure.legend.location = location
-            figure.legend.orientation = orientation
-            figure.legend.click_policy = click_policy
-            
-            # Additional styling
-            figure.legend.label_text_font_size = params.get('legend_font_size', '10pt')
-            figure.legend.border_line_alpha = params.get('legend_border_alpha', 0.3)
-            figure.legend.background_fill_alpha = params.get('legend_bg_alpha', 0.5)
+        except Exception as e:
+            logger.error(f"Error in add_legend: {str(e)}", exc_info=True)
+            # Fail gracefully - don't crash the visualization process
     
     def set_title(self, figure: Any, title: str, **kwargs) -> None:
         """
@@ -518,7 +636,7 @@ class BokehVisualizer(VisualizerBase):
         params = {**self.default_params, **kwargs}
         
         # Extract label parameters
-        font_size = params.get('axis_label_font_size', '12pt')
+        font_size = params.get('axis_label_font_size', '9pt') # Further reduced default size
         font_style = params.get('axis_label_font_style', 'normal')
         
         # Set x-axis label if provided
@@ -663,7 +781,9 @@ class BokehVisualizer(VisualizerBase):
         
         figure.add_layout(hline)
         return hline
-    
+
+    # Removed _get_sleep_stage_regions, now using static method from VisualizerBase
+
     def add_region(self, figure: Any, x_start: Any, x_end: Any, **kwargs) -> Any:
         """
         Add a highlighted region to a Bokeh figure.
@@ -701,63 +821,47 @@ class BokehVisualizer(VisualizerBase):
         return region
         
     def add_categorical_regions(self, figure: Any, start_times: Any, end_times: Any, 
-                                categories: Any, category_map: Dict[str, str], 
+                                categories: Any, category_map: Dict[str, str],
                                 **kwargs) -> List[Any]:
         """
-        Add colored regions for categorical data using BoxAnnotation.
+        Add colored background regions for categorical data using BoxAnnotation.
+
+        Args:
+            figure: The Bokeh figure to add the regions to.
+            start_times: Series/array of start times for each interval.
+            end_times: Series/array of end times for each interval.
+            categories: Series/array of category labels for each interval.
+            category_map: Dictionary mapping category labels to colors.
+            **kwargs: Optional styling parameters (e.g., alpha).
+
+        Returns:
+            List of BoxAnnotation objects added.
         """
         regions = []
-        # Combine default parameters with provided kwargs
         params = {**self.default_params, **kwargs}
-        alpha = params.get('alpha', 0.3)
-        
-        # Determine y-range for the annotation boxes
-        # Use figure's existing range if set, otherwise use default (0, 1)
-        bottom = figure.y_range.start if figure.y_range and figure.y_range.start is not None else 0
-        top = figure.y_range.end if figure.y_range and figure.y_range.end is not None else 1
-        
-        # If bottom and top are the same, create a small default range
-        if bottom == top:
-            bottom = -0.5
-            top = 0.5
-            # Also update the figure's range if it was the cause
-            if figure.y_range.start == figure.y_range.end:
-                 figure.y_range.start = bottom
-                 figure.y_range.end = top
-                 logger.debug("Set default y-range (-0.5, 0.5) for categorical plot as figure range was zero.")
-
+        alpha = params.get('alpha', 0.2) # Make background more subtle by default
 
         # Add a BoxAnnotation for each interval
         for start, end, cat in zip(start_times, end_times, categories):
-            if pd.isna(start) or pd.isna(end):
+            if pd.isna(start) or pd.isna(end) or start == end: # Skip invalid or zero-duration intervals
                 continue
-                
-            color = category_map.get(cat, 'gray') # Default to gray if category not in map
-            
+
+            color = category_map.get(cat, 'gray') # Default to gray
+
             region = BoxAnnotation(
-                bottom=bottom, # Use calculated bottom/top
-                top=top,
+                # bottom=0, top=1, # Spans the full default y-range of the plot area
+                # y_range_name='default', # Ensure it uses the primary y-axis range
                 left=start,
                 right=end,
                 fill_color=color,
                 fill_alpha=alpha,
-                level='underlay' # Place regions behind data lines
+                level='underlay' # Crucial: Draw behind data lines
             )
             figure.add_layout(region)
             regions.append(region)
-            
-        # Optionally add legend for categories (can get cluttered)
-        # This requires creating dummy renderers for the legend
-        if params.get('add_legend', False):
-             items = []
-             for category, color in category_map.items():
-                 # Create a dummy renderer for the legend item
-                 dummy_renderer = figure.line([], [], color=color, alpha=alpha)
-                 items.append(LegendItem(label=category, renderers=[dummy_renderer]))
-             
-             if items:
-                 legend = Legend(items=items, location="top_left")
-                 figure.add_layout(legend, 'right')
+
+        # Legend for background colors is handled separately in visualize_collection
+        # as it needs to be added only once to the overall layout.
 
         return regions
 
@@ -908,16 +1012,16 @@ class BokehVisualizer(VisualizerBase):
         stage_to_num = {stage: i for i, stage in enumerate(stage_order)}
         num_stages = len(stage_order)
 
-        # Define colors for each stage (fallback to default palette if not provided)
+        # Define stronger default colors for each stage
         default_colors = {
-            'Awake': '#FF5733',  # Orange-red
-            'N1': '#33A8FF',     # Light blue
-            'N2': '#3358FF',     # Medium blue
-            'N3': '#0D0C8A',     # Dark blue
-            'REM': '#AA33FF',    # Purple
-            'Unknown': '#CCCCCC' # Grey for Unknown/Other
+            'Awake': '#FF6347',  # Tomato Red
+            'N1': '#ADD8E6',     # Light Blue
+            'N2': '#4169E1',     # Royal Blue
+            'N3': '#00008B',     # Dark Blue
+            'REM': '#9400D3',    # Dark Violet
+            'Unknown': '#A9A9A9' # Dark Gray
         }
-        # Ensure default colors cover the default order
+        # Ensure default colors cover the default order (using a fallback palette if needed)
         palette = Category20[max(3, min(20, num_stages))] # Use a larger palette if needed
         for i, stage in enumerate(stage_order):
              if stage not in default_colors:
@@ -930,8 +1034,9 @@ class BokehVisualizer(VisualizerBase):
             'left': [], 'right': [], 'top': [], 'bottom': [],
             'color': [], 'alpha': [], 'stage_name': [], 'duration_min': []
         }
-        alpha = params.get('alpha', 0.8)
-        line_color = params.get('line_color', "white")
+        # Use stronger defaults: opaque alpha, black lines
+        alpha = params.get('alpha', 1.0) # Default to fully opaque
+        line_color = params.get('line_color', "black") # Default to black lines
         line_width = params.get('line_width', 1)
 
         # Iterate through the dataframe to create segments for quads

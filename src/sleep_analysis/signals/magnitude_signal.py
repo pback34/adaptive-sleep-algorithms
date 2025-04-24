@@ -5,11 +5,12 @@ This module defines the MagnitudeSignal class for accelerometer magnitude data.
 """
 
 # Added imports
+# Added imports
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Any, TYPE_CHECKING
 from .time_series_signal import TimeSeriesSignal
-from ..signal_types import SignalType
+from ..signal_types import SignalType, Unit # Import Unit
 
 # Forward reference for type hinting
 if TYPE_CHECKING:
@@ -27,6 +28,15 @@ class MagnitudeSignal(TimeSeriesSignal):
     _is_abstract = False
     signal_type = SignalType.MAGNITUDE
     required_columns = ['magnitude']
+    # Default unit depends on the source, but we can set a common default.
+    # The __init__ logic will try to infer from source if possible,
+    # otherwise this default might be used if created standalone.
+    # For derivation via apply_operation, the source unit logic was removed,
+    # so this default will be used if the source had no units.
+    _default_units = {
+        'magnitude': Unit.MILLI_G # Defaulting to milli-g, assuming ACC source
+    }
+
 
     # Removed get_sampling_rate override - will use TimeSeriesSignal implementation
 

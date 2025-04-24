@@ -43,6 +43,14 @@ class BodyPosition(Enum):
 class Unit(Enum):
     """Enum for different units of measurement."""
     G = "g"
+    MILLI_G = "mg" # For accelerometers (e.g., Polar)
     BPM = "bpm"
+    MILLISECONDS = "ms" # For HRV
     HZ = "Hz"
+    DEGREES = "degrees" # For AngleSignal
+    ARBITRARY = "arbitrary" # For values without standard physical units (e.g., quality scores)
+    NONE = "none" # For categorical data like sleep stages
     # Additional units can be added as needed
+
+    def __str__(self):
+        return self.value

@@ -52,9 +52,39 @@ class TimeSeriesSignal(SignalData):
         """
         if self.__class__ is TimeSeriesSignal:
             raise TypeError("TimeSeriesSignal is an abstract class and cannot be instantiated directly")
-        super().__init__(data, metadata, handler)
+        super().__init__(data, metadata, handler) # Calls base SignalData.__init__ which sets self.metadata
+
+        # --- Merge Default Units ---
+        logger = logging.getLogger(__name__)
+        default_units = getattr(self.__class__, '_default_units', {})
+        if default_units:
+            # Ensure metadata.units exists and is a dict
+            if not isinstance(self.metadata.units, dict):
+                 logger.warning(f"Metadata 'units' for {self.metadata.signal_id} is not a dict ({type(self.metadata.units)}). Initializing.")
+                 self.metadata.units = {}
+
+            merged_units = default_units.copy() # Start with defaults
+            # Override defaults with any units explicitly provided in the input metadata
+            if metadata and 'units' in metadata and isinstance(metadata['units'], dict):
+                 merged_units.update(metadata['units'])
+
+            # Filter units to only include columns present in the actual data
+            final_units = {}
+            if self._data is not None: # Check if data exists
+                 for col in self._data.columns:
+                      if col in merged_units:
+                           final_units[col] = merged_units[col]
+            else: # If data is None, keep all merged units for now
+                 final_units = merged_units
+
+            if final_units != self.metadata.units:
+                 logger.debug(f"Updating units metadata for {self.metadata.signal_id}: {final_units}")
+                 self.metadata.units = final_units # Update the metadata object
+        # --- End Merge Default Units ---
+
         # Automatically update sample rate metadata upon initialization
         self._update_sample_rate_metadata()
+
 
     def _validate_timestamp(self, data):
         """
@@ -278,6 +308,15 @@ class TimeSeriesSignal(SignalData):
             metadata_dict = asdict(self.metadata) # Start with a copy
             metadata_dict["signal_id"] = str(uuid.uuid4()) # New unique ID
             metadata_dict["derived_from"] = [(self.metadata.signal_id, operation_index)] # Link to source
+
+            # --- Remove Unit Determination Logic ---
+            # Units will now be handled by the __init__ of the output_class
+            # based on its _default_units and the columns in result_data.
+            # We still need to remove the old 'units' key from the copied dict
+            # to avoid passing potentially incorrect source units to the new instance.
+            if 'units' in metadata_dict:
+                del metadata_dict['units']
+            # --- End Remove Unit Determination Logic ---
 
             # --- Initialize operations list for the NEW signal ---
             # Sanitize parameters for the deriving operation

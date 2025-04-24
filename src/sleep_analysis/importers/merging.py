@@ -294,15 +294,21 @@ class MergingImporter(SignalImporter):
         # Get appropriate signal class for the signal type
         signal_class = self._get_signal_class(signal_type)
 
-        # Prepare metadata
+        # Prepare minimal metadata - units will be handled by signal_class.__init__
         metadata = {
-            "signal_type": SignalType[signal_type.upper()],
-            "source_files": source_files_processed, # Use only files that were successfully processed
-            "merged": True,  # Set merged flag
-            "source": directory,
-            "sample_count": len(merged_df)
+            "signal_type": SignalType[signal_type.upper()], # Keep signal_type
+            "source_files": source_files_processed, # Keep source_files
+            "merged": True,  # Keep merged flag
+            # Optionally pass sensor info if available in config
+            "sensor_model": self.config.get("sensor_model"),
+            "sensor_type": self.config.get("sensor_type"),
+            "body_position": self.config.get("body_position"),
+            # Add other relevant config items if needed by metadata handler
         }
-        
+        # Remove None values from metadata before passing
+        metadata = {k: v for k, v in metadata.items() if v is not None}
+        self.logger.debug(f"Prepared minimal metadata for signal creation: {metadata}")
+
         # Get required columns from signal class
         required_columns = signal_class.required_columns
         self.logger.debug(f"Required columns for {signal_type}: {required_columns}")

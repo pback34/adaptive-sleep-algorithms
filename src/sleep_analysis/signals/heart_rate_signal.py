@@ -5,7 +5,7 @@ This module defines the HeartRateSignal class for heart rate data.
 """
 
 from .time_series_signal import TimeSeriesSignal
-from ..signal_types import SignalType
+from ..signal_types import SignalType, Unit # Import Unit
 
 class HeartRateSignal(TimeSeriesSignal):
     """
@@ -19,6 +19,10 @@ class HeartRateSignal(TimeSeriesSignal):
     signal_type = SignalType.HEART_RATE
     required_columns = ['hr']
     optional_columns = ['hrv']  # HRV is optional as not all HR signals include it
+    _default_units = { # Define default units for this signal type
+        'hr': Unit.BPM,
+        'hrv': Unit.MILLISECONDS
+    }
 
     # Removed get_sampling_rate override - will use TimeSeriesSignal implementation
 

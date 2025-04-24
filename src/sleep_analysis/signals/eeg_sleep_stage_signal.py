@@ -6,7 +6,7 @@ This module defines the EEGSleepStageSignal class for EEG-based sleep staging da
 
 import pandas as pd
 from .time_series_signal import TimeSeriesSignal
-from ..signal_types import SignalType
+from ..signal_types import SignalType, Unit # Import Unit
 
 class EEGSleepStageSignal(TimeSeriesSignal):
     """
@@ -20,6 +20,11 @@ class EEGSleepStageSignal(TimeSeriesSignal):
     signal_type = SignalType.EEG_SLEEP_STAGE
     required_columns = ['sleep_stage']
     optional_columns = ['sum_power', 'eeg_quality']
+    _default_units = { # Define default units for this signal type
+        'sleep_stage': Unit.NONE,
+        'sum_power': Unit.ARBITRARY,
+        'eeg_quality': Unit.ARBITRARY
+    }
 
     # Removed get_sampling_rate override - will use TimeSeriesSignal implementation
 

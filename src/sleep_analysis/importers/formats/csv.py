@@ -242,11 +242,10 @@ class CSVImporterBase(SignalImporter):
         Returns:
             A dictionary of metadata key-value pairs.
         """
-        # Basic metadata with defaults - subclasses should enhance this
-        # Sample rate is now handled by TimeSeriesSignal constructor
+        # Basic metadata - subclasses should enhance this.
+        # Units are now handled by specific importer subclasses (_extract_metadata).
+        # Sample rate is handled by TimeSeriesSignal constructor.
         return {
             "signal_type": SignalType[signal_type.upper()],
-            # "sample_rate": "100Hz", # Removed default - handled by TimeSeriesSignal
-            "units": "bpm" if signal_type.upper() == "PPG" else "m/s^2",  # Signal-specific default
-            "source_files": [source],  # Store the source path for traceability in source_files
+            "source_files": [source],  # Store the source path for traceability
         }
