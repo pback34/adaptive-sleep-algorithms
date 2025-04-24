@@ -1,0 +1,75 @@
+flowchart TB
+    %% Input Sources and Importer
+    ImportSource[/"Signal Source Files\nCSV, Polar, etc."/] --> Importer{{"Importer\nPolarCSVImporter, etc."}}
+    Importer --> |"create TimeSeriesSignal"| TSSignals["TimeSeriesSignals\n(hr_0, accel_0, etc.)"]
+    TSSignals --> |"stored in"| Collection["SignalCollection\ntime_series_signals : Dict[str, TimeSeriesSignal]"]
+    
+    %% Workflow Operations
+    Collection --> |"step: generate_alignment_grid"| AlignGrid["Calculate grid_index\n(common time points)"]
+    AlignGrid --> |"sets"| GridIndex["grid_index : pd.DatetimeIndex\n_alignment_params_calculated = True"]
+    GridIndex --> |"optional step: apply_grid_alignment"| AlignSignals["Align TimeSeriesSignals\nto grid_index"]
+    
+    %% Feature Grid Creation
+    Collection --> |"step: generate_epoch_grid"| EpochGrid["Calculate epoch_grid_index\n(common feature windows)"]
+    WorkflowConfig["Workflow YAML\nepoch_grid_config:\n  window_length: '30s'\n  step_size: '10s'"] --> |"configures"| EpochGrid
+    EpochGrid --> |"sets"| EpochParams["epoch_grid_index : pd.DatetimeIndex\nglobal_epoch_window_length : Timedelta\nglobal_epoch_step_size : Timedelta\n_epoch_grid_calculated = True"]
+    
+    %% Feature Extraction Process
+    TSSignals --> |"input to"| FeatureOp["Feature Extraction Operation\n(feature_statistics, feature_hrv, etc.)"]
+    EpochParams --> |"provides epoch grid"| FeatureOp
+    FeatureOp --> |"for each epoch start time"| ProcessEpoch["Process Epoch Data\n1. Slice signal data for epoch\n2. Apply feature calculation\n3. Store results for epoch"]
+    ProcessEpoch --> |"creates"| Features["Feature\nmetadata: FeatureMetadata\ndata: DataFrame[epochs × features]"]
+    Features --> |"stored in"| FeatureCollection["SignalCollection\nfeatures : Dict[str, Feature]"]
+    
+    %% Feature Combination
+    FeatureCollection --> |"step: combine_features"| CombineFeatures["Combine Features Operation\n1. Validate epoch alignment\n2. Concatenate feature columns\n3. Build MultiIndex columns"]
+    WorkflowConfig --> |"configures"| FeatureIndexConfig["feature_index_config: List[str]\n['name', 'feature_type', 'sensor_model']"]
+    FeatureIndexConfig --> |"provides column structure"| CombineFeatures
+    CombineFeatures --> |"creates"| CombinedMatrix["_combined_feature_matrix\nDataFrame with MultiIndex columns"]
+    
+    %% Export and Visualization
+    Collection --> |"export section"| Export["ExportModule\n1. Export TimeSeriesSignals\n2. Export Features\n3. Export CombinedMatrix"]
+    Export --> |"generates"| OutputFiles[/"Output Files\nCSV, Excel, etc."/]
+    
+    subgraph "Input Processing"
+        ImportSource
+        Importer
+        TSSignals
+    end
+    
+    subgraph "Alignment & Epoch Grid"
+        AlignGrid
+        GridIndex
+        AlignSignals
+        EpochGrid
+        EpochParams
+        WorkflowConfig
+    end
+    
+    subgraph "Feature Generation"
+        FeatureOp
+        ProcessEpoch
+        Features
+    end
+    
+    subgraph "Feature Combination"
+        CombineFeatures
+        FeatureIndexConfig
+        CombinedMatrix
+    end
+    
+    subgraph "Output Generation"
+        Export
+        OutputFiles
+    end
+    
+    %% Data Transformation Flow
+    subgraph "TimeSeriesSignal"
+        TimeSeriesData["Data: pd.DataFrame\nwith DatetimeIndex of raw timestamps"] --> |"resampling/alignment"| AlignedData["Aligned Data: pd.DataFrame\nwith DatetimeIndex matching grid_index"]
+    end
+    
+    subgraph "Feature"
+        FeatureData["Data: pd.DataFrame\nwith DatetimeIndex of epoch start times\nColumns: simple feature names (mean, std)"] --> |"combine_features"| CombinedFeatureData["Combined Data: pd.DataFrame\nwith DatetimeIndex of epoch start times\nColumns: MultiIndex (name, feature_type, etc.)"]
+    end
+    
+    TimeSeriesData --> |"epoch extraction"| FeatureData
