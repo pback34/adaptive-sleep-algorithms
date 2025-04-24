@@ -8,11 +8,14 @@ A flexible, extensible framework for processing sleep-related signals, designed 
 - **Complete Traceability**: Full metadata and operation history for reproducibility.
 - **Memory Optimization**: Smart memory management for processing large datasets efficiently.
 - **Flexible Workflows**: Support for both structured workflows and ad-hoc processing.
-- **Extensible Design**: Easy to add new signal types and processing operations.
+- **Extensible Design**: Easy to add new signal types, features, and processing operations.
 - **Import Flexibility**: Convert signals from various sources to a standardized format.
 - **Modular Importer System**: Easily add support for new file formats or sensor types, including handling fragmented data files via `MergingImporter`.
 - **Robust Timestamp Handling**: Consistent management of timezones across import, processing, and export.
-- **Interactive Visualization**: Backend-agnostic visualization layer with support for Bokeh and Plotly, including specialized plots like hypnograms.
+- **Epoch-Based Feature Extraction**: Generate features (statistical, categorical mode, etc.) aligned to a common time grid.
+- **Flexible Data Combination**: Combine aligned time-series signals or feature sets into unified DataFrames.
+- **Interactive Visualization**: Backend-agnostic visualization layer with support for Bokeh and Plotly, including specialized plots like hypnograms and sleep stage overlays.
+- **Comprehensive Summarization**: Generate summary tables of all signals and features in the collection.
 
 ## Installation
 
@@ -78,10 +81,14 @@ Workflow files are YAML documents with several key sections:
 1.  **Top-Level Settings**: Define global parameters like timezones.
     *   `default_input_timezone`: (Optional) The assumed timezone for naive timestamps in source files if not specified per importer (e.g., "America/New_York"). If omitted, naive timestamps might be treated as UTC.
     *   `target_timezone`: (Optional) The target timezone for all processed signals (e.g., "UTC", "Europe/London", or "system" to use the local machine's timezone). Defaults to "UTC".
-2.  `import`: Data import specifications. Define how raw data is loaded.
-3.  `steps`: Processing operations to apply to signals or the entire collection.
-4.  `export`: Output format and location.
-5.  `visualization`: Data visualization specifications.
+2.  `collection_settings`: (Optional) Configure global settings for the collection.
+    *   `index_config`: List of metadata fields for MultiIndex columns in combined *time-series* exports.
+    *   `feature_index_config`: List of metadata fields for MultiIndex columns in combined *feature* exports.
+    *   `epoch_grid_config`: Dictionary defining the global `window_length` and `step_size` for epoch-based feature extraction.
+3.  `import`: Data import specifications. Define how raw data is loaded.
+4.  `steps`: Processing operations to apply to signals or the entire collection. Includes alignment, feature extraction, combination, and summarization.
+5.  `export`: Output format and location specifications.
+6.  `visualization`: Data visualization specifications.
 
 Example workflow demonstrating timezone handling and importer wrapping:
 
@@ -111,52 +118,96 @@ import:
     base_name: "hr_polar" # Signals will be named hr_polar_0, hr_polar_1, etc.
 
 steps:
-  # --- Alignment and Combination Workflow ---
-  # Option 1: Modify signals in-place then combine (useful if intermediate aligned signals are needed)
-  # Step 1.1: Calculate alignment grid parameters
+  # --- Alignment Workflow ---
+  # Step 1: Calculate alignment grid parameters for time-series signals
   - type: collection
     operation: "generate_alignment_grid"
     parameters:
-      target_sample_rate: 10.0 # Optional: Specify target rate (Hz). If omitted, uses max standard rate <= highest signal rate.
+      target_sample_rate: 10.0 # Optional: Specify target rate (Hz).
 
-  # Step 1.2: Apply the calculated alignment grid to all time-series signals in place
+  # Step 2: Apply the calculated alignment grid to all time-series signals in place
   - type: collection
     operation: "apply_grid_alignment"
     parameters:
       method: "nearest" # Method used by the underlying 'reindex_to_grid' signal operation
 
-  # Step 1.3: Combine the modified (aligned) signals using outer join + reindex
-  # This reads the modified signals and creates the final combined dataframe.
+  # Step 3: Combine the modified (aligned) signals using outer join + reindex
+  # The result is stored internally and can be exported using "combined_ts" content type.
   - type: collection
     operation: "combine_aligned_signals"
     parameters: {} # No parameters needed
 
-  # Option 2: Align and combine original signals using merge_asof (doesn't modify signals)
-  # Step 2.1: Calculate alignment grid parameters (same as Step 1.1)
-  # - type: collection
-  #   operation: "generate_alignment_grid"
-  #   parameters:
-  #     target_sample_rate: 10.0
+  # --- Feature Extraction Workflow ---
+  # Step 4: Generate the common epoch grid for all feature extraction steps
+  # Uses epoch_grid_config from collection_settings (e.g., window="30s", step="15s")
+  - type: collection
+    operation: "generate_epoch_grid"
+    parameters: {} # Optional: start_time, end_time overrides
 
-  # Step 2.2: Align original signals to grid using merge_asof and combine
-  # - type: collection
-  #   operation: "align_and_combine_signals"
-  #   parameters: {} # No parameters needed
-
-  # --- Other Processing Steps ---
-  # Apply a filter to a specific signal (using the key assigned during import/merging)
-  - type: signal
-    input: "hr_polar_merged_0"
-    operation: "filter_lowpass"
+  # Step 5: Compute basic statistics for Heart Rate signals over epochs
+  - type: multi_signal # Feature operations are typically multi-signal
+    operation: "feature_statistics"
+    inputs: ["hr"] # Use base name to get all HR signals (hr_0, hr_1, ...)
     parameters:
-      cutoff: 0.5 # Parameter name might vary based on operation
-    output: "hr_polar_filtered"
+      # window_length: "60s" # Optional: Override global window length for this step
+      aggregations: ["mean", "std", "min", "max"]
+    output: "hr_features" # Base name for the resulting Feature object(s)
+
+  # Step 6: Compute modal sleep stage over epochs
+  - type: multi_signal
+    operation: "compute_sleep_stage_mode"
+    inputs: ["eeg_stages"] # Use base name for the sleep stage signal(s)
+    parameters: {} # No specific parameters needed for mode calculation
+    output: "sleep_stage_mode"
+
+  # Step 7: Combine all generated feature objects into a single matrix
+  # The result is stored internally and can be exported using "combined_features" content type.
+  - type: collection
+    operation: "combine_features"
+    inputs: ["hr_features", "sleep_stage_mode"] # List of feature keys/base names
+    parameters: {} # No parameters needed currently
+
+  # --- Summarization ---
+  # Step 8: Generate and store a summary of all signals and features
+  # The result is stored internally and can be exported using "summary" content type.
+  - type: collection
+    operation: "summarize_signals"
+    parameters:
+      # Optional: Specify exact fields to include in the stored summary DataFrame
+      # fields_to_include: ["signal_type", "name", "sample_rate", "data_shape"]
+      # Optional: Control printing of the formatted summary to console (default is true)
+      print_summary: true
 
 export:
-  formats: ["csv", "excel"]
-  output_dir: "results/subject1_analysis"
-  include_combined: true # Export a combined dataframe of all non-temporary signals
-  index_config: ["name", "signal_type"] # Configure MultiIndex for combined export
+  # Export ONLY the combined aligned time-series data
+  - formats: ["csv"]
+    output_dir: "results/subject1_analysis/aligned_timeseries"
+    content: ["combined_ts"] # Export the result of combine_aligned_signals
+
+  # Export ONLY the final combined feature matrix and the summary table
+  - formats: ["csv", "excel"]
+    output_dir: "results/subject1_analysis/features_and_summary"
+    content: ["combined_features", "summary"] # Export results of combine_features and summarize_signals
+
+  # Export ONLY all individual non-temporary TimeSeriesSignals to CSV
+  - formats: ["csv"]
+    output_dir: "results/subject1_analysis/individual_timeseries"
+    content: ["all_ts"] # Export all signals in collection.time_series_signals
+
+  # Export ONLY all individual Features to Excel
+  - formats: ["excel"]
+    output_dir: "results/subject1_analysis/individual_features"
+    content: ["all_features"] # Export all features in collection.features
+
+  # Export specific signals/features by key
+  - formats: ["pickle"]
+    output_dir: "results/subject1_analysis/specific_items"
+    content: ["hr_polar_0", "sleep_stage_mode_0"] # Use specific keys
+
+  # Example: Export individual TS AND combined features in one task
+  - formats: ["csv"]
+    output_dir: "results/subject1_analysis/individual_ts_and_combined_features"
+    content: ["all_ts", "combined_features"]
 ```
 
 ### Visualization
@@ -168,8 +219,9 @@ The framework provides a powerful visualization abstraction layer that supports 
 - **Time Series Plots**: Display one or more signals over time. Automatically handles numerical and categorical data (e.g., sleep stages plotted as stepped lines). Supports downsampling via `max_points` or time frequency string (e.g., `'1S'`).
 - **Hypnograms**: Specialized visualization for sleep stage data (`EEGSleepStageSignal`), showing stages over time with optional sleep statistics.
 - **Scatter Plots**: Compare two signals against each other.
-- **Heatmaps**: Visualize 2D data like spectrograms.
+- **Heatmaps**: Visualize 2D data like spectrograms (requires appropriate signal type).
 - **Multi-panel Layouts**: Arrange multiple plots in grid, vertical, or horizontal layouts, with options for linked axes.
+- **Sleep Stage Overlay**: Add sleep stage background shading to time series plots for context.
 
 #### Visualization Configuration
 
@@ -203,7 +255,7 @@ visualization:
 
   # Create a hypnogram plot for a sleep stage signal
   - type: hypnogram # Specific type for sleep stage visualization
-    signal: "sleep_stage_0" # Key of the EEGSleepStageSignal
+    signals: ["sleep_stage_0"] # Key(s) of the EEGSleepStageSignal(s)
     title: "Sleep Hypnogram - Subject 1"
     output: "results/plots/hypnogram_subject1.html"
     backend: plotly
@@ -241,9 +293,10 @@ The visualizer will create the specified plots and save them to the output paths
 ## Project Structure
 
 - `src/sleep_analysis/core/`: Base classes (`SignalData`, `SignalCollection`), metadata structures (`SignalMetadata`, `CollectionMetadata`), and `MetadataHandler`.
-- `src/sleep_analysis/signals/`: Concrete signal type implementations (e.g., `PPGSignal`, `TimeSeriesSignal`, `EEGSleepStageSignal`).
+- `src/sleep_analysis/signals/`: Concrete time-series signal type implementations (e.g., `PPGSignal`, `TimeSeriesSignal`, `EEGSleepStageSignal`).
+- `src/sleep_analysis/features/`: Feature class definition (`feature.py`).
 - `src/sleep_analysis/importers/`: Data import modules (`base.py`, `formats/csv.py`, `sensors/polar.py`, `merging.py`).
-- `src/sleep_analysis/operations/`: Signal processing operations (registered with signal classes via `@SignalClass.register`).
+- `src/sleep_analysis/operations/`: Signal processing operations (e.g., `filters.py`, `feature_extraction.py`). Operations are registered with `TimeSeriesSignal` or `SignalCollection`.
 - `src/sleep_analysis/workflows/`: Workflow execution logic (`WorkflowExecutor`).
 - `src/sleep_analysis/visualization/`: Visualization infrastructure (`base.py`, `BokehVisualizer`, `PlotlyVisualizer`).
 - `src/sleep_analysis/export/`: Data export module (`ExportModule`).
@@ -264,10 +317,10 @@ The framework employs a robust strategy for handling timestamps and timezones:
         *   `origin_timezone`: Specify this in the importer's `config` section within the workflow to declare the source's local timezone (e.g., `origin_timezone: "America/Denver"`).
         *   `default_input_timezone`: Set this at the top level of the workflow as a fallback if an importer doesn't specify `origin_timezone`.
         *   **Ambiguity**: If timestamps are naive and neither `origin_timezone` nor `default_input_timezone` is provided, the framework will likely assume UTC, which might lead to incorrect alignment if the data originated elsewhere. A warning will be issued.
-4.  **Standardization**: A central `standardize_timestamp` utility handles parsing, localization of naive timestamps (using `origin_timezone`), and conversion to the `target_timezone`.
+4.  **Standardization**: A central `standardize_timestamp` utility (`utils/__init__.py`) handles parsing, localization of naive timestamps (using `origin_timezone`), and conversion to the `target_timezone`.
 5.  **Export**: Timestamps are formatted appropriately for export (e.g., timezone removed for Excel, ISO format with offset for CSV/JSON).
 
-### Signal Alignment and Combined DataFrames
+### Signal Alignment and Combined Time-Series DataFrames
 
 The framework provides flexible options for aligning time-series signals to a common time grid and generating a combined DataFrame suitable for export or further analysis. Alignment parameters are calculated once and stored on the `SignalCollection`. Two main combination strategies are available:
 
@@ -297,11 +350,42 @@ The framework provides flexible options for aligning time-series signals to a co
 *   The resulting DataFrame will have the calculated `grid_index` as its index.
 *   Columns can be simple (`key_colname`) or a `pandas.MultiIndex` if `index_config` is set in the `collection_settings` section of the workflow (e.g., `index_config: ["signal_type", "name"]`).
 
+### Feature Extraction
+
+The framework supports epoch-based feature extraction from `TimeSeriesSignal` objects.
+
+1.  **Global Epoch Grid**: A common grid of epoch start times is defined for the entire collection using the `generate_epoch_grid` collection operation. This operation uses the `epoch_grid_config` (defining `window_length` and `step_size`) from the `collection_settings` in the workflow YAML and the overall time range of the signals. The resulting `epoch_grid_index` is stored on the `SignalCollection`.
+2.  **Feature Operations**: Functions like `feature_statistics` or `compute_sleep_stage_mode` (defined in `operations/feature_extraction.py`) calculate features for each epoch defined by the `epoch_grid_index`. These operations are registered in the `SignalCollection.multi_signal_registry`.
+3.  **Workflow Integration**: Feature extraction is invoked in the workflow `steps` section using `type: multi_signal`. The operation takes a list of input signal keys/base names and produces a `Feature` object.
+    *   The `window_length` parameter can optionally be provided in the step's `parameters` to override the global setting for that specific feature calculation.
+    *   The `step_size` is always determined by the global `epoch_grid_index`.
+4.  **`Feature` Class**: The results are stored in `Feature` objects (`features/feature.py`). These objects contain the feature data (a DataFrame indexed by epoch start time) and `FeatureMetadata` (including epoch parameters, source signal IDs, and feature names).
+
+### Feature Combination
+
+Multiple `Feature` objects (e.g., statistics from different signal types) can be combined into a single feature matrix.
+
+1.  **`combine_features` Operation**: This collection operation takes a list of input `Feature` keys/base names.
+2.  **Validation**: It ensures all input features share the same `epoch_grid_index` as the collection.
+3.  **Concatenation**: The data from the input features is concatenated column-wise.
+4.  **MultiIndex Columns**: A `pandas.MultiIndex` is created for the columns based on the `feature_index_config` specified in the `collection_settings` (or overridden in the step parameters). This allows organizing columns by feature set, source signal, and feature name.
+5.  **Storage**: The resulting combined feature matrix is stored internally in the `SignalCollection` (`_combined_feature_matrix`) and can be exported using the `"combined_features"` content type in the `export` section.
+
+### Signal Summarization
+
+A summary table of all signals (`TimeSeriesSignal`) and features (`Feature`) in the collection can be generated.
+
+1.  **`summarize_signals` Operation**: This collection operation gathers metadata and basic information (like data shape) for all items.
+2.  **Parameters**:
+    *   `fields_to_include`: (Optional) List of specific metadata fields to include in the summary. Defaults to a comprehensive list.
+    *   `print_summary`: (Optional) Boolean flag (default `True`) to control whether the formatted summary is printed to the console.
+3.  **Storage**: The raw summary data is stored internally as a DataFrame in the `SignalCollection` (`_summary_dataframe`) and can be exported using the `"summary"` content type in the `export` section.
+
 ### Metadata Management
 
--   **`SignalMetadata` & `CollectionMetadata`**: Dataclasses defined in `core/metadata.py` store structured information about individual signals (type, sensor, operations, source files) and the overall collection (subject, session, timezone).
--   **`MetadataHandler`**: A helper class (`core/metadata_handler.py`) ensures consistent creation and updating of `SignalMetadata`, handling defaults and unique ID generation. Each `SignalData` instance holds a reference to a handler.
--   **Traceability**: Operations applied to signals are recorded in `SignalMetadata.operations`, providing a history for reproducibility. The `derived_from` field links signals to their parent signals and the operation that created them.
+-   **`TimeSeriesMetadata`, `FeatureMetadata`, `CollectionMetadata`**: Dataclasses defined in `core/metadata.py` store structured information about individual time-series signals, features (including epoch parameters), and the overall collection.
+-   **`MetadataHandler`**: A helper class (`core/metadata_handler.py`) ensures consistent creation and updating of metadata, handling defaults and unique ID generation. Each `TimeSeriesSignal` and `Feature` instance holds a reference to a handler.
+-   **Traceability**: Operations applied are recorded in the `operations` list within the respective metadata object. Source signal/feature IDs are tracked (`source_signal_ids`, `derived_from`).
 
 ### Importers
 
@@ -319,9 +403,17 @@ The framework provides flexible options for aligning time-series signals to a co
     4.  Define `required_columns` for the signal.
     5.  Implement any specific methods needed for this signal type.
 -   **Adding New Operations**:
-    1.  Define a function that takes a list of DataFrames (`data_list`) and a parameters dictionary (`parameters`) and returns the resulting DataFrame.
-    2.  Register the function with the relevant signal class using the `@SignalClass.register("operation_name", output_class=...)` decorator. The `output_class` specifies the type of signal the operation produces (defaults to the class it's registered with).
-    3.  The operation can then be called using `signal.apply_operation("operation_name", ...)` or specified in the `steps` section of a workflow. Example: `reindex_to_grid` is registered on `TimeSeriesSignal`.
+    1.  Define the core logic as a Python function (e.g., in `operations/filters.py`).
+    2.  Register the function with the `TimeSeriesSignal` class using the `@TimeSeriesSignal.register("operation_name", output_class=...)` decorator. The `output_class` specifies the type of signal the operation produces (defaults to `TimeSeriesSignal`).
+    3.  The operation can then be invoked via `signal.apply_operation("operation_name", ...)` or used in workflow `steps` with `type: signal`.
+-   **Multi-Signal Operations (Feature Extraction)**: To add operations that take multiple `TimeSeriesSignal` inputs and produce a `Feature` output:
+    1.  Define the function (e.g., in `operations/feature_extraction.py`). It should accept `signals: List[TimeSeriesSignal]`, `epoch_grid_index: pd.DatetimeIndex`, `parameters: Dict[str, Any]`, `global_window_length: pd.Timedelta`, and `global_step_size: pd.Timedelta`. It should return a `Feature` instance.
+    2.  Register the function and the output type (`Feature`) in the `SignalCollection.multi_signal_registry` dictionary (at the bottom of `core/signal_collection.py`).
+    3.  The operation can then be invoked via `collection.apply_multi_signal_operation(...)` or used in workflow `steps` with `type: multi_signal`.
+-   **Collection Operations**: To add operations that act on the `SignalCollection` itself (e.g., alignment, combination, summarization):
+    1.  Implement the logic as a method within the `SignalCollection` class.
+    2.  Decorate the method with `@register_collection_operation("operation_name")`.
+    3.  The operation can then be invoked via `collection.apply_operation("operation_name", ...)` or used in workflow `steps` with `type: collection`.
 
 ### Visualization Configuration Options
 
@@ -384,6 +476,20 @@ The framework provides flexible options for aligning time-series signals to a co
   parameters:
     subplot_titles: ["Signal 1", "Signal 2", "Signal 3", "Signal 4"]
     link_x_axes: true  # Synchronize time axes
+
+  # Time series plot with sleep stage background overlay (Bokeh example)
+  - type: time_series
+    signals: ["hr_0", "accel_magnitude_0"] # Signals to plot
+    layout: vertical
+    title: "Signals with Sleep Stage Background"
+    output: "results/plots/signals_with_overlay.html"
+    backend: bokeh
+    parameters:
+      link_x_axes: true
+      overlay_sleep_stages: "sleep_stage_0" # Key of the EEGSleepStageSignal for background
+      alpha: 0.15 # Opacity of the background regions
+      # Optional: Customize background stage colors
+      # stage_colors: { Awake: 'rgba(255, 0, 0, 0.5)', REM: 'rgba(0, 0, 255, 0.5)', ... }
 ```
 
 ### Programmatic API
