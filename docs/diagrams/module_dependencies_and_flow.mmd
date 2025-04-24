@@ -83,24 +83,35 @@ flowchart TD
     Importers --> Core
     Importers --> Signals
 
+    %% Collection uses operations
     Core --> Signals
     Core --> Features
     Core --> Export
-    Core --> Operations %% Collection uses operations
-    Core --> Visualization %% Collection uses visualization
+    Core --> Operations
+    %% Collection uses visualization
+    Core --> Visualization
 
-    Signals --> Core %% Signals use Metadata
-    Features --> Core %% Features use Metadata
+    %% Signals use Metadata
+    Signals --> Core
+    %% Features use Metadata
+    Features --> Core
 
-    Operations --> Core %% Operations use Collection/Metadata
-    Operations --> Signals %% Operations process Signals
-    Operations --> Features %% Operations produce Features
+    %% Operations use Collection/Metadata
+    Operations --> Core
+    %% Operations process Signals
+    Operations --> Signals
+    %% Operations produce Features
+    Operations --> Features
 
-    Export --> Core %% Export uses Collection/Metadata
+    %% Export uses Collection/Metadata
+    Export --> Core
 
-    Visualization --> Core %% Visualization uses Collection/Metadata
-    Visualization --> Signals %% Visualization plots Signals
-    Visualization --> Features %% Visualization plots Features
+    %% Visualization uses Collection/Metadata
+    Visualization --> Core
+    %% Visualization plots Signals
+    Visualization --> Signals
+    %% Visualization plots Features
+    Visualization --> Features
 
     Signal_Types -.-> Core
     Signal_Types -.-> Signals
