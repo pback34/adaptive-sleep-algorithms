@@ -1,0 +1,358 @@
+{
+  "main": {
+    "id": "4218e58c4607f64e",
+    "type": "split",
+    "children": [
+      {
+        "id": "511d296a3023b112",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "d96b8b637e145433",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Product/Pillow-Based Acoustic and MultiSensor Sleep Tracking.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Pillow-Based Acoustic and MultiSensor Sleep Tracking"
+            }
+          },
+          {
+            "id": "06b29342c9b65a35",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Questions/Question-Q08-BestAlgorithms.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Question-Q08-BestAlgorithms"
+            }
+          },
+          {
+            "id": "b982ef628665efcf",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Development/AlgorithmDevelopment/Project-P02-AlgorithmDevelopment.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Project-P02-AlgorithmDevelopment"
+            }
+          },
+          {
+            "id": "379da15eb6a9ab1c",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Development/AlgorithmDevelopment/Resources/OpenSourceAlgorithmRepositories.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "OpenSourceAlgorithmRepositories"
+            }
+          },
+          {
+            "id": "bc2cacec836d38b5",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Research/Research-PiezoelectricSensors.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Research-PiezoelectricSensors"
+            }
+          },
+          {
+            "id": "36b3fe82fda76158",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Development/DataCollection/Task-P1-01-DecideSignals.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Task-P1-01-DecideSignals"
+            }
+          },
+          {
+            "id": "f597b32434e31ee8",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Development/AlgorithmDevelopment/SomnuSight/DesignDocuments/DesignDiagrams.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "DesignDiagrams"
+            }
+          },
+          {
+            "id": "1207e1e6ca19eacb",
+            "type": "leaf",
+            "state": {
+              "type": "canvas",
+              "state": {
+                "file": "Decisions/ProductDecisionMap.canvas",
+                "viewState": {
+                  "x": -2758.034907025797,
+                  "y": -1346.8806388263586,
+                  "zoom": -1.0895360102471865
+                }
+              },
+              "icon": "lucide-layout-dashboard",
+              "title": "ProductDecisionMap"
+            }
+          },
+          {
+            "id": "48c3fa9c155f18c5",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Questions/Question-Q06-SensorLocationOptions.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Question-Q06-SensorLocationOptions"
+            }
+          },
+          {
+            "id": "b98c6cd856d1723b",
+            "type": "leaf",
+            "state": {
+              "type": "image",
+              "state": {
+                "file": "class_diagram_and_signal_processing_flow.svg"
+              },
+              "icon": "lucide-image",
+              "title": "class_diagram_and_signal_processing_flow"
+            }
+          },
+          {
+            "id": "3cb822c94763b2f9",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "SupplementaryAnswers/Answer-A14-DerivedAccelerometerSignals.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Answer-A14-DerivedAccelerometerSignals"
+            }
+          }
+        ],
+        "currentTab": 8
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "8cd17145280722eb",
+    "type": "split",
+    "children": [
+      {
+        "id": "df7fe1746a1be7c1",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "343f8ad431f252bb",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "a1e8b7282be26159",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "f48c7e884897893d",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 360.5041847229004
+  },
+  "right": {
+    "id": "28aff2743d3c261b",
+    "type": "split",
+    "children": [
+      {
+        "id": "70310a9f3a886ac7",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "4c3a067d2fd6ac77",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "Development/AlgorithmDevelopment/SomnuSight/DesignDocuments/DesignDiagrams.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for DesignDiagrams"
+            }
+          },
+          {
+            "id": "1b4d4290ec0e550d",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "Development/AlgorithmDevelopment/SomnuSight/DesignDocuments/DesignDiagrams.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from DesignDiagrams"
+            }
+          },
+          {
+            "id": "7d4b56c17700a5ee",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "4d2e64a05059cd8d",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "Questions.md"
+              },
+              "icon": "lucide-list",
+              "title": "Outline of Questions"
+            }
+          }
+        ],
+        "currentTab": 2
+      }
+    ],
+    "direction": "horizontal",
+    "width": 233.5
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false
+    }
+  },
+  "active": "48c3fa9c155f18c5",
+  "lastOpenFiles": [
+    "Decisions/ProductDecisionMap.canvas",
+    "Project-Overview.md",
+    "Development/ProjectMap.canvas",
+    "class_and_signal_processing_flow.svg",
+    "class_diagram_and_signal_processing_flow.svg",
+    "Pasted image 20250327173547.png",
+    "module_dependencies_and_flow.svg",
+    "Development/AlgorithmDevelopment/Roadmap-R02-AlgorithmDevelopment.canvas",
+    "Development/AlgorithmDevelopment/SomnuSight/DesignDocuments/DesignDiagrams.md",
+    "Development/DataCollection/Task-P1-01-DecideSignals.md",
+    "Development/AlgorithmDevelopment/Resources/AdvancementsInRandomForestAlgorithmForSleepStaging.md",
+    "Development/AlgorithmDevelopment/Roadmap-R01-AlgorithmDevelopment.canvas",
+    "Development/AlgorithmDevelopment/SomnuSight/DesignDocuments",
+    "Development/AlgorithmDevelopment/SomnuSight",
+    "Development/AlgorithmDevelopment/Phase3-FeatureExtraction/Research/FeatureExtraction-CurrentMethods.md",
+    "Development/AlgorithmDevelopment/Phase2-DataProcessingInfrastructure/Task-P2.2-01-DesignRequirements.md",
+    "Development/AlgorithmDevelopment/Phase3-FeatureExtraction/Research/Untitled",
+    "Development/AlgorithmDevelopment/Phase2-DataProcessingInfrastructure/Task-P2.2-02-BestPracticesAndDesignPatterns.md",
+    "Development/AlgorithmDevelopment/Phase2-DataProcessingInfrastructure/Task-P2.2-03-TestingOpenSourceLibraries.md",
+    "Development/AlgorithmDevelopment/Phase1-ResearchAndPlanning/Task-P2.1-01-ResearchExistingMethods.md",
+    "Development/AlgorithmDevelopment/Project-P02-AlgorithmDevelopment.md",
+    "Questions/Question-Q14-DerivedAccelerometerSignals.md",
+    "SupplementaryAnswers/Answer-A14-DerivedAccelerometerSignals.md",
+    "Questions/Question-Q01-ExistingProducts.md",
+    "SupplementaryAnswers",
+    "Questions/Untitled",
+    "Questions/Question-Q08-BestAlgorithms.md",
+    "Miscellaneous/AI Sleep Data Image-to-JSON.md",
+    "Product/Pillow-Based Acoustic and MultiSensor Sleep Tracking.md",
+    "Miscellaneous",
+    "Questions/Question-Q13-RespiratoryRateAndAudioBasedTracking.md",
+    "Product",
+    "Weekly Update.md",
+    "Untitled.canvas",
+    "Github Repository.md",
+    "pdf_output/Question-Q13-RespiratoryRateAndAudioBasedTracking.pdf",
+    "Questions/Question-Q04-BioSignals.md",
+    "Research/Research-Sonar.md",
+    "Research/Research-Algorithms-RealTimeAccelerometer.md",
+    "Research/Research-PiezoelectricSensors.md",
+    "Development/AlgorithmDevelopment/Resources/OpenSourceAlgorithmRepositories.md",
+    "Development/AlgorithmDevelopment/Resources/Random Forest Algorithm for HR and Accel.md",
+    "Development/AlgorithmDevelopment/Phase3-FeatureExtraction/Research",
+    "References/Validation of a Single Channel EEG for the Athlete.pdf",
+    "Development/DataCollection/Roadmap-R01-DataCollection.canvas"
+  ]
+}

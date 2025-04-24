@@ -1,0 +1,26 @@
+{
+	"nodes":[
+		{"id":"a2395ed130580934","type":"file","file":"Development/AlgorithmDevelopment/Project-P02-AlgorithmDevelopment.md","x":240,"y":-238,"width":480,"height":400,"color":"2"},
+		{"id":"ac810ae6613c9ab4","type":"file","file":"Questions/Question-Q06-SensorLocationOptions.md","x":-1400,"y":-520,"width":400,"height":400},
+		{"id":"97d970a49b6702fb","type":"file","file":"Questions/Question-Q04-BioSignals.md","x":-1400,"y":162,"width":400,"height":400},
+		{"id":"935c906447c33d99","type":"file","file":"Decisions/Decision-D11-BodyLocation.md","x":1560,"y":-920,"width":400,"height":400,"color":"6"},
+		{"id":"e3131c8494a30ddd","type":"file","file":"Decisions/Decision-D12-Sensors.md","x":1560,"y":-438,"width":400,"height":400,"color":"6"},
+		{"id":"124c14aef6f8049a","type":"text","text":"Decision-D10-Algorithms","x":1379,"y":-248,"width":250,"height":60},
+		{"id":"c7fd7c41628fed20","type":"file","file":"Decisions/Decision-D10-Algorithms.md","x":1560,"y":162,"width":400,"height":400,"color":"6"},
+		{"id":"30b1a4abce87a508","type":"file","file":"Decisions/Decision-D10-SignalsToMeasure.md","x":1560,"y":720,"width":400,"height":400,"color":"6"},
+		{"id":"32174dc37f0715ff","type":"file","file":"Questions/Question-Q07-OptimalSignals.md","x":280,"y":362,"width":400,"height":400,"color":"1"},
+		{"id":"34f7950e2e734b6c","type":"text","text":"**Direct Dependencies of All Projects**","x":-460,"y":-480,"width":250,"height":60,"color":"5"},
+		{"id":"a4ac76a9fd6bb6f5","x":-610,"y":-120,"width":400,"height":400,"type":"file","file":"Development/DataCollection/Roadmap-R01-DataCollection.canvas"}
+	],
+	"edges":[
+		{"id":"6748aeb9ed679f2c","fromNode":"a2395ed130580934","fromSide":"bottom","toNode":"32174dc37f0715ff","toSide":"top"},
+		{"id":"63aa1eed40b7d31f","fromNode":"a2395ed130580934","fromSide":"right","toNode":"935c906447c33d99","toSide":"left"},
+		{"id":"6c3f8d8481e8be35","fromNode":"a2395ed130580934","fromSide":"right","toNode":"e3131c8494a30ddd","toSide":"left"},
+		{"id":"7b82b5bfabd7a519","fromNode":"a2395ed130580934","fromSide":"right","toNode":"c7fd7c41628fed20","toSide":"left"},
+		{"id":"3f4dc793ed50e005","fromNode":"32174dc37f0715ff","fromSide":"right","toNode":"30b1a4abce87a508","toSide":"left"},
+		{"id":"f6c485216dd33cd9","fromNode":"ac810ae6613c9ab4","fromSide":"right","toNode":"a4ac76a9fd6bb6f5","toSide":"left"},
+		{"id":"dda3a9d28754ce9e","fromNode":"97d970a49b6702fb","fromSide":"right","toNode":"a4ac76a9fd6bb6f5","toSide":"left"},
+		{"id":"0f209cb09e7cb186","fromNode":"a4ac76a9fd6bb6f5","fromSide":"right","toNode":"a2395ed130580934","toSide":"left"},
+		{"id":"dc2f8987739c188d","fromNode":"a4ac76a9fd6bb6f5","fromSide":"right","toNode":"32174dc37f0715ff","toSide":"left"}
+	]
+}

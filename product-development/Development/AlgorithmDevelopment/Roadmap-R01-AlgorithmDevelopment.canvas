@@ -1,0 +1,17 @@
+{
+	"nodes":[
+		{"id":"d62b4200169ab766","x":-523,"y":-315,"width":400,"height":400,"type":"file","file":"Development/AlgorithmDevelopment/Phase1-ResearchAndPlanning/Task-P2.1-01-ResearchExistingMethods.md"},
+		{"id":"73c28361f740ea85","x":120,"y":-315,"width":400,"height":400,"type":"file","file":"Development/AlgorithmDevelopment/Phase1-ResearchAndPlanning/Task-P2.1-02-CompileTopAlgorithms.md"},
+		{"id":"25135cae29b1107b","x":940,"y":-315,"width":400,"height":400,"type":"file","file":"Development/AlgorithmDevelopment/Phase1-ResearchAndPlanning/Task-P2.1-03-GeneratePlan.md"},
+		{"id":"2f11873828052c84","x":-1200,"y":-360,"width":400,"height":400,"type":"file","file":"Questions/Question-Q03-EstablishedMethods.md"},
+		{"id":"560a6eed6522797d","x":-1260,"y":-940,"width":400,"height":400,"type":"file","file":"Questions/Question-Q05-EmergingMethods.md"},
+		{"id":"07095df4b9129ade","x":-523,"y":480,"width":400,"height":400,"type":"file","file":"Questions/Question-09-DevelopingAppOnExistingWatch.md"}
+	],
+	"edges":[
+		{"id":"59e562823d9e3a5b","fromNode":"d62b4200169ab766","fromSide":"right","toNode":"73c28361f740ea85","toSide":"left"},
+		{"id":"c51e7a01f7162944","fromNode":"73c28361f740ea85","fromSide":"right","toNode":"25135cae29b1107b","toSide":"left"},
+		{"id":"02d409f0ed56a84b","fromNode":"2f11873828052c84","fromSide":"right","toNode":"d62b4200169ab766","toSide":"left"},
+		{"id":"0622fd1d771b160c","fromNode":"560a6eed6522797d","fromSide":"right","toNode":"d62b4200169ab766","toSide":"left"},
+		{"id":"7a50910564270a82","fromNode":"d62b4200169ab766","fromSide":"bottom","toNode":"07095df4b9129ade","toSide":"top"}
+	]
+}
