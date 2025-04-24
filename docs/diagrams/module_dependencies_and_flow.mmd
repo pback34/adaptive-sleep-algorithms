@@ -3,13 +3,23 @@ flowchart TD
         direction TB
         signal_data[SignalData]
         signal_collection[SignalCollection]
-        metadata["Metadata Classes (TS, Feature, Collection)"]
+        subgraph Metadata ["Metadata Classes"]
+            ts_metadata[TimeSeriesMetadata]
+            feature_metadata[FeatureMetadata]
+            collection_metadata[CollectionMetadata]
+            operation_info[OperationInfo]
+        end
         metadata_handler[MetadataHandler]
     end
 
     subgraph Signal_Types ["Signal Types"]
         direction TB
-        enums["Enum Definitions (SignalType, FeatureType, Unit, etc.)"]
+        signal_type[SignalType]
+        feature_type[FeatureType]
+        sensor_type[SensorType]
+        sensor_model[SensorModel]
+        body_position[BodyPosition]
+        unit[Unit]
     end
 
     subgraph Signals ["TimeSeries Signal Classes"]
@@ -26,12 +36,16 @@ flowchart TD
     subgraph Features ["Feature Classes"]
         direction TB
         feature_class[Feature]
+        statistical_features[Statistical Features]
+        categorical_mode[Categorical Mode Features]
     end
 
     subgraph Operations ["Operations Module"]
         direction TB
-        feature_extraction["Feature Extraction (stats, mode, etc.)"]
-        %% Add other operation modules if they exist (e.g., filtering)
+        feature_extraction[Feature Extraction]
+        compute_stats[compute_feature_statistics]
+        compute_stage_mode[compute_sleep_stage_mode]
+        signal_alignment[Signal Alignment Operations]
     end
 
     subgraph Importers ["Importer Classes"]
@@ -53,6 +67,15 @@ flowchart TD
         vis_base[VisualizerBase]
         bokeh_vis[BokehVisualizer]
         plotly_vis[PlotlyVisualizer]
+        
+        subgraph Plotting_Functions ["Plotting Functions"]
+            create_ts_plot[create_time_series_plot]
+            create_hypnogram[create_hypnogram_plot]
+            vis_collection[visualize_collection]
+            vis_signal[visualize_signal]
+            vis_hypnogram[visualize_hypnogram]
+            add_regions[add_categorical_regions]
+        end
     end
 
     subgraph Workflows ["Workflow Engine"]
@@ -70,6 +93,31 @@ flowchart TD
         logging[Logging]
         data_utils[Data Utils]
     end
+
+    %% Class Inheritance
+    signal_data --> time_series
+    time_series --> ppg
+    time_series --> acc
+    time_series --> hr
+    time_series --> eeg_stage
+    time_series --> magnitude
+    time_series --> angle
+    
+    vis_base --> bokeh_vis
+    vis_base --> plotly_vis
+    
+    importer_base --> csv_importer
+    csv_importer --> polar
+    csv_importer --> enchanted_wave
+    importer_base --> merging
+    
+    feature_extraction --> compute_stats
+    feature_extraction --> compute_stage_mode
+    compute_stats --> statistical_features
+    compute_stage_mode --> categorical_mode
+
+    %% Visualization methods
+    vis_base --> Plotting_Functions
 
     %% Main data flow and dependencies
     CLI --> Workflows
