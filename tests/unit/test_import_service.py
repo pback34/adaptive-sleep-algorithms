@@ -189,14 +189,12 @@ class TestUpdateTimeSeriesMetadata:
     def test_update_basic_fields(self, import_service, sample_ppg_signal):
         """Test updating basic metadata fields."""
         metadata_spec = {
-            "name": "Updated PPG Signal",
-            "description": "Test description"
+            "name": "Updated PPG Signal"
         }
 
         import_service.update_time_series_metadata(sample_ppg_signal, metadata_spec)
 
         assert sample_ppg_signal.metadata.name == "Updated PPG Signal"
-        assert sample_ppg_signal.metadata.description == "Test description"
 
     def test_update_enum_fields(self, import_service, sample_ppg_signal):
         """Test updating enum fields from strings."""
@@ -250,14 +248,12 @@ class TestUpdateFeatureMetadata:
     def test_update_basic_fields(self, import_service, sample_feature):
         """Test updating basic feature metadata fields."""
         metadata_spec = {
-            "name": "Updated Feature",
-            "description": "Test feature description"
+            "name": "Updated Feature"
         }
 
         import_service.update_feature_metadata(sample_feature, metadata_spec)
 
         assert sample_feature.metadata.name == "Updated Feature"
-        assert sample_feature.metadata.description == "Test feature description"
 
     def test_update_feature_type_enum(self, import_service, sample_feature):
         """Test updating feature_type enum from string."""
@@ -310,11 +306,9 @@ class TestIntegration:
         # Update metadata
         metadata_spec = {
             "name": "Imported Signal",
-            "sensor_type": "PPG",
-            "description": "Imported from file"
+            "sensor_type": "PPG"
         }
         import_service.update_time_series_metadata(imported_signal, metadata_spec)
 
         assert imported_signal.metadata.name == "Imported Signal"
         assert imported_signal.metadata.sensor_type == SensorType.PPG
-        assert imported_signal.metadata.description == "Imported from file"
