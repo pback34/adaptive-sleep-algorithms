@@ -36,6 +36,10 @@ from ..features.feature import Feature
 # Removed FeatureSignal import as Feature is now used
 # from ..signals.feature_signal import FeatureSignal
 from ..utils import str_to_enum
+# Import services
+from ..services.import_service import ImportService
+from ..services.alignment_service import AlignmentService
+from ..services.feature_service import FeatureService
 
 import functools # Added for decorator
 import inspect # Added for __init_subclass__
@@ -98,7 +102,12 @@ class SignalCollection:
 
         # Initialize the metadata handler
         self.metadata_handler = metadata_handler or MetadataHandler()
-        
+
+        # Initialize services
+        self.import_service = ImportService(self.metadata_handler)
+        self.alignment_service = AlignmentService()
+        self.feature_service = FeatureService()
+
         # Initialize collection metadata
         metadata = metadata or {}
         self.metadata = CollectionMetadata(
@@ -461,67 +470,11 @@ class SignalCollection:
 
     def update_time_series_metadata(self, signal: TimeSeriesSignal, metadata_spec: Dict[str, Any]) -> None:
         """Update a TimeSeriesSignal's metadata."""
-        if not isinstance(signal, TimeSeriesSignal):
-             raise TypeError(f"Expected TimeSeriesSignal, got {type(signal).__name__}")
-
-        # Process enum fields specifically for TimeSeriesMetadata
-        processed_metadata = {}
-        enum_map = {
-            "signal_type": SignalType, "sensor_type": SensorType,
-            "sensor_model": SensorModel, "body_position": BodyPosition, "units": Unit
-        }
-        for field, enum_cls in enum_map.items():
-            if field in metadata_spec and isinstance(metadata_spec[field], str):
-                try:
-                    processed_metadata[field] = str_to_enum(metadata_spec[field], enum_cls)
-                except ValueError:
-                     logger.warning(f"Invalid enum value '{metadata_spec[field]}' for field '{field}'. Skipping update.")
-
-        # Handle sensor_info separately
-        if "sensor_info" in metadata_spec and isinstance(metadata_spec["sensor_info"], dict):
-            if signal.metadata.sensor_info is None:
-                signal.metadata.sensor_info = {}
-            signal.metadata.sensor_info.update(metadata_spec["sensor_info"])
-
-        # Add other valid TimeSeriesMetadata fields
-        valid_fields = {f.name for f in fields(TimeSeriesMetadata)}
-        for field in valid_fields:
-            if field in metadata_spec and field not in processed_metadata and field != "sensor_info":
-                processed_metadata[field] = metadata_spec[field]
-
-        # Use the metadata handler to update
-        handler = signal.handler or self.metadata_handler
-        handler.update_metadata(signal.metadata, **processed_metadata)
+        self.import_service.update_time_series_metadata(signal, metadata_spec)
 
     def update_feature_metadata(self, feature: Feature, metadata_spec: Dict[str, Any]) -> None:
         """Update a Feature's metadata."""
-        if not isinstance(feature, Feature):
-             raise TypeError(f"Expected Feature, got {type(feature).__name__}")
-
-        processed_metadata = {}
-        # Process FeatureType enum
-        if "feature_type" in metadata_spec and isinstance(metadata_spec["feature_type"], str):
-             try:
-                  processed_metadata["feature_type"] = str_to_enum(metadata_spec["feature_type"], FeatureType)
-             except ValueError:
-                  logger.warning(f"Invalid enum value '{metadata_spec['feature_type']}' for field 'feature_type'. Skipping update.")
-
-        # Add other valid FeatureMetadata fields
-        valid_fields = {f.name for f in fields(FeatureMetadata)}
-        for field in valid_fields:
-            if field in metadata_spec and field not in processed_metadata:
-                 # Special handling for timedeltas if provided as strings
-                 if field in ['epoch_window_length', 'epoch_step_size'] and isinstance(metadata_spec[field], str):
-                      try:
-                           processed_metadata[field] = pd.Timedelta(metadata_spec[field])
-                      except ValueError:
-                           logger.warning(f"Invalid timedelta format '{metadata_spec[field]}' for field '{field}'. Skipping update.")
-                 else:
-                      processed_metadata[field] = metadata_spec[field]
-
-        # Use the metadata handler to update
-        handler = feature.handler or self.metadata_handler
-        handler.update_metadata(feature.metadata, **processed_metadata) # Assumes handler works with FeatureMetadata
+        self.import_service.update_feature_metadata(feature, metadata_spec)
 
 
     def set_index_config(self, index_fields: List[str]) -> None:
@@ -715,47 +668,7 @@ class SignalCollection:
     @register_collection_operation("generate_alignment_grid")
     def generate_alignment_grid(self, target_sample_rate: Optional[float] = None) -> 'SignalCollection':
         """Calculates and stores the alignment grid parameters based on TimeSeriesSignals."""
-        logger.info(f"Starting alignment grid parameter calculation with target_sample_rate={target_sample_rate}")
-        start_time = time.time()
-        self._alignment_params_calculated = False # Reset flag
-
-        # --- Filter for TimeSeriesSignals ---
-        # Check the dedicated dictionary
-        if not self.time_series_signals:
-            logger.error("No time-series signals found in the collection. Cannot calculate alignment grid.")
-            raise RuntimeError("No time-series signals found in the collection to calculate alignment grid.")
-
-        # --- Determine Target Rate (uses time_series_signals internally now) ---
-        try:
-            self.target_rate = self.get_target_sample_rate(target_sample_rate)
-            if self.target_rate is None or self.target_rate <= 0:
-                 raise ValueError(f"Calculated invalid target rate: {self.target_rate}")
-            target_period = pd.Timedelta(seconds=1 / self.target_rate)
-            logger.info(f"Using target rate: {self.target_rate} Hz (Period: {target_period})")
-        except Exception as e:
-            logger.error(f"Failed to determine target sample rate: {e}", exc_info=True)
-            raise RuntimeError(f"Failed to determine target sample rate: {e}") from e
-
-        # --- Determine Reference Time (uses time_series_signals internally now) ---
-        try:
-            self.ref_time = self.get_reference_time(target_period)
-            logger.info(f"Using reference time: {self.ref_time}")
-        except Exception as e:
-            logger.error(f"Failed to determine reference time: {e}", exc_info=True)
-            raise RuntimeError(f"Failed to determine reference time: {e}") from e
-
-        # --- Calculate Grid Index (uses time_series_signals internally now) ---
-        try:
-            self.grid_index = self._calculate_grid_index(self.target_rate, self.ref_time)
-            if self.grid_index is None or self.grid_index.empty:
-                raise ValueError("Calculated grid index is None or empty.")
-        except Exception as e:
-            logger.error(f"Failed to calculate grid index: {e}", exc_info=True)
-            self.grid_index = None
-            raise RuntimeError(f"Failed to calculate a valid grid index for alignment: {e}") from e
-
-        self._alignment_params_calculated = True
-        logger.info(f"Alignment grid parameters calculated in {time.time() - start_time:.2f} seconds.")
+        self.alignment_service.generate_alignment_grid(self, target_sample_rate)
         return self
 
     # --- New Epoch Grid Generation ---
@@ -779,94 +692,7 @@ class SignalCollection:
                           no time-series signals are found to determine the range.
             ValueError: If start/end time overrides are invalid.
         """
-        logger.info("Starting global epoch grid calculation...")
-        op_start_time = time.time()
-        self._epoch_grid_calculated = False # Reset flag
-
-        # --- Get Config ---
-        config = self.metadata.epoch_grid_config
-        if not config or "window_length" not in config or "step_size" not in config:
-            raise RuntimeError("Missing or incomplete 'epoch_grid_config' in collection metadata. Cannot generate epoch grid.")
-
-        try:
-            window_length = pd.Timedelta(config["window_length"])
-            step_size = pd.Timedelta(config["step_size"])
-            if window_length <= pd.Timedelta(0) or step_size <= pd.Timedelta(0):
-                raise ValueError("window_length and step_size must be positive.")
-        except (ValueError, TypeError) as e:
-            raise RuntimeError(f"Invalid epoch_grid_config parameters: {e}") from e
-
-        self.global_epoch_window_length = window_length
-        self.global_epoch_step_size = step_size
-        logger.info(f"Using global epoch parameters: window={window_length}, step={step_size}")
-
-        # --- Determine Time Range ---
-        min_times = []
-        max_times = []
-        collection_tz = pd.Timestamp('now', tz=self.metadata.timezone).tz # Get collection tz object
-
-        for signal in self.time_series_signals.values():
-            try:
-                data = signal.get_data()
-                if data is not None and isinstance(data.index, pd.DatetimeIndex) and not data.empty:
-                    # Ensure timezone consistency before comparison
-                    data_index_tz = data.index.tz_convert(collection_tz) if data.index.tz is not None else data.index.tz_localize(collection_tz)
-                    min_times.append(data_index_tz.min())
-                    max_times.append(data_index_tz.max())
-            except Exception as e:
-                 logger.warning(f"Could not get time range for signal {signal.metadata.name} for epoch grid: {e}")
-
-        if not min_times or not max_times:
-            raise RuntimeError("No valid time ranges found in TimeSeriesSignals. Cannot determine epoch grid range.")
-
-        # --- Apply Overrides ---
-        try:
-            grid_start = pd.Timestamp(start_time, tz=collection_tz) if start_time else min(min_times)
-            grid_end = pd.Timestamp(end_time, tz=collection_tz) if end_time else max(max_times)
-            # Ensure overrides are timezone-aware consistent with collection
-            if grid_start.tz is None: grid_start = grid_start.tz_localize(collection_tz)
-            else: grid_start = grid_start.tz_convert(collection_tz)
-            if grid_end.tz is None: grid_end = grid_end.tz_localize(collection_tz)
-            else: grid_end = grid_end.tz_convert(collection_tz)
-
-        except Exception as e:
-            raise ValueError(f"Invalid start_time or end_time override for epoch grid: {e}") from e
-
-        if grid_start >= grid_end:
-             raise ValueError(f"Epoch grid start time ({grid_start}) must be before end time ({grid_end}).")
-
-        logger.info(f"Epoch grid time range: {grid_start} to {grid_end}")
-
-        # --- Generate Epoch Index ---
-        try:
-            # Generate epoch start times using the step_size as frequency
-            self.epoch_grid_index = pd.date_range(
-                start=grid_start,
-                end=grid_end, # date_range includes end if it falls on frequency step
-                freq=step_size,
-                name='epoch_start_time',
-                inclusive='left' # Only include start times <= grid_end
-            )
-            # Filter out any start times where the window would begin after the grid ends
-            # This check might be slightly redundant with inclusive='left' but safer
-            self.epoch_grid_index = self.epoch_grid_index[self.epoch_grid_index <= grid_end]
-
-            if self.epoch_grid_index.empty:
-                 logger.warning("Generated epoch grid index is empty.")
-                 # Keep empty index, subsequent steps should handle this
-
-            # Ensure timezone matches collection
-            self.epoch_grid_index = self.epoch_grid_index.tz_convert(collection_tz) if self.epoch_grid_index.tz is not None else self.epoch_grid_index.tz_localize(collection_tz)
-
-            logger.info(f"Calculated epoch_grid_index with {len(self.epoch_grid_index)} points.")
-
-        except Exception as e:
-            logger.error(f"Error creating date_range for epoch grid index: {e}", exc_info=True)
-            self.epoch_grid_index = None # Mark as failed
-            raise RuntimeError(f"Failed to calculate epoch grid index: {e}") from e
-
-        self._epoch_grid_calculated = True
-        logger.info(f"Epoch grid calculated in {time.time() - op_start_time:.2f} seconds.")
+        self.feature_service.generate_epoch_grid(self, start_time, end_time)
         return self
 
     def apply_multi_signal_operation(self, operation_name: str, input_signal_keys: List[str], parameters: Dict[str, Any]) -> Union[TimeSeriesSignal, Feature]:
@@ -887,128 +713,7 @@ class SignalCollection:
             ValueError: If operation is not found, inputs are invalid, or prerequisites are not met.
             RuntimeError: If the operation execution fails.
         """
-        logger.info(f"Applying multi-signal operation '{operation_name}' to inputs: {input_signal_keys}")
-
-        if operation_name not in self.multi_signal_registry:
-            raise ValueError(f"Multi-signal operation '{operation_name}' not found in registry.")
-
-        operation_func, output_class = self.multi_signal_registry[operation_name]
-
-        # --- Input Resolution and Validation ---
-        input_signals: List[TimeSeriesSignal] = []
-        for key in input_signal_keys:
-            try:
-                signal = self.get_time_series_signal(key) # Ensure inputs are TimeSeriesSignals
-                input_signals.append(signal)
-            except KeyError:
-                raise ValueError(f"Input TimeSeriesSignal key '{key}' not found for operation '{operation_name}'.")
-
-        if not input_signals:
-            raise ValueError(f"No valid input TimeSeriesSignals resolved for operation '{operation_name}'.")
-
-        # --- Prerequisite Checks (Specific to Feature Extraction) ---
-        # Import Feature here to avoid circular dependency at module level if needed
-        from ..features.feature import Feature
-        is_feature_op = issubclass(output_class, Feature) # Check if output is a Feature
-        if is_feature_op:
-            if not self._epoch_grid_calculated or self.epoch_grid_index is None or self.epoch_grid_index.empty:
-                raise RuntimeError(f"Cannot execute feature operation '{operation_name}': generate_epoch_grid must be run successfully first.")
-            # REMOVE the lines that add global params to the 'parameters' dict
-            # parameters['epoch_grid_index'] = self.epoch_grid_index # Keep this if needed, but it's passed separately below
-            # parameters['global_epoch_window_length'] = self.global_epoch_window_length # REMOVE
-            # parameters['global_epoch_step_size'] = self.global_epoch_step_size         # REMOVE
-
-        # --- Function Execution ---
-        try:
-            logger.debug(f"Executing operation function '{operation_func.__name__}'...")
-            if is_feature_op:
-                # Make a copy to avoid modifying the original dict
-                params_copy = parameters.copy()
-                # Remove epoch_grid_index from parameters dict as it's passed separately
-                # Also remove window_length/step_size if they were accidentally left in params
-                params_copy.pop('epoch_grid_index', None)
-                params_copy.pop('global_epoch_window_length', None)
-                params_copy.pop('global_epoch_step_size', None)
-
-                # Call feature function with explicit global args
-                result_object = operation_func(
-                    signals=input_signals,
-                    epoch_grid_index=self.epoch_grid_index, # Pass grid index separately
-                    parameters=params_copy,                 # Pass remaining specific params
-                    global_window_length=self.global_epoch_window_length, # Pass global window explicitly
-                    global_step_size=self.global_epoch_step_size          # Pass global step explicitly
-                )
-            else:
-                 # For non-feature ops, pass parameters as before
-                 result_object = operation_func(signals=input_signals, **parameters)
-
-            logger.debug(f"Operation function '{operation_func.__name__}' completed.")
-        except Exception as e:
-            logger.error(f"Error executing multi-signal operation function '{operation_func.__name__}': {e}", exc_info=True)
-            # Add context about which operation failed
-            raise RuntimeError(f"Execution of operation '{operation_name}' failed.") from e # Keep original error context
-
-        # --- Result Validation ---
-        if not isinstance(result_object, output_class):
-            raise TypeError(f"Operation '{operation_name}' returned unexpected type {type(result_object).__name__}. Expected {output_class.__name__}.")
-
-        # --- Metadata Propagation (for Feature outputs) ---
-        if isinstance(result_object, Feature):
-            logger.debug(f"Propagating metadata for Feature result of '{operation_name}'...")
-            feature_meta = result_object.metadata
-            fields_to_propagate = self.metadata.feature_index_config # Fields defined in collection config
-
-            if fields_to_propagate:
-                if len(input_signals) == 1:
-                    # Single input: Copy directly
-                    source_meta = input_signals[0].metadata
-                    for field in fields_to_propagate:
-                        if hasattr(source_meta, field) and hasattr(feature_meta, field):
-                            value = getattr(source_meta, field)
-                            setattr(feature_meta, field, value)
-                            logger.debug(f"  Propagated '{field}' = {value} (from single source)")
-                        elif hasattr(feature_meta, field):
-                             # Field exists in FeatureMetadata but not source TimeSeriesMetadata
-                             logger.debug(f"  Field '{field}' exists in FeatureMetadata but not in source TimeSeriesMetadata. Skipping propagation.")
-                        # else: Field doesn't exist in FeatureMetadata, ignore.
-
-                elif len(input_signals) > 1:
-                    # Multiple inputs: Check for common values
-                    for field in fields_to_propagate:
-                        if hasattr(feature_meta, field): # Only propagate if field exists in FeatureMetadata
-                            values = set()
-                            all_sources_have_field = True
-                            for source_signal in input_signals:
-                                if hasattr(source_signal.metadata, field):
-                                    values.add(getattr(source_signal.metadata, field))
-                                else:
-                                     all_sources_have_field = False
-                                     logger.debug(f"  Source signal '{source_signal.metadata.name}' missing field '{field}' for propagation.")
-                                     break # If one source doesn't have it, we can't determine commonality
-
-                            if not all_sources_have_field:
-                                 logger.debug(f"  Field '{field}' not present in all source TimeSeriesSignals. Setting to None.")
-                                 setattr(feature_meta, field, None) # Or handle as needed
-                            elif len(values) == 1:
-                                common_value = values.pop()
-                                setattr(feature_meta, field, common_value)
-                                logger.debug(f"  Propagated '{field}' = {common_value} (common value)")
-                            else:
-                                # Different values found
-                                setattr(feature_meta, field, "mixed") # Use "mixed" string indicator
-                                logger.debug(f"  Propagated '{field}' = 'mixed' (values differ: {values})")
-                        # else: Field doesn't exist in FeatureMetadata, ignore.
-            else:
-                 logger.debug("No feature_index_config set. Skipping metadata propagation.")
-
-            # Ensure source signal IDs and keys are set (should be done by feature function, but double-check)
-            if not feature_meta.source_signal_ids:
-                 feature_meta.source_signal_ids = [s.metadata.signal_id for s in input_signals]
-            if not feature_meta.source_signal_keys:
-                 feature_meta.source_signal_keys = [s.metadata.name for s in input_signals] # Use name as key
-
-        logger.info(f"Successfully applied multi-signal operation '{operation_name}'. Result type: {type(result_object).__name__}")
-        return result_object
+        return self.feature_service.apply_multi_signal_operation(self, operation_name, input_signal_keys, parameters)
 
 
     # --- Collection Operation Dispatch ---
@@ -1061,57 +766,7 @@ class SignalCollection:
     @register_collection_operation("apply_grid_alignment")
     def apply_grid_alignment(self, method: str = 'nearest', signals_to_align: Optional[List[str]] = None):
         """Applies grid alignment to specified TimeSeriesSignals in place."""
-        if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
-            logger.error("Cannot apply grid alignment: generate_alignment_grid must be run successfully first.")
-            raise RuntimeError("generate_alignment_grid must be run successfully before applying grid alignment.")
-
-        allowed_methods = ['nearest', 'pad', 'ffill', 'backfill', 'bfill']
-        if method not in allowed_methods:
-             logger.warning(f"Alignment method '{method}' not in allowed list {allowed_methods}. Using 'nearest'.")
-             method = 'nearest'
-
-        logger.info(f"Applying grid alignment in-place to TimeSeriesSignals using method '{method}'...")
-        start_time = time.time()
-        # Determine target keys: specified list or all time_series_signals
-        target_keys = signals_to_align if signals_to_align is not None else list(self.time_series_signals.keys())
-
-        processed_count = 0
-        skipped_count = 0
-        error_signals = []
-
-        for key in target_keys:
-            try:
-                # Use get_time_series_signal to ensure correct type and existence
-                signal = self.get_time_series_signal(key)
-
-                current_data = signal.get_data()
-                if current_data is None or current_data.empty:
-                    logger.warning(f"Skipping alignment for TimeSeriesSignal '{key}': data is None or empty.")
-                    skipped_count += 1
-                    continue
-
-                logger.debug(f"Calling apply_operation('reindex_to_grid') for TimeSeriesSignal '{key}'...")
-                signal.apply_operation(
-                    'reindex_to_grid',
-                    inplace=True,
-                    grid_index=self.grid_index,
-                    method=method
-                )
-                logger.debug(f"Successfully applied 'reindex_to_grid' operation to TimeSeriesSignal '{key}'.")
-                processed_count += 1
-            except KeyError:
-                 logger.warning(f"TimeSeriesSignal key '{key}' specified for alignment not found.")
-                 skipped_count += 1
-            except Exception as e:
-                logger.error(f"Failed to apply 'reindex_to_grid' operation to TimeSeriesSignal '{key}': {e}", exc_info=True)
-                warnings.warn(f"Failed to apply grid alignment to TimeSeriesSignal '{key}': {e}")
-                error_signals.append(key)
-
-        logger.info(f"Grid alignment application finished in {time.time() - start_time:.2f} seconds. "
-                    f"Processed: {processed_count}, Skipped: {skipped_count}, Errors: {len(error_signals)}")
-
-        if error_signals:
-            raise RuntimeError(f"Failed to apply grid alignment to the following TimeSeriesSignals: {', '.join(error_signals)}")
+        self.alignment_service.apply_grid_alignment(self, method, signals_to_align)
 
     @register_collection_operation("align_and_combine_signals")
     def align_and_combine_signals(self) -> None:
@@ -1626,80 +1281,7 @@ class SignalCollection:
             ValueError: If the source doesn't exist or no signals can be imported.
             TypeError: If the imported object is not a TimeSeriesSignal.
         """
-        signal_type_str = spec["signal_type"]
-        strict_validation = spec.get("strict_validation", True)
-
-        # --- Determine expected output type based on signal_type_str ---
-        # This is a basic check; importers might return subclasses.
-        # We primarily expect TimeSeriesSignal results from importers.
-        expected_type = TimeSeriesSignal
-        # Add logic here if certain signal_type strings imply Feature outputs, though unlikely for importers.
-        # if signal_type_str == "some_feature_type":
-        #     expected_type = Feature
-
-        imported_objects: List[Any] = [] # Use Any initially
-
-        # --- File Pattern Handling ---
-        if "file_pattern" in spec:
-            if not os.path.isdir(source):
-                if strict_validation: raise ValueError(f"Source directory not found: {source}")
-                else: warnings.warn(f"Source directory not found: {source}, skipping"); return []
-
-            # Delegate pattern handling to importer if supported
-            if hasattr(importer_instance, 'import_signals'):
-                try:
-                    # Assume import_signals returns a list of the expected type
-                    imported_objects = importer_instance.import_signals(source, signal_type_str)
-                except FileNotFoundError as e:
-                     if strict_validation: raise e
-                     else: warnings.warn(f"No files found matching pattern in {source} for importer: {e}"); return []
-                except Exception as e:
-                    if strict_validation: raise
-                    else: warnings.warn(f"Error importing from {source} with pattern: {e}, skipping"); return []
-            else:
-                # Manual globbing if importer doesn't handle patterns
-                file_pattern = os.path.join(source, spec["file_pattern"])
-                matching_files = glob.glob(file_pattern)
-                if not matching_files:
-                    if strict_validation: raise ValueError(f"No files found matching pattern: {file_pattern}")
-                    else: warnings.warn(f"No files found matching pattern: {file_pattern}, skipping"); return []
-
-                for file_path in matching_files:
-                    try:
-                        # Assume import_signal returns a single object
-                        signal_obj = importer_instance.import_signal(file_path, signal_type_str)
-                        imported_objects.append(signal_obj)
-                    except Exception as e:
-                        if strict_validation: raise
-                        else: warnings.warn(f"Error importing {file_path}: {e}, skipping")
-        else:
-            # --- Regular File Import ---
-            if not os.path.exists(source):
-                if strict_validation: raise ValueError(f"Source file not found: {source}")
-                else: warnings.warn(f"Source file not found: {source}, skipping"); return []
-            try:
-                 # Assume import_signal for single file source
-                 signal_obj = importer_instance.import_signal(source, signal_type_str)
-                 imported_objects.append(signal_obj)
-            except Exception as e:
-                 if strict_validation: raise
-                 else: warnings.warn(f"Error importing {source}: {e}, skipping"); return []
-
-
-        # --- Validate and Filter Results ---
-        validated_signals: List[TimeSeriesSignal] = []
-        for obj in imported_objects:
-            if isinstance(obj, expected_type):
-                 # Further check if it's specifically TimeSeriesSignal for this method
-                 if isinstance(obj, TimeSeriesSignal):
-                      validated_signals.append(obj)
-                 else:
-                      # This case should be rare if expected_type is TimeSeriesSignal
-                      logger.warning(f"Importer returned object of type {type(obj).__name__} which is not TimeSeriesSignal. Skipping.")
-            else:
-                logger.warning(f"Importer returned unexpected type {type(obj).__name__} (expected {expected_type.__name__}). Skipping.")
-
-        return validated_signals
+        return self.import_service.import_signals_from_source(importer_instance, source, spec)
 
 
     def add_imported_signals(self, signals: List[TimeSeriesSignal], base_name: str,
