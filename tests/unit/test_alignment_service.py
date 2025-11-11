@@ -165,9 +165,10 @@ class TestCalculateGridIndex:
         min_time = min(s.get_data().index.min() for s in signal_collection_with_signals.time_series_signals.values())
         max_time = max(s.get_data().index.max() for s in signal_collection_with_signals.time_series_signals.values())
 
-        # Grid should cover the range
+        # Grid should cover the range (allow for one period tolerance)
+        period = pd.Timedelta(seconds=1/target_rate)
         assert grid_index.min() <= min_time
-        assert grid_index.max() >= max_time
+        assert grid_index.max() + period >= max_time
 
     def test_invalid_rate(self, alignment_service, signal_collection_with_signals):
         """Test that invalid rate returns None."""

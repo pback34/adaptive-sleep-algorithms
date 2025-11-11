@@ -251,8 +251,9 @@ def test_export_hdf5(sample_signal_collection, temp_output_dir):
     """Test HDF5 export functionality."""
     try:
         import h5py
+        import tables  # Also check for pytables
     except ImportError:
-        pytest.skip("h5py not installed, skipping HDF5 test")
+        pytest.skip("h5py and pytables not installed, skipping HDF5 test")
 
     # Generate and store the combined dataframe within the collection first
     sample_signal_collection.generate_alignment_grid()

@@ -24,13 +24,13 @@ def feature_service():
 @pytest.fixture
 def signal_collection_with_config():
     """Create a SignalCollection with epoch configuration."""
-    collection = SignalCollection(metadata={
-        "timezone": "UTC",
-        "epoch_grid_config": {
-            "window_length": "30s",
-            "step_size": "30s"
-        }
-    })
+    collection = SignalCollection(metadata={"timezone": "UTC"})
+
+    # Set epoch_grid_config after initialization
+    collection.metadata.epoch_grid_config = {
+        "window_length": "30s",
+        "step_size": "30s"
+    }
 
     # Add PPG signal
     ppg_index = pd.date_range(start="2023-01-01", periods=300, freq="1s", tz="UTC")
@@ -193,7 +193,7 @@ class TestGenerateEpochGrid:
         )
         collection.add_time_series_signal("test", signal)
 
-        with pytest.raises(RuntimeError, match="Invalid epoch_grid_config"):
+        with pytest.raises(RuntimeError, match="Missing or incomplete 'epoch_grid_config'"):
             feature_service.generate_epoch_grid(collection)
 
     def test_invalid_time_range(self, feature_service, signal_collection_with_config):
@@ -412,13 +412,13 @@ class TestIntegration:
     def test_full_feature_workflow(self, feature_service):
         """Test complete feature extraction workflow."""
         # Create collection
-        collection = SignalCollection(metadata={
-            "timezone": "UTC",
-            "epoch_grid_config": {
-                "window_length": "10s",
-                "step_size": "10s"
-            }
-        })
+        collection = SignalCollection(metadata={"timezone": "UTC"})
+
+        # Set epoch_grid_config after initialization
+        collection.metadata.epoch_grid_config = {
+            "window_length": "10s",
+            "step_size": "10s"
+        }
 
         # Add signal
         index = pd.date_range(start="2023-01-01", periods=100, freq="1s", tz="UTC")
