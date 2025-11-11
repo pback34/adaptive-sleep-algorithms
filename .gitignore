@@ -4,3 +4,9 @@
 **/output/
 .aider*
 .env
+venv/
+*.egg-info/
+dist/
+build/
+.vscode/
+*.log
