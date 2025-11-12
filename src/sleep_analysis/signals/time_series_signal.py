@@ -266,16 +266,30 @@ class TimeSeriesSignal(SignalData):
         try:
             logger.debug(f"Executing core logic for operation '{operation_name}'...")
             if is_method:
-                # Call instance method: expects only parameters
-                result_data = core_logic_callable(**parameters)
+                # Call instance method: can return DataFrame OR complete Signal object
+                result = core_logic_callable(**parameters)
+
+                # Check if method returned a complete Signal object (new pattern)
+                if isinstance(result, SignalData):
+                    logger.debug(f"Instance method '{operation_name}' returned a complete SignalData object.")
+                    # Method handles everything including metadata - just return it
+                    return result
+
+                # Otherwise, it should be a DataFrame (old pattern)
+                elif isinstance(result, pd.DataFrame):
+                    result_data = result
+                    # Validate timestamp index on the result
+                    self._validate_timestamp(result_data)
+                else:
+                    raise TypeError(f"Instance method '{operation_name}' returned unexpected type {type(result).__name__}. Expected DataFrame or SignalData.")
             else:
                 # Call registered function: expects list of dataframes and parameters
                 result_data = core_logic_callable([current_data], parameters)
+                if not isinstance(result_data, pd.DataFrame):
+                     raise TypeError(f"Registered function '{operation_name}' did not return a pandas DataFrame.")
+                # Validate timestamp index on the result
+                self._validate_timestamp(result_data)
 
-            if not isinstance(result_data, pd.DataFrame):
-                 raise TypeError(f"Core logic for '{operation_name}' did not return a pandas DataFrame.")
-            # Validate timestamp index on the result
-            self._validate_timestamp(result_data)
             logger.debug(f"Core logic for '{operation_name}' completed successfully.")
         except Exception as e:
             logger.error(f"Error executing core logic for '{operation_name}': {e}", exc_info=True)

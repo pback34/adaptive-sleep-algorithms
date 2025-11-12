@@ -43,22 +43,59 @@ class PPGSignal(TimeSeriesSignal):
     # (which overrides the TimeSeriesSignal version for PPG) and invoked
     # via apply_operation("filter_lowpass", ...).
 
+    def normalize(self, inplace: bool = False, **parameters) -> 'PPGSignal':
+        """
+        Mock implementation of PPG normalization for testing.
 
-# --- Registered Operations ---
+        This is a placeholder implementation that returns the signal unchanged.
+        In a real implementation, this would normalize the PPG values.
 
-@PPGSignal.register("normalize") # Keeping mock normalize as registered for now
-def mock_normalize(data_list, parameters):
-    """
-    Mock implementation of PPG normalization for testing.
-    
-    Args:
-        data_list: List of data arrays to normalize
-        parameters: Normalization parameters
-        
-    Returns:
-        Normalized data (in this mock, just returns the input data)
-    """
-    return data_list[0]
+        Args:
+            inplace: If True, modify this signal in place. If False, return a new signal.
+            **parameters: Additional normalization parameters (unused in mock).
+
+        Returns:
+            PPGSignal: The normalized signal (self if inplace=True, new instance otherwise).
+        """
+        # Mock implementation: just return the data as-is
+        if inplace:
+            # For inplace, we don't modify anything in this mock
+            # But we should still record the operation in metadata
+            from ..core.metadata import OperationInfo
+            op_info = OperationInfo(
+                operation_name="normalize",
+                parameters=parameters
+            )
+            self.metadata.operations.append(op_info)
+            return self
+        else:
+            # For non-inplace, create a new signal with the same data
+            new_data = self.get_data().copy()
+            # Operation index is the index of the last operation on the source signal
+            # If no operations exist, this will be -1
+            operation_index = len(self.metadata.operations) - 1
+            new_metadata = {
+                'name': f"{self.metadata.name}_normalized",
+                'derived_from': [(self.metadata.signal_id, operation_index)],
+                'operations': [],  # Will be updated below
+            }
+
+            # Create new PPGSignal instance
+            new_signal = PPGSignal(
+                data=new_data,
+                metadata=new_metadata,
+                handler=self.handler
+            )
+
+            # Record the operation in the new signal's metadata
+            from ..core.metadata import OperationInfo
+            op_info = OperationInfo(
+                operation_name="normalize",
+                parameters=parameters
+            )
+            new_signal.metadata.operations.append(op_info)
+
+            return new_signal
 
 
    
