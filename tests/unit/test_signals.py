@@ -40,19 +40,23 @@ def test_accelerometer_signal_instantiation(sample_metadata):
     assert signal.signal_type == SignalType.ACCELEROMETER
 
 def test_registry_inheritance():
-    """Test that operations are inherited correctly in the registry."""
-    # Check that PPGSignal has its specific operations in registry
+    """Test that operations are available as instance methods."""
+    # Check that PPGSignal has normalize as an instance method (not in registry)
     ppg_registry = PPGSignal.get_registry()
-    assert "normalize" in ppg_registry
-    assert ppg_registry["normalize"][1] == PPGSignal
+    assert "normalize" not in ppg_registry  # Removed from registry in Phase 2a
+    assert hasattr(PPGSignal, "normalize")  # Now an instance method
+    assert callable(getattr(PPGSignal, "normalize"))
 
-    # Check that 'filter_lowpass' is registered for PPGSignal (overriding TimeSeriesSignal)
     # Check that 'filter_lowpass' is NOT registered for PPGSignal (it's handled as a method)
     assert "filter_lowpass" not in ppg_registry
 
-    # Check that AccelerometerSignal inherits from TimeSeriesSignal but not from PPGSignal
+    # Check that AccelerometerSignal has compute_magnitude and compute_angle as instance methods
     acc_registry = AccelerometerSignal.get_registry()
-    assert "normalize" not in acc_registry  # PPGSignal-specific operation not inherited
+    assert "normalize" not in acc_registry  # PPGSignal-specific operation
+    assert "compute_magnitude" not in acc_registry  # Removed from registry in Phase 2a
+    assert "compute_angle" not in acc_registry  # Removed from registry in Phase 2a
+    assert hasattr(AccelerometerSignal, "compute_magnitude")  # Now an instance method
+    assert hasattr(AccelerometerSignal, "compute_angle")  # Now an instance method
 
     # Check that AccelerometerSignal does NOT have 'filter_lowpass' in its registry (it's handled as a method)
     assert "filter_lowpass" not in acc_registry
