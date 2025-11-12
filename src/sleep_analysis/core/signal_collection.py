@@ -50,24 +50,6 @@ import inspect # Added for __init_subclass__
 logger = logging.getLogger(__name__)
 
 
-# --- Decorator Definition (Simple Function) ---
-def register_collection_operation(operation_name: str):
-    """
-    Decorator to mark a SignalCollection method as a registered collection operation.
-    Stores the operation name in the '_collection_op_name' attribute of the function.
-    """
-    def decorator(func: Callable):
-        setattr(func, '_collection_op_name', operation_name)
-        # Optional: Use functools.wraps if needed, but primarily for marking here
-        # @functools.wraps(func)
-        # def wrapper(*args, **kwargs):
-        #     return func(*args, **kwargs)
-        # setattr(wrapper, '_collection_op_name', operation_name)
-        # return wrapper
-        return func # Return the original function marked with the attribute
-    return decorator
-
-
 # Define standard rates: factors of 1000 Hz plus rates corresponding to multi-second periods
 # Periods >= 1s: 1s (1Hz), 2s (0.5Hz), 4s (0.25Hz), 5s (0.2Hz), 10s (0.1Hz)
 STANDARD_RATES = sorted(list(set([0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10, 20, 25, 50, 100, 125, 200, 250, 500, 1000])))
@@ -665,14 +647,12 @@ class SignalCollection:
             return None
 
     # Decorator now just marks the method
-    @register_collection_operation("generate_alignment_grid")
     def generate_alignment_grid(self, target_sample_rate: Optional[float] = None) -> 'SignalCollection':
         """Calculates and stores the alignment grid parameters based on TimeSeriesSignals."""
         self.alignment_service.generate_alignment_grid(self, target_sample_rate)
         return self
 
     # --- New Epoch Grid Generation ---
-    @register_collection_operation("generate_epoch_grid")
     def generate_epoch_grid(self, start_time: Optional[Union[str, pd.Timestamp]] = None, end_time: Optional[Union[str, pd.Timestamp]] = None) -> 'SignalCollection':
         """
         Calculates and stores the global epoch grid based on collection settings.
@@ -720,32 +700,39 @@ class SignalCollection:
 
     def apply_operation(self, operation_name: str, **parameters: Any) -> Any: # type: ignore
         """
-        Applies a registered collection-level operation by name.
+        Applies a collection-level operation by name.
 
-        Looks up the operation in the `collection_operation_registry` and executes
-        the corresponding method on this instance, passing the provided parameters.
+        Phase 2c: Direct method dispatch instead of registry lookup.
+        Looks up the operation as an instance method and executes it.
 
         Args:
-            operation_name: The name of the operation to execute (must be registered).
-            **parameters: Keyword arguments to pass to the registered operation method.
+            operation_name: The name of the operation to execute (must exist as a method).
+            **parameters: Keyword arguments to pass to the operation method.
 
         Returns:
             The result returned by the executed operation method (often `self` or `None`).
 
         Raises:
-            ValueError: If the operation_name is not found in the registry.
+            ValueError: If the operation_name is not found as a method.
             Exception: If the underlying operation method raises an exception.
         """
         logger.info(f"Applying collection operation '{operation_name}' with parameters: {parameters}")
-        if operation_name not in self.collection_operation_registry:
-            logger.error(f"Collection operation '{operation_name}' not found in registry.")
+
+        # Phase 2c: Use direct method lookup via getattr instead of registry
+        if not hasattr(self, operation_name):
+            logger.error(f"Collection operation '{operation_name}' not found as a method.")
             raise ValueError(f"Collection operation '{operation_name}' not found.")
 
-        operation_method = self.collection_operation_registry[operation_name]
+        operation_method = getattr(self, operation_name)
+
+        # Verify it's callable
+        if not callable(operation_method):
+            logger.error(f"Collection attribute '{operation_name}' is not callable.")
+            raise ValueError(f"Collection attribute '{operation_name}' is not a callable method.")
 
         try:
-            # Call the registered method, passing 'self' as the first argument.
-            result = operation_method(self, **parameters)
+            # Call the method directly (self is already bound)
+            result = operation_method(**parameters)
             logger.info(f"Successfully applied collection operation '{operation_name}'.")
             return result
         except Exception as e:
@@ -763,12 +750,10 @@ class SignalCollection:
         # Just call the main get_signals method
         return self.get_signals(input_spec=input_spec)
 
-    @register_collection_operation("apply_grid_alignment")
     def apply_grid_alignment(self, method: str = 'nearest', signals_to_align: Optional[List[str]] = None):
         """Applies grid alignment to specified TimeSeriesSignals in place."""
         self.alignment_service.apply_grid_alignment(self, method, signals_to_align)
 
-    @register_collection_operation("align_and_combine_signals")
     def align_and_combine_signals(self) -> None:
         """Aligns TimeSeriesSignals using merge_asof and combines them."""
         if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
@@ -1021,7 +1006,6 @@ class SignalCollection:
               logger.debug("Stored combined time-series dataframe parameters are not available.")
          return self._aligned_dataframe_params
 
-    @register_collection_operation("combine_aligned_signals")
     def combine_aligned_signals(self) -> None:
         """Combines TimeSeriesSignals modified in-place by apply_grid_alignment."""
         if not self._alignment_params_calculated or self.grid_index is None or self.grid_index.empty:
@@ -1085,7 +1069,6 @@ class SignalCollection:
         logger.info(f"Successfully combined {len(snapped_signal_dfs)} snapped TimeSeriesSignals using outer join and reindex "
                     f"in {time.time() - start_time:.2f} seconds. Stored shape: {combined_df_final.shape}")
 
-    @register_collection_operation("combine_features")
     def combine_features(self, inputs: List[str], feature_index_config: Optional[List[str]] = None) -> None: # Made config optional
         """
         Combines multiple Feature objects into a single combined feature matrix.
@@ -1373,7 +1356,6 @@ class SignalCollection:
             return x # Keep other types as they are
         # --- End Corrected Logic ---
 
-    @register_collection_operation("summarize_signals")
     def summarize_signals(self, fields_to_include: Optional[List[str]] = None, print_summary: bool = True) -> Optional[pd.DataFrame]:
         """Generates a summary table of TimeSeriesSignals and Features."""
         # Combine both signal types for summary generation
@@ -1504,38 +1486,14 @@ class SignalCollection:
         return self._summary_dataframe
 
 
-# --- Populate the Collection Operation Registry ---
-# Iterate through the methods of the class *after* it's defined
-# and populate the registry based on the decorator attribute.
-SignalCollection.collection_operation_registry = {} # Reset registry before population
-for _method_name, _method_obj in inspect.getmembers(SignalCollection, predicate=inspect.isfunction):
-    if hasattr(_method_obj, '_collection_op_name'):
-        _op_name = getattr(_method_obj, '_collection_op_name')
-        if _op_name in SignalCollection.collection_operation_registry:
-             warnings.warn(f"Overwriting collection operation '{_op_name}' during registry population.")
-        SignalCollection.collection_operation_registry[_op_name] = _method_obj
-        logger.debug(f"Registered collection operation '{_op_name}' to method SignalCollection.{_method_name}")
+# --- DEPRECATED: Registry code (Phase 2 removal) ---
+# Phase 2c: collection_operation_registry removed - operations are now called via getattr()
+# Phase 2b: multi_signal_registry unused - operations are now in FeatureService methods
 
-# --- Register Multi-Signal Operations ---
-SignalCollection.multi_signal_registry = {} # Reset registry before population
-try:
-    # Import feature extraction functions
-    from ..operations.feature_extraction import compute_feature_statistics, compute_sleep_stage_mode # Added compute_sleep_stage_mode
-    # Import the Feature class (output type for these operations)
-    from ..features.feature import Feature
+# Initialize empty registries to avoid AttributeError if old code references them
+SignalCollection.collection_operation_registry = {}
+SignalCollection.multi_signal_registry = {}
 
-    SignalCollection.multi_signal_registry.update({
-        "feature_statistics": (compute_feature_statistics, Feature),
-        "compute_sleep_stage_mode": (compute_sleep_stage_mode, Feature), # Register the new operation
-        # "feature_correlation": (compute_feature_correlation, Feature), # Uncomment when implemented
-    })
-    logger.debug("Registered multi-signal feature operations.")
-except ImportError as e:
-    logger.warning(f"Could not import or register feature operations: {e}")
-
-
-# Clean up temporary variables from the global scope of the module
-# Check if variables exist before deleting
-if '_method_name' in locals() or '_method_name' in globals(): del _method_name
-if '_method_obj' in locals() or '_method_obj' in globals(): del _method_obj
-if '_op_name' in locals() or '_op_name' in globals(): del _op_name
+# Note: Direct method dispatch is now used instead of registries:
+# - Collection operations: SignalCollection.apply_operation() uses getattr()
+# - Multi-signal operations: FeatureService.apply_multi_signal_operation() uses method dict
