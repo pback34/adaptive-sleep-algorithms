@@ -145,6 +145,70 @@ class FeatureService:
         collection._epoch_grid_calculated = True
         logger.info(f"Epoch grid calculation completed in {time.time() - op_start_time:.2f} seconds.")
 
+    def compute_feature_statistics(
+        self,
+        signals: List[TimeSeriesSignal],
+        epoch_grid_index: pd.DatetimeIndex,
+        parameters: Dict[str, Any],
+        global_window_length: pd.Timedelta,
+        global_step_size: pd.Timedelta
+    ) -> Feature:
+        """
+        Compute statistical features over epochs for one or more TimeSeriesSignals.
+
+        This is a wrapper that delegates to the feature extraction function.
+
+        Args:
+            signals: List containing the input TimeSeriesSignal objects.
+            epoch_grid_index: The pre-calculated DatetimeIndex defining epoch start times.
+            parameters: Dictionary containing operation parameters (aggregations, window_length, etc.)
+            global_window_length: Global window length from collection settings.
+            global_step_size: Global step size from collection settings.
+
+        Returns:
+            A Feature object containing the computed statistical features.
+        """
+        from ..operations.feature_extraction import compute_feature_statistics as _compute_stats
+        return _compute_stats(
+            signals=signals,
+            epoch_grid_index=epoch_grid_index,
+            parameters=parameters,
+            global_window_length=global_window_length,
+            global_step_size=global_step_size
+        )
+
+    def compute_sleep_stage_mode(
+        self,
+        signals: List[TimeSeriesSignal],
+        epoch_grid_index: pd.DatetimeIndex,
+        parameters: Dict[str, Any],
+        global_window_length: pd.Timedelta,
+        global_step_size: pd.Timedelta
+    ) -> Feature:
+        """
+        Compute the modal (most frequent) sleep stage over epochs.
+
+        This is a wrapper that delegates to the feature extraction function.
+
+        Args:
+            signals: List containing the input TimeSeriesSignal objects (expected EEGSleepStageSignal).
+            epoch_grid_index: The pre-calculated DatetimeIndex defining epoch start times.
+            parameters: Dictionary containing operation parameters.
+            global_window_length: Global window length from collection settings.
+            global_step_size: Global step size from collection settings.
+
+        Returns:
+            A Feature object containing the computed modal sleep stage.
+        """
+        from ..operations.feature_extraction import compute_sleep_stage_mode as _compute_mode
+        return _compute_mode(
+            signals=signals,
+            epoch_grid_index=epoch_grid_index,
+            parameters=parameters,
+            global_window_length=global_window_length,
+            global_step_size=global_step_size
+        )
+
     def apply_multi_signal_operation(
         self,
         collection: 'SignalCollection',
@@ -170,10 +234,16 @@ class FeatureService:
         """
         logger.info(f"Applying multi-signal operation '{operation_name}' to inputs: {input_signal_keys}")
 
-        if operation_name not in collection.multi_signal_registry:
-            raise ValueError(f"Multi-signal operation '{operation_name}' not found in registry.")
+        # Map operation names to methods (Phase 2b: Direct dispatch instead of registry)
+        operation_methods = {
+            'feature_statistics': self.compute_feature_statistics,
+            'compute_sleep_stage_mode': self.compute_sleep_stage_mode,
+        }
 
-        operation_func, output_class = collection.multi_signal_registry[operation_name]
+        if operation_name not in operation_methods:
+            raise ValueError(f"Multi-signal operation '{operation_name}' not found. Available: {list(operation_methods.keys())}")
+
+        operation_method = operation_methods[operation_name]
 
         # Input resolution and validation
         input_signals: List[TimeSeriesSignal] = []
@@ -187,47 +257,43 @@ class FeatureService:
         if not input_signals:
             raise ValueError(f"No valid input TimeSeriesSignals resolved for operation '{operation_name}'.")
 
-        # Prerequisite checks (specific to feature extraction)
-        is_feature_op = issubclass(output_class, Feature)
-        if is_feature_op:
-            if not collection._epoch_grid_calculated or collection.epoch_grid_index is None or collection.epoch_grid_index.empty:
-                raise RuntimeError(f"Cannot execute feature operation '{operation_name}': generate_epoch_grid must be run successfully first.")
+        # Prerequisite checks (all current operations are feature ops)
+        if not collection._epoch_grid_calculated or collection.epoch_grid_index is None or collection.epoch_grid_index.empty:
+            raise RuntimeError(f"Cannot execute feature operation '{operation_name}': generate_epoch_grid must be run successfully first.")
 
         # Function execution
         try:
-            logger.debug(f"Executing operation function '{operation_func.__name__}'...")
-            if is_feature_op:
-                # Make a copy to avoid modifying the original dict
-                params_copy = parameters.copy()
-                # Remove grid/global params if accidentally in parameters
-                params_copy.pop('epoch_grid_index', None)
-                params_copy.pop('global_epoch_window_length', None)
-                params_copy.pop('global_epoch_step_size', None)
+            method_name = getattr(operation_method, '__name__', operation_name)
+            logger.debug(f"Executing operation method '{method_name}'...")
 
-                # Call feature function with explicit global args
-                result_object = operation_func(
-                    signals=input_signals,
-                    epoch_grid_index=collection.epoch_grid_index,
-                    parameters=params_copy,
-                    global_window_length=collection.global_epoch_window_length,
-                    global_step_size=collection.global_epoch_step_size
-                )
-            else:
-                # For non-feature ops, pass parameters as before
-                result_object = operation_func(signals=input_signals, **parameters)
+            # Make a copy to avoid modifying the original dict
+            params_copy = parameters.copy()
+            # Remove grid/global params if accidentally in parameters
+            params_copy.pop('epoch_grid_index', None)
+            params_copy.pop('global_epoch_window_length', None)
+            params_copy.pop('global_epoch_step_size', None)
 
-            logger.debug(f"Operation function '{operation_func.__name__}' completed.")
+            # Call method with explicit global args
+            result_object = operation_method(
+                signals=input_signals,
+                epoch_grid_index=collection.epoch_grid_index,
+                parameters=params_copy,
+                global_window_length=collection.global_epoch_window_length,
+                global_step_size=collection.global_epoch_step_size
+            )
+
+            logger.debug(f"Operation method '{method_name}' completed.")
         except Exception as e:
-            logger.error(f"Error executing multi-signal operation function '{operation_func.__name__}': {e}", exc_info=True)
+            method_name = getattr(operation_method, '__name__', operation_name)
+            logger.error(f"Error executing multi-signal operation method '{method_name}': {e}", exc_info=True)
             raise RuntimeError(f"Execution of operation '{operation_name}' failed.") from e
 
         # Result validation
-        if not isinstance(result_object, output_class):
-            raise TypeError(f"Operation '{operation_name}' returned unexpected type {type(result_object).__name__}. Expected {output_class.__name__}.")
+        if not isinstance(result_object, Feature):
+            raise TypeError(f"Operation '{operation_name}' returned unexpected type {type(result_object).__name__}. Expected Feature.")
 
-        # Metadata propagation (for Feature outputs)
-        if isinstance(result_object, Feature):
-            self._propagate_metadata_to_feature(collection, result_object, input_signals, operation_name)
+        # Metadata propagation
+        self._propagate_metadata_to_feature(collection, result_object, input_signals, operation_name)
 
         return result_object
 
