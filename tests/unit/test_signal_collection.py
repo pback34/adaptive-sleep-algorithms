@@ -699,17 +699,17 @@ def test_apply_collection_operation(signal_collection):
     # so we need generate_alignment_grid to succeed first)
     signal_collection.generate_alignment_grid() # Ensure grid exists
 
-    # Temporarily replace the method in the registry to simulate an error
-    original_method = signal_collection.collection_operation_registry["apply_grid_alignment"]
+    # Phase 2c: Mock the method directly on the instance instead of registry
+    original_method = signal_collection.apply_grid_alignment
     def mock_apply_grid_alignment_error(*args, **kwargs):
         raise ConnectionError("Simulated underlying error")
-    signal_collection.collection_operation_registry["apply_grid_alignment"] = mock_apply_grid_alignment_error
+    signal_collection.apply_grid_alignment = mock_apply_grid_alignment_error
 
     with pytest.raises(ConnectionError, match="Simulated underlying error"):
         signal_collection.apply_operation("apply_grid_alignment", method='nearest')
 
     # Restore original method
-    signal_collection.collection_operation_registry["apply_grid_alignment"] = original_method
+    signal_collection.apply_grid_alignment = original_method
 
 
 def test_add_signal_timezone_warning(caplog):
