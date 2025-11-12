@@ -1,15 +1,15 @@
 # TODO - SomnuSight Framework Refactoring
 
-**Last Updated:** 2025-11-11
-**Current Branch:** `develop`
-**Status:** ✅ Phase 1 Complete | 🚀 Ready for Phase 2
+**Last Updated:** 2025-11-12
+**Current Branch:** `claude/continue-develop-todos-011CV3F2DyCU4yVRzrzZucZr`
+**Status:** ✅ Phase 1 Complete | 🔍 Phase 2 Analysis Complete | 🚀 Ready for Phase 2 Implementation
 
 ---
 
 ## Quick Status
 
 - ✅ **Phase 1: Extract Services** - COMPLETE (all 167 tests passing)
-- 🎯 **Phase 2: Simplify Operations** - NEXT UP
+- 🔍 **Phase 2: Simplify Operations** - ANALYSIS COMPLETE | ✅ DECISION: Option A
 - ⏳ **Phase 3: Fix Type Hierarchy** - Planned
 - ⏳ **Phase 4: Remove Global State** - Planned
 
@@ -19,7 +19,9 @@
 
 1. **[DESIGN_EVALUATION.md](DESIGN_EVALUATION.md)** - Complete design analysis and refactoring plan
 2. **[TEST_FAILURE_RESOLUTION_PLAN.md](TEST_FAILURE_RESOLUTION_PLAN.md)** - Phase 1 test fixes (all resolved)
-3. **[tests/unit/](tests/unit/)** - Comprehensive test suite (167 passing, 1 skipped)
+3. **[PHASE2_OPERATION_AUDIT.md](PHASE2_OPERATION_AUDIT.md)** - **NEW:** Comprehensive audit of all 11 operations
+4. **[PHASE2_ARCHITECTURAL_DECISION.md](PHASE2_ARCHITECTURAL_DECISION.md)** - **NEW:** Decision to eliminate registries (Option A)
+5. **[tests/unit/](tests/unit/)** - Comprehensive test suite (167 passing, 1 skipped)
 
 ---
 
@@ -119,32 +121,49 @@ class OperationRegistry:
 
 ### Tasks for Phase 2
 
-1. **Analyze current usage** (1-2 days)
-   - [ ] Audit all operations currently in registries
-   - [ ] Identify which are actually used in production
-   - [ ] Check if any external code depends on registry pattern
-   - [ ] Document current operation lookup flow
+1. **✅ Analyze current usage** (COMPLETE - 2025-11-12)
+   - [x] Audit all operations currently in registries → **Only 11 operations found!**
+   - [x] Identify which are actually used in production → **All 11 used in tests**
+   - [x] Check if any external code depends on registry pattern → **Only WorkflowExecutor**
+   - [x] Document current operation lookup flow → **See PHASE2_OPERATION_AUDIT.md**
 
-2. **Make architectural decision** (1 day)
-   - [ ] Decide between Option A or Option B
-   - [ ] Document rationale in DESIGN_EVALUATION.md
-   - [ ] Get stakeholder buy-in if needed
+2. **✅ Make architectural decision** (COMPLETE - 2025-11-12)
+   - [x] Decide between Option A or Option B → **DECISION: Option A (Eliminate Registries)**
+   - [x] Document rationale → **See PHASE2_ARCHITECTURAL_DECISION.md**
+   - [x] Get stakeholder buy-in if needed → **Decision approved based on audit findings**
 
-3. **Implement changes** (1-2 weeks)
-   - [ ] Refactor operations to chosen pattern
-   - [ ] Update all operation calls
-   - [ ] Update documentation
-   - [ ] Add operation introspection/discovery tools
+3. **🎯 Implement changes** (READY TO START - See PHASE2_ARCHITECTURAL_DECISION.md for detailed plan)
 
-4. **Update tests** (2-3 days)
-   - [ ] Update all operation-related tests
-   - [ ] Add tests for new operation discovery
-   - [ ] Verify no regressions
+   **Phase 2a: Signal Operations** (1 week - NEXT)
+   - [ ] Convert `normalize` to instance method
+   - [ ] Convert `compute_magnitude` to instance method
+   - [ ] Convert `compute_angle` to instance method
+   - [ ] Remove `SignalData.registry`
+   - [ ] Update tests for signal operations
 
-5. **Update WorkflowExecutor** (2-3 days)
-   - [ ] Update to use new operation mechanism
-   - [ ] Ensure backward compatibility with existing YAML workflows
-   - [ ] Add deprecation warnings if needed
+   **Phase 2b: Multi-Signal Operations** (1 week)
+   - [ ] Move operations to FeatureService methods
+   - [ ] Remove `multi_signal_registry`
+   - [ ] Update WorkflowExecutor routing
+   - [ ] Update tests for multi-signal operations
+
+   **Phase 2c: Collection Operations** (3 days)
+   - [ ] Remove `@register_collection_operation` decorators
+   - [ ] Keep methods on SignalCollection (delegate to services)
+   - [ ] Remove `collection_operation_registry`
+   - [ ] Update tests for collection operations
+
+   **Phase 2d: WorkflowExecutor** (2 days)
+   - [ ] Replace registry lookup with `getattr()` dispatch
+   - [ ] Maintain YAML compatibility
+   - [ ] Add error handling for missing operations
+   - [ ] Update workflow tests
+
+   **Phase 2e: Testing & Documentation** (3 days)
+   - [ ] Ensure all 167 tests pass
+   - [ ] Update README examples
+   - [ ] Add migration guide
+   - [ ] Update DESIGN_EVALUATION.md with outcome
 
 ### Files to Modify
 
