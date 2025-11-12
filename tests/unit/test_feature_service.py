@@ -214,9 +214,8 @@ class TestApplyMultiSignalOperation:
         # Generate epoch grid first
         feature_service.generate_epoch_grid(signal_collection_with_config)
 
-        # Mock operation in registry
-        def mock_feature_op(signals, epoch_grid_index, parameters, global_window_length, global_step_size):
-            # Create simple feature result
+        # Create mock method that returns a Feature
+        def mock_method(signals, epoch_grid_index, parameters, global_window_length, global_step_size):
             feature_data = pd.DataFrame({
                 ('ppg_0', 'mean'): [1.0] * len(epoch_grid_index)
             }, index=epoch_grid_index)
@@ -235,28 +234,25 @@ class TestApplyMultiSignalOperation:
                 }
             )
 
-        # Register mock operation
-        signal_collection_with_config.multi_signal_registry["test_op"] = (mock_feature_op, Feature)
-
-        result = feature_service.apply_multi_signal_operation(
-            signal_collection_with_config,
-            "test_op",
-            ["ppg_0"],
-            {}
-        )
+        # Mock the service method (Phase 2b: Methods instead of registry)
+        with patch.object(feature_service, 'compute_feature_statistics', side_effect=mock_method):
+            result = feature_service.apply_multi_signal_operation(
+                signal_collection_with_config,
+                "feature_statistics",
+                ["ppg_0"],
+                {}
+            )
 
         assert isinstance(result, Feature)
         assert result.metadata.feature_type == FeatureType.STATISTICAL
 
     def test_apply_without_epoch_grid_fails(self, feature_service, signal_collection_with_config):
         """Test that applying operation without epoch grid fails."""
-        # Register mock operation
-        signal_collection_with_config.multi_signal_registry["test_op"] = (Mock(), Feature)
-
+        # Phase 2b: No need to register - operations are methods now
         with pytest.raises(RuntimeError, match="generate_epoch_grid must be run"):
             feature_service.apply_multi_signal_operation(
                 signal_collection_with_config,
-                "test_op",
+                "feature_statistics",  # Use real operation name
                 ["ppg_0"],
                 {}
             )
@@ -265,7 +261,8 @@ class TestApplyMultiSignalOperation:
         """Test that missing operation raises error."""
         feature_service.generate_epoch_grid(signal_collection_with_config)
 
-        with pytest.raises(ValueError, match="not found in registry"):
+        # Phase 2b: Updated error message - no longer mentions "registry"
+        with pytest.raises(ValueError, match="not found"):
             feature_service.apply_multi_signal_operation(
                 signal_collection_with_config,
                 "nonexistent_operation",
@@ -277,13 +274,11 @@ class TestApplyMultiSignalOperation:
         """Test that invalid signal key raises error."""
         feature_service.generate_epoch_grid(signal_collection_with_config)
 
-        # Register mock operation
-        signal_collection_with_config.multi_signal_registry["test_op"] = (Mock(), Feature)
-
+        # Phase 2b: No need to register - operations are methods now
         with pytest.raises(ValueError, match="not found"):
             feature_service.apply_multi_signal_operation(
                 signal_collection_with_config,
-                "test_op",
+                "feature_statistics",  # Use real operation name
                 ["nonexistent_signal"],
                 {}
             )
@@ -435,8 +430,8 @@ class TestIntegration:
         assert collection._epoch_grid_calculated
         assert len(collection.epoch_grid_index) == 10  # 100s / 10s epochs
 
-        # Mock and apply operation
-        def mock_feature_op(signals, epoch_grid_index, parameters, global_window_length, global_step_size):
+        # Mock service method (Phase 2b: Methods instead of registry)
+        def mock_feature_method(signals, epoch_grid_index, parameters, global_window_length, global_step_size):
             feature_data = pd.DataFrame({
                 ('ppg_0', 'mean'): [1.0] * len(epoch_grid_index),
                 ('ppg_0', 'std'): [0.5] * len(epoch_grid_index)
@@ -456,14 +451,13 @@ class TestIntegration:
                 }
             )
 
-        collection.multi_signal_registry["test_stats"] = (mock_feature_op, Feature)
-
-        result = feature_service.apply_multi_signal_operation(
-            collection,
-            "test_stats",
-            ["ppg_0"],
-            {}
-        )
+        with patch.object(feature_service, 'compute_feature_statistics', side_effect=mock_feature_method):
+            result = feature_service.apply_multi_signal_operation(
+                collection,
+                "feature_statistics",
+                ["ppg_0"],
+                {}
+            )
 
         assert isinstance(result, Feature)
         assert result.get_data().shape[0] == 10
