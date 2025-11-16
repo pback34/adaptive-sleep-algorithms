@@ -370,7 +370,7 @@ class WorkflowExecutor:
             if self.strict_validation:
                 raise
             else:
-                warnings.warn(f"Skipping invalid step: {e}")
+                logger.warning(f"Skipping invalid step: {e}")
                 return
 
         operation_name = validated["operation_name"]

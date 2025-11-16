@@ -103,14 +103,16 @@ class TestFeatureExtractionWorkflow:
         collection.generate_epoch_grid()
 
         # Extract features from heart rate signal
-        feature = collection.apply_feature_operation(
+        feature = collection.apply_multi_signal_operation(
             operation_name='feature_statistics',
-            signal_keys=['heart_rate'],
+            input_signal_keys=['heart_rate'],
             parameters={
                 'aggregations': ['mean', 'std', 'min', 'max']
-            },
-            output_key='hr_stats'
+            }
         )
+
+        # Store the feature
+        collection.add_feature('hr_stats', feature)
 
         assert feature is not None
         assert 'hr_stats' in collection.features
@@ -138,14 +140,14 @@ class TestFeatureExtractionWorkflow:
         collection.generate_epoch_grid()
 
         # Extract features from both signals
-        feature = collection.apply_feature_operation(
+        feature = collection.apply_multi_signal_operation(
             operation_name='feature_statistics',
-            signal_keys=['heart_rate', 'accel_mag'],
+            input_signal_keys=['heart_rate', 'accel_mag'],
             parameters={
                 'aggregations': ['mean', 'std']
-            },
-            output_key='combined_stats'
+            }
         )
+        collection.add_feature('combined_stats', feature)
 
         feature_data = feature.get_data()
 
@@ -170,19 +172,19 @@ class TestFeatureExtractionWorkflow:
         collection.generate_epoch_grid()
 
         # Extract features separately
-        collection.apply_feature_operation(
+        hr_feature = collection.apply_multi_signal_operation(
             operation_name='feature_statistics',
-            signal_keys=['heart_rate'],
-            parameters={'aggregations': ['mean', 'std']},
-            output_key='hr_features'
+            input_signal_keys=['heart_rate'],
+            parameters={'aggregations': ['mean', 'std']}
         )
+        collection.add_feature('hr_features', hr_feature)
 
-        collection.apply_feature_operation(
+        accel_feature = collection.apply_multi_signal_operation(
             operation_name='feature_statistics',
-            signal_keys=['accel_mag'],
-            parameters={'aggregations': ['mean', 'std']},
-            output_key='accel_features'
+            input_signal_keys=['accel_mag'],
+            parameters={'aggregations': ['mean', 'std']}
         )
+        collection.add_feature('accel_features', accel_feature)
 
         # Combine features
         collection.combine_features(inputs=['hr_features', 'accel_features'])
@@ -209,24 +211,24 @@ class TestFeatureExtractionWorkflow:
         assert initial_stats['size'] == 0
 
         # Extract features - should be cached
-        feature1 = collection.apply_feature_operation(
+        feature1 = collection.apply_multi_signal_operation(
             operation_name='feature_statistics',
-            signal_keys=['heart_rate'],
-            parameters={'aggregations': ['mean']},
-            output_key='hr_mean_1'
+            input_signal_keys=['heart_rate'],
+            parameters={'aggregations': ['mean']}
         )
+        collection.add_feature('hr_mean_1', feature1)
 
         # Cache should now have one entry
         cache_stats = get_cache_stats()
         assert cache_stats['size'] == 1
 
         # Extract same features again - should use cache
-        feature2 = collection.apply_feature_operation(
+        feature2 = collection.apply_multi_signal_operation(
             operation_name='feature_statistics',
-            signal_keys=['heart_rate'],
-            parameters={'aggregations': ['mean']},
-            output_key='hr_mean_2'
+            input_signal_keys=['heart_rate'],
+            parameters={'aggregations': ['mean']}
         )
+        collection.add_feature('hr_mean_2', feature2)
 
         # Cache size should still be 1 (same computation)
         cache_stats = get_cache_stats()
@@ -240,8 +242,7 @@ class TestFeatureExtractionWorkflow:
 
     def test_workflow_with_validation(self, collection_with_signals):
         """Test complete workflow with validation enabled."""
-        executor = WorkflowExecutor(collection=collection_with_signals)
-        executor.strict_validation = True
+        executor = WorkflowExecutor(container=collection_with_signals, strict_validation=True)
 
         # Valid workflow configuration
         workflow_config = {
@@ -275,8 +276,7 @@ class TestFeatureExtractionWorkflow:
 
     def test_workflow_validation_errors(self, collection_with_signals):
         """Test that workflow validation catches errors."""
-        executor = WorkflowExecutor(collection=collection_with_signals)
-        executor.strict_validation = True
+        executor = WorkflowExecutor(container=collection_with_signals, strict_validation=True)
 
         # Invalid workflow: feature extraction before epoch grid
         invalid_workflow = {
