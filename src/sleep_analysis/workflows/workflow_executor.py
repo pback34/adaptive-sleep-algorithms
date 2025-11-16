@@ -240,15 +240,10 @@ class WorkflowExecutor:
         output_key = step.get("output")
         produces_output = not is_collection_op and not inplace
 
-        # Special cases where collection operations don't need output
+        # Special cases where operations don't need output or store automatically
+        # Feature operations store results in collection.features automatically
         no_output_ops = ["combine_features", "summarize_signals", "generate_epoch_grid",
                          "generate_alignment_grid", "apply_grid_alignment"]
-
-        if produces_output and operation_name not in no_output_ops and not output_key:
-            raise ValueError(
-                f"Non-inplace operation '{operation_name}' requires 'output' key. "
-                f"Set 'inplace: true' or provide 'output' specification."
-            )
 
         # Validate output type if provided
         if output_key is not None:
@@ -259,6 +254,13 @@ class WorkflowExecutor:
                     raise ValueError("'output' list cannot be empty")
                 if not all(isinstance(k, str) for k in output_key):
                     raise TypeError("All items in 'output' list must be strings")
+
+        # Check if output key is required but missing (must be after type validation)
+        if produces_output and operation_name not in no_output_ops and output_key is None:
+            raise ValueError(
+                f"Non-inplace operation '{operation_name}' requires 'output' key. "
+                f"Set 'inplace: true' or provide 'output' specification."
+            )
 
         # Validate specific operation requirements
         self._validate_operation_requirements(operation_name, parameters, step_type)

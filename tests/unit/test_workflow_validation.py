@@ -6,7 +6,7 @@ import pytest
 import pandas as pd
 from src.sleep_analysis.workflows.workflow_executor import WorkflowExecutor
 from src.sleep_analysis.core.signal_collection import SignalCollection
-from src.sleep_analysis.signals.time_series_signal import TimeSeriesSignal
+from src.sleep_analysis.signals.heart_rate_signal import HeartRateSignal
 
 
 class TestWorkflowStepValidation:
@@ -21,12 +21,12 @@ class TestWorkflowStepValidation:
 
     @pytest.fixture
     def sample_signal(self):
-        """Create a sample TimeSeriesSignal for testing."""
+        """Create a sample HeartRateSignal for testing."""
         data = pd.DataFrame({
-            'value': [1, 2, 3, 4, 5]
+            'hr': [60, 62, 64, 63, 61]
         }, index=pd.date_range('2024-01-01', periods=5, freq='1s'))
 
-        return TimeSeriesSignal(
+        return HeartRateSignal(
             data=data,
             metadata={
                 'name': 'test_signal',
@@ -220,6 +220,7 @@ class TestOperationRequirementsValidation:
         step = {
             'operation': 'feature_statistics',
             'input': 'signal_a',
+            'output': 'feature_output',
             'parameters': {'aggregations': ['mean', 'std']}
         }
 
@@ -242,6 +243,7 @@ class TestOperationRequirementsValidation:
         step = {
             'operation': 'feature_statistics',
             'input': 'signal_a',
+            'output': 'feature_output',
             'parameters': {'aggregations': 'mean'}  # Should be list
         }
 
@@ -325,6 +327,7 @@ class TestOperationRequirementsValidation:
         step = {
             'operation': 'feature_statistics',
             'input': 'signal_a',
+            'output': 'feature_output',
             'parameters': {
                 'aggregations': ['mean'],
                 'step_size': '15s'  # Should trigger warning
@@ -350,10 +353,10 @@ class TestExecuteStepWithValidation:
         executor.container = SignalCollection()
 
         data = pd.DataFrame({
-            'value': [1, 2, 3, 4, 5]
+            'hr': [60, 62, 64, 63, 61]
         }, index=pd.date_range('2024-01-01', periods=5, freq='1s'))
 
-        signal = TimeSeriesSignal(
+        signal = HeartRateSignal(
             data=data,
             metadata={
                 'name': 'test_signal',

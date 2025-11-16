@@ -8,7 +8,8 @@ import numpy as np
 from datetime import datetime
 
 from src.sleep_analysis.core.signal_collection import SignalCollection
-from src.sleep_analysis.signals.time_series_signal import TimeSeriesSignal
+from src.sleep_analysis.signals.heart_rate_signal import HeartRateSignal
+from src.sleep_analysis.signals.magnitude_signal import MagnitudeSignal
 from src.sleep_analysis.workflows.workflow_executor import WorkflowExecutor
 from src.sleep_analysis.operations.feature_extraction import (
     clear_feature_cache,
@@ -30,7 +31,7 @@ class TestFeatureExtractionWorkflow:
             'hr': 60 + 10 * np.sin(np.arange(120) * 0.1) + np.random.randn(120)
         }, index=index)
 
-        signal_a = TimeSeriesSignal(
+        signal_a = HeartRateSignal(
             data=hr_data,
             metadata={
                 'name': 'heart_rate',
@@ -45,7 +46,7 @@ class TestFeatureExtractionWorkflow:
             'magnitude': 1.0 + 0.2 * np.random.randn(120)
         }, index=index)
 
-        signal_b = TimeSeriesSignal(
+        signal_b = MagnitudeSignal(
             data=accel_data,
             metadata={
                 'name': 'accel_mag',
