@@ -3,9 +3,12 @@ Functions for epoch-based feature extraction from TimeSeriesSignals.
 """
 
 import logging
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any, Callable, Optional
 import pandas as pd
 import numpy as np
+import hashlib
+import json
+from functools import wraps
 # Removed scipy.stats.mode import
 
 import itertools
@@ -18,6 +21,146 @@ from ..features.feature import Feature
 from ..core.metadata import FeatureMetadata, OperationInfo, FeatureType # Import FeatureType
 
 logger = logging.getLogger(__name__)
+
+# Global cache for feature extraction results
+_FEATURE_CACHE: Dict[str, Feature] = {}
+_CACHE_ENABLED = True  # Global flag to enable/disable caching
+
+
+def enable_feature_cache(enabled: bool = True):
+    """
+    Enable or disable the global feature extraction cache.
+
+    Args:
+        enabled: If True, enables caching; if False, disables it.
+    """
+    global _CACHE_ENABLED
+    _CACHE_ENABLED = enabled
+    logger.info(f"Feature cache {'enabled' if enabled else 'disabled'}")
+
+
+def clear_feature_cache():
+    """Clear all cached feature extraction results."""
+    global _FEATURE_CACHE
+    cache_size = len(_FEATURE_CACHE)
+    _FEATURE_CACHE.clear()
+    logger.info(f"Cleared feature cache ({cache_size} entries removed)")
+
+
+def get_cache_stats() -> Dict[str, Any]:
+    """
+    Get statistics about the feature cache.
+
+    Returns:
+        Dictionary containing cache statistics.
+    """
+    return {
+        "enabled": _CACHE_ENABLED,
+        "size": len(_FEATURE_CACHE),
+        "keys": list(_FEATURE_CACHE.keys())
+    }
+
+
+def _compute_cache_key(
+    signal_ids: List[str],
+    operation_name: str,
+    parameters: Dict[str, Any],
+    epoch_grid_hash: str
+) -> str:
+    """
+    Compute a unique cache key for feature extraction.
+
+    Args:
+        signal_ids: List of signal IDs being processed.
+        operation_name: Name of the feature extraction operation.
+        parameters: Operation parameters.
+        epoch_grid_hash: Hash of the epoch grid index.
+
+    Returns:
+        Unique cache key string.
+    """
+    # Create a stable representation of the inputs
+    key_components = {
+        "signal_ids": sorted(signal_ids),  # Sort for consistency
+        "operation": operation_name,
+        "parameters": parameters,
+        "epoch_grid": epoch_grid_hash
+    }
+
+    # Convert to JSON string (sorted for consistency)
+    key_string = json.dumps(key_components, sort_keys=True)
+
+    # Hash to create a fixed-length key
+    return hashlib.md5(key_string.encode()).hexdigest()
+
+
+def cache_features(func: Callable) -> Callable:
+    """
+    Decorator to cache feature extraction results.
+
+    Caches Feature objects based on input signal IDs, operation name,
+    parameters, and epoch grid. Cache is invalidated if any inputs change.
+
+    Usage:
+        @cache_features
+        def compute_feature_statistics(...):
+            ...
+
+    Args:
+        func: Feature extraction function to cache.
+
+    Returns:
+        Wrapped function with caching capability.
+    """
+    @wraps(func)
+    def wrapper(
+        signals: List[TimeSeriesSignal],
+        epoch_grid_index: pd.DatetimeIndex,
+        parameters: Dict[str, Any],
+        global_window_length: pd.Timedelta,
+        global_step_size: pd.Timedelta
+    ) -> Feature:
+        # Check if caching is enabled
+        if not _CACHE_ENABLED:
+            logger.debug(f"Cache disabled, computing {func.__name__} directly")
+            return func(signals, epoch_grid_index, parameters,
+                       global_window_length, global_step_size)
+
+        # Extract signal IDs for cache key
+        signal_ids = [s.metadata.signal_id for s in signals]
+
+        # Create a hash of the epoch grid index
+        # Using hash of index values for efficiency
+        epoch_grid_hash = hashlib.md5(
+            str(epoch_grid_index.values).encode()
+        ).hexdigest()[:16]  # Use first 16 chars
+
+        # Compute cache key
+        cache_key = _compute_cache_key(
+            signal_ids=signal_ids,
+            operation_name=func.__name__,
+            parameters=parameters,
+            epoch_grid_hash=epoch_grid_hash
+        )
+
+        # Check if result is in cache
+        if cache_key in _FEATURE_CACHE:
+            logger.debug(f"Cache hit for {func.__name__} (key: {cache_key[:8]}...)")
+            return _FEATURE_CACHE[cache_key]
+
+        # Cache miss - compute the result
+        logger.debug(f"Cache miss for {func.__name__} (key: {cache_key[:8]}...)")
+        result = func(signals, epoch_grid_index, parameters,
+                     global_window_length, global_step_size)
+
+        # Store in cache
+        _FEATURE_CACHE[cache_key] = result
+        logger.debug(f"Cached result for {func.__name__} (cache size: {len(_FEATURE_CACHE)})")
+
+        return result
+
+    return wrapper
+
 
 # --- Core Feature Calculation Functions (Operating on single epoch data) ---
 
@@ -71,6 +214,7 @@ def _compute_basic_stats(segment: pd.DataFrame, aggregations: List[str]) -> Dict
 
 # --- Main Wrapper Function (Registered in SignalCollection) ---
 
+@cache_features
 def compute_feature_statistics(
     signals: List[TimeSeriesSignal],
     epoch_grid_index: pd.DatetimeIndex,
