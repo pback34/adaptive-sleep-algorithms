@@ -192,7 +192,7 @@ class TestFeatureExtractionWorkflow:
         collection.combine_features(inputs=['hr_features', 'accel_features'])
 
         # Check combined feature matrix
-        combined_df = collection.get_combined_feature_matrix()
+        combined_df = collection.get_stored_combined_feature_matrix()
         assert combined_df is not None
         assert isinstance(combined_df, pd.DataFrame)
         assert isinstance(combined_df.columns, pd.MultiIndex)
