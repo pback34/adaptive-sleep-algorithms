@@ -160,34 +160,224 @@ class WorkflowExecutor:
         if "export" in workflow_config:
             self._process_export_section(workflow_config["export"])
     
+    def _validate_step(self, step: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Comprehensive validation of a workflow step before execution.
+
+        Args:
+            step: Dictionary containing step specification.
+
+        Returns:
+            Dictionary with validated and normalized step data.
+
+        Raises:
+            ValueError: If the step specification is invalid.
+            TypeError: If parameter types are incorrect.
+        """
+        # Validate step is a dictionary
+        if not isinstance(step, dict):
+            raise TypeError(f"Step must be a dictionary, got {type(step).__name__}")
+
+        # Validate required 'operation' field
+        if "operation" not in step:
+            raise ValueError("Step missing required 'operation' field")
+
+        operation_name = step["operation"]
+        if not isinstance(operation_name, str) or not operation_name.strip():
+            raise ValueError(f"'operation' must be a non-empty string, got: {operation_name}")
+
+        # Validate step type if provided
+        step_type = step.get("type")
+        valid_types = ["collection", "time_series", "feature", None]
+        if step_type not in valid_types:
+            raise ValueError(f"Invalid step type '{step_type}'. Must be one of {valid_types}")
+
+        # Validate parameters if provided
+        parameters = step.get("parameters", {})
+        if not isinstance(parameters, dict):
+            raise TypeError(f"'parameters' must be a dictionary, got {type(parameters).__name__}")
+
+        # Validate inplace flag
+        inplace = step.get("inplace", False)
+        if not isinstance(inplace, bool):
+            raise TypeError(f"'inplace' must be a boolean, got {type(inplace).__name__}")
+
+        # Validate input specifications
+        has_input = "input" in step
+        has_inputs = "inputs" in step
+        is_collection_op = step_type == "collection" or operation_name in [
+            "generate_alignment_grid", "apply_grid_alignment", "combine_aligned_signals",
+            "generate_epoch_grid", "combine_features", "summarize_signals",
+            "align_and_combine_signals"
+        ]
+
+        # Check for conflicting input specifications
+        if has_input and has_inputs:
+            raise ValueError(f"Step cannot have both 'input' and 'inputs' fields for operation '{operation_name}'")
+
+        # Require input specification for non-collection operations
+        if not is_collection_op and not has_input and not has_inputs:
+            raise ValueError(f"Non-collection operation '{operation_name}' requires 'input' or 'inputs' field")
+
+        # Validate input types
+        if has_input:
+            input_spec = step["input"]
+            if not isinstance(input_spec, (str, dict)):
+                raise TypeError(f"'input' must be a string or dictionary, got {type(input_spec).__name__}")
+
+        if has_inputs:
+            inputs_spec = step["inputs"]
+            if not isinstance(inputs_spec, list):
+                raise TypeError(f"'inputs' must be a list, got {type(inputs_spec).__name__}")
+            if not inputs_spec:
+                raise ValueError(f"'inputs' list cannot be empty for operation '{operation_name}'")
+            # Validate each input in the list
+            for i, inp in enumerate(inputs_spec):
+                if not isinstance(inp, (str, dict)):
+                    raise TypeError(f"'inputs[{i}]' must be a string or dictionary, got {type(inp).__name__}")
+
+        # Validate output specification
+        output_key = step.get("output")
+        produces_output = not is_collection_op and not inplace
+
+        # Special cases where collection operations don't need output
+        no_output_ops = ["combine_features", "summarize_signals", "generate_epoch_grid",
+                         "generate_alignment_grid", "apply_grid_alignment"]
+
+        if produces_output and operation_name not in no_output_ops and not output_key:
+            raise ValueError(
+                f"Non-inplace operation '{operation_name}' requires 'output' key. "
+                f"Set 'inplace: true' or provide 'output' specification."
+            )
+
+        # Validate output type if provided
+        if output_key is not None:
+            if not isinstance(output_key, (str, list)):
+                raise TypeError(f"'output' must be a string or list, got {type(output_key).__name__}")
+            if isinstance(output_key, list):
+                if not output_key:
+                    raise ValueError("'output' list cannot be empty")
+                if not all(isinstance(k, str) for k in output_key):
+                    raise TypeError("All items in 'output' list must be strings")
+
+        # Validate specific operation requirements
+        self._validate_operation_requirements(operation_name, parameters, step_type)
+
+        # Return validated data
+        return {
+            "operation_name": operation_name,
+            "parameters": parameters,
+            "inplace": inplace,
+            "output_key": output_key,
+            "step_type": step_type
+        }
+
+    def _validate_operation_requirements(self, operation_name: str, parameters: Dict[str, Any], step_type: Optional[str]):
+        """
+        Validate operation-specific requirements.
+
+        Args:
+            operation_name: Name of the operation.
+            parameters: Operation parameters.
+            step_type: Type of step (collection, time_series, feature).
+
+        Raises:
+            ValueError: If operation requirements are not met.
+        """
+        # Validate feature extraction operations
+        if operation_name.startswith("feature_"):
+            # Check if epoch grid has been generated
+            if not self.container._epoch_grid_calculated:
+                raise ValueError(
+                    f"Feature extraction operation '{operation_name}' requires epoch grid to be generated first. "
+                    f"Add a 'generate_epoch_grid' step before feature extraction steps."
+                )
+
+            # Validate common feature parameters
+            if "aggregations" in parameters:
+                aggs = parameters["aggregations"]
+                if not isinstance(aggs, list):
+                    raise TypeError(f"'aggregations' parameter must be a list, got {type(aggs).__name__}")
+                if not aggs:
+                    raise ValueError("'aggregations' list cannot be empty")
+
+                valid_aggs = ["mean", "std", "min", "max", "median", "var"]
+                invalid_aggs = [a for a in aggs if a not in valid_aggs]
+                if invalid_aggs:
+                    raise ValueError(
+                        f"Invalid aggregations: {invalid_aggs}. "
+                        f"Valid options: {valid_aggs}"
+                    )
+
+            # Warn if step_size is provided (it's now global)
+            if "step_size" in parameters:
+                logger.warning(
+                    f"Parameter 'step_size' in operation '{operation_name}' is ignored. "
+                    f"Step size is now defined globally in epoch_grid_config."
+                )
+
+        # Validate combine_features operation
+        elif operation_name == "combine_features":
+            if not self.container.features:
+                raise ValueError(
+                    "No features available to combine. "
+                    "Run feature extraction operations before 'combine_features'."
+                )
+
+        # Validate alignment operations
+        elif operation_name in ["apply_grid_alignment", "combine_aligned_signals", "align_and_combine_signals"]:
+            if not self.container._alignment_params_calculated:
+                raise ValueError(
+                    f"Operation '{operation_name}' requires alignment grid to be generated first. "
+                    f"Add a 'generate_alignment_grid' step before alignment operations."
+                )
+
+        # Validate epoch grid generation
+        elif operation_name == "generate_epoch_grid":
+            if not self.container.metadata.epoch_grid_config:
+                raise ValueError(
+                    "Cannot generate epoch grid: 'epoch_grid_config' not set in collection settings. "
+                    "Add 'epoch_grid_config' with 'window_length' and 'step_size' to collection_settings."
+                )
+
+            # Validate epoch_grid_config structure
+            config = self.container.metadata.epoch_grid_config
+            required_keys = ["window_length", "step_size"]
+            missing_keys = [k for k in required_keys if k not in config]
+            if missing_keys:
+                raise ValueError(
+                    f"'epoch_grid_config' missing required fields: {missing_keys}. "
+                    f"Required: {required_keys}"
+                )
+
     def execute_step(self, step: Dict[str, Any]):
         """
         Execute a single workflow step by delegating to SignalCollection.
-        
+
         Args:
             step: Dictionary containing step specification.
-                
+
         Raises:
             ValueError: If the step specification is invalid or execution fails.
         """
-        # Validate required fields
-        if "operation" not in step:
-            raise ValueError("Step missing required 'operation' field")
-            
-        operation_name = step["operation"]
-        parameters = step.get("parameters", {})
-        inplace = step.get("inplace", False)
-        output_key = step.get("output") # Use output_key for clarity
+        # Comprehensive validation of the step
+        try:
+            validated = self._validate_step(step)
+        except (ValueError, TypeError) as e:
+            logger.error(f"Step validation failed: {e}")
+            if self.strict_validation:
+                raise
+            else:
+                warnings.warn(f"Skipping invalid step: {e}")
+                return
 
-        # Validate output specification for non-inplace operations that produce output
-        # Collection operations might not produce output to be stored via 'output' key
-        produces_output = step.get("type") != "collection" and not inplace
-        if produces_output and "output" not in step:
-            raise ValueError(f"Step '{step.get('operation', 'unknown')}' requires 'output' key because it's non-inplace and not type 'collection'")
+        operation_name = validated["operation_name"]
+        parameters = validated["parameters"]
+        inplace = validated["inplace"]
+        output_key = validated["output_key"]
+        step_type = validated["step_type"]
 
         try:
-            step_type = step.get("type") # e.g., "collection", "time_series", "feature" (or inferred)
-
             # Handle collection-level operations using the new apply_operation method
             if step_type == "collection":
                 # --- Handle Deprecated Operations First ---

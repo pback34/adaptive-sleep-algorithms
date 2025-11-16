@@ -1,6 +1,6 @@
 """Utility functions for signal processing."""
 
-from .logging import setup_logging, get_logger
+from .logging import setup_logging, get_logger, log_operation, OperationLogger
 import pandas as pd
 import logging
 from typing import Dict, Type, Any, Optional
@@ -380,5 +380,6 @@ def standardize_timestamp(
     return df
 
 
-__all__ = ['setup_logging', 'get_logger', 'standardize_timestamp', 'map_columns',
-           'debug_multiindex', 'debug_csv_file', 'str_to_enum', 'convert_timestamp_format'] # Added standardize_timestamp
+__all__ = ['setup_logging', 'get_logger', 'log_operation', 'OperationLogger',
+           'standardize_timestamp', 'map_columns', 'debug_multiindex', 'debug_csv_file',
+           'str_to_enum', 'convert_timestamp_format']
