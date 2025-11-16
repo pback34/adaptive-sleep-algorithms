@@ -23,8 +23,8 @@ class TestFeatureExtractionWorkflow:
     @pytest.fixture
     def sample_signals(self):
         """Create sample time-series signals for testing."""
-        # Create timestamp index
-        index = pd.date_range('2024-01-01 00:00:00', periods=120, freq='1s')
+        # Create timestamp index (timezone-aware to match epoch grid)
+        index = pd.date_range('2024-01-01 00:00:00', periods=120, freq='1s', tz='UTC')
 
         # Signal A: Simulated heart rate
         hr_data = pd.DataFrame({
@@ -269,7 +269,7 @@ class TestFeatureExtractionWorkflow:
         }
 
         # Execute workflow
-        executor.execute(workflow_config)
+        executor.execute_workflow(workflow_config)
 
         # Check that features were created
         assert 'hr_features' in executor.container.features
@@ -295,7 +295,7 @@ class TestFeatureExtractionWorkflow:
 
         # Should raise validation error
         with pytest.raises(ValueError, match="requires epoch grid"):
-            executor.execute(invalid_workflow)
+            executor.execute_workflow(invalid_workflow)
 
     def test_lazy_feature_in_workflow(self, sample_signals):
         """Test lazy feature evaluation within a workflow context."""
