@@ -1,0 +1,200 @@
+# Complete Sleep Staging Workflow with Random Forest
+# This workflow demonstrates end-to-end sleep analysis:
+# 1. Import Polar sensor data (HR and accelerometer)
+# 2. Extract sleep-relevant features (HRV, movement, correlations)
+# 3. Train and apply Random Forest sleep staging algorithm
+# 4. Evaluate predictions and generate visualizations
+#
+# To run:
+# python -m sleep_analysis.cli.run_workflow \
+#   --workflow workflows/sleep_staging_with_rf.yaml \
+#   --data-dir data
+
+# Global collection settings
+collection_settings:
+  # MultiIndex configuration for combined time-series exports
+  index_config: ["signal_type", "sensor_model", "body_position"]
+
+  # MultiIndex configuration for combined feature matrix
+  feature_index_config: ["sensor_model", "feature_type"]
+
+  # Global epoch settings for feature extraction
+  # Standard 30-second epochs for sleep staging (as per Nature paper)
+  epoch_grid_config:
+    window_length: "30s"  # 30-second windows
+    step_size: "30s"      # Non-overlapping epochs
+
+# Import section - load sensor data
+import:
+  # Heart Rate data from Polar H10 chest strap
+  - signal_type: "heart_rate"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_H10_*_HR.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "EKG"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    base_name: "hr_h10"
+
+  # Accelerometer data from Polar H10
+  - signal_type: "accelerometer"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_H10_*_ACC.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "ACCEL"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    base_name: "accel_h10"
+
+# Processing steps
+steps:
+  # Step 1: Generate the common epoch grid for all feature extraction
+  - type: collection
+    operation: "generate_epoch_grid"
+    parameters: {}
+
+  # Step 2: Extract HRV features from chest heart rate
+  # HRV is crucial for sleep stage classification
+  - type: multi_signal
+    operation: "compute_hrv_features"
+    inputs: ["hr_h10"]
+    parameters:
+      hrv_metrics: "all"  # Use all HRV metrics for best performance
+      use_rr_intervals: false  # Use heart rate approximation (RR not available)
+    output: "hrv_features"
+
+  # Step 3: Extract movement/activity features from chest accelerometer
+  # Movement is a primary indicator of sleep/wake states
+  - type: multi_signal
+    operation: "compute_movement_features"
+    inputs: ["accel_h10"]
+    parameters:
+      movement_metrics: "all"  # All movement features
+    output: "movement_features"
+
+  # Step 4: Compute correlation between HR and movement
+  # Correlation patterns help distinguish sleep stages
+  - type: multi_signal
+    operation: "compute_correlation_features"
+    inputs: ["hr_h10", "accel_h10"]
+    parameters:
+      signal1_column: "hr"
+      signal2_column: "x"
+      method: "pearson"
+      window_length: "60s"  # Use 60s window for more stable correlation
+    output: "hr_accel_correlation"
+
+  # Step 5: Combine all features into a single feature matrix
+  # This creates a comprehensive dataset for sleep classification
+  - type: collection
+    operation: "combine_features"
+    inputs: [
+      "hrv_features",
+      "movement_features",
+      "hr_accel_correlation"
+    ]
+    parameters: {}
+
+  # Step 6: Apply Random Forest sleep staging
+  # This step will predict sleep stages based on the extracted features
+  #
+  # OPTION A: Train a new model (if you have labeled data)
+  # Uncomment this step and provide a 'sleep_stage' column in your data
+  # - type: multi_signal
+  #   operation: "random_forest_sleep_staging"
+  #   inputs: ["combined_features"]
+  #   parameters:
+  #     mode: "train_predict"
+  #     labels_column: "sleep_stage"  # Column with ground truth labels
+  #     n_estimators: 100
+  #     n_stages: 4  # 4-stage: wake, light, deep, REM (or 2 for wake/sleep)
+  #     validation_split: 0.2
+  #     normalize_features: true
+  #     save_model_path: "models/my_rf_sleep_model"
+  #   output: "sleep_stage_predictions"
+  #
+  # OPTION B: Load a pre-trained model and predict
+  # Uncomment this step if you have a previously trained model
+  - type: multi_signal
+    operation: "random_forest_sleep_staging"
+    inputs: ["combined_features"]
+    parameters:
+      mode: "predict"
+      model_path: "models/pretrained_rf_sleep_model"  # Path to your trained model
+      n_stages: 4  # Must match the model's configuration
+    output: "sleep_stage_predictions"
+
+  # Step 7: Evaluate predictions (if you have ground truth labels)
+  # Uncomment this step if you want to evaluate model performance
+  # - type: multi_signal
+  #   operation: "evaluate_sleep_staging"
+  #   inputs: ["sleep_stage_predictions"]
+  #   parameters:
+  #     predictions_column: "predicted_stage"
+  #     labels_column: "sleep_stage"  # Ground truth column
+  #     confusion_matrix_path: "results/confusion_matrix.png"
+  #     hypnogram_path: "results/hypnogram.png"
+  #   output: "evaluation_metrics"
+
+  # Step 8: Generate summary of all signals and features
+  - type: collection
+    operation: "summarize_signals"
+    parameters:
+      print_summary: true
+
+# Export section - save results for analysis
+export:
+  # Export 1: Sleep stage predictions with probabilities
+  - formats: ["csv", "excel"]
+    output_dir: "results/sleep_staging"
+    content: ["sleep_stage_predictions"]
+
+  # Export 2: Combined feature matrix (for reference)
+  - formats: ["csv"]
+    output_dir: "results/features"
+    content: ["combined_features"]
+
+  # Export 3: Summary table
+  - formats: ["csv"]
+    output_dir: "results/summary"
+    content: ["summary"]
+
+  # Export 4: Evaluation metrics (if applicable)
+  # Uncomment if you ran the evaluation step
+  # - formats: ["csv"]
+  #   output_dir: "results/evaluation"
+  #   content: ["evaluation_metrics"]
+
+# Visualization section - create plots for analysis
+visualization:
+  # Plot 1: Heart rate over time
+  - type: time_series
+    signals: ["hr_h10_merged_0"]
+    layout: vertical
+    title: "Heart Rate During Sleep"
+    output: "results/plots/heart_rate.html"
+    backend: plotly
+    parameters:
+      width: 1200
+      height: 400
+      max_points: 10000
+
+  # Plot 2: Movement magnitude over time
+  - type: time_series
+    signals: ["accel_h10_merged_0"]
+    layout: vertical
+    title: "Movement During Sleep"
+    output: "results/plots/movement.html"
+    backend: plotly
+    parameters:
+      width: 1200
+      height: 400
+      max_points: 10000
