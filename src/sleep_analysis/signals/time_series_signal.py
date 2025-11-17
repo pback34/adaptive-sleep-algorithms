@@ -7,7 +7,7 @@ for all time-based signals in the framework.
 
 from dataclasses import asdict
 import uuid
-from typing import Dict, Any, Type, List, Optional
+from typing import Dict, Any, Type, List, Optional, Callable # Added Callable import
 import logging
 import sys
 import warnings
@@ -16,16 +16,19 @@ from abc import abstractmethod
 import numpy as np
 import pandas as pd
 
-from dataclasses import asdict
-import uuid
-from typing import Dict, Any, Type, List, Optional, Callable # Added Callable import
-
 from ..core.signal_data import SignalData
 from ..signal_types import SignalType
 # Updated import to use TimeSeriesMetadata
 from ..core.metadata import OperationInfo, TimeSeriesMetadata
 from ..core.metadata_handler import MetadataHandler
 
+
+# --- Constants ---
+
+# Threshold for detecting irregular sampling: if standard deviation of time differences
+# exceeds this fraction (10%) of the median time difference, the signal is considered
+# to have irregular sampling and sampling rate calculation returns None.
+SAMPLING_IRREGULARITY_THRESHOLD = 0.1
 
 # --- Class Definition ---
     
@@ -145,14 +148,15 @@ class TimeSeriesSignal(SignalData):
         logger.debug(f"Time difference stats - min: {min_diff:.6f}s, max: {max_diff:.6f}s, mean: {mean_diff:.6f}s, median: {median_diff_seconds:.6f}s, std: {std_diff:.6f}s")
         
         # Check if the signal has consistent spacing (helpful for debugging)
-        if std_diff > median_diff_seconds * 0.1:  # If std dev > 10% of median
+        if std_diff > median_diff_seconds * SAMPLING_IRREGULARITY_THRESHOLD:
             logger.debug(f"Signal appears to have irregular sampling (high variability in time differences)")
-        
-        # Check if the signal has consistent spacing (helpful for debugging)
-        # Return None if variability is too high (e.g., std dev > 50% of median)
-        # Use a stricter threshold (e.g., 10%) to identify irregular signals
-        if std_diff > median_diff_seconds * 0.1:
-            logger.warning(f"Signal {self.metadata.signal_id} appears to have irregular sampling (std_dev > 10% of median). Returning None for sampling rate.")
+
+        # Return None if variability is too high
+        # Use a stricter threshold to identify irregular signals
+        if std_diff > median_diff_seconds * SAMPLING_IRREGULARITY_THRESHOLD:
+            logger.warning(f"Signal {self.metadata.signal_id} appears to have irregular sampling "
+                         f"(std_dev > {SAMPLING_IRREGULARITY_THRESHOLD*100:.0f}% of median). "
+                         f"Returning None for sampling rate.")
             return None
 
         return sampling_rate
