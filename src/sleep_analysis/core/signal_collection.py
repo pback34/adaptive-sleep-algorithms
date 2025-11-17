@@ -33,13 +33,10 @@ from .metadata_handler import MetadataHandler
 from ..signals.time_series_signal import TimeSeriesSignal
 # Import Feature from its new location
 from ..features.feature import Feature
-# Removed FeatureSignal import as Feature is now used
-# from ..signals.feature_signal import FeatureSignal
+# Note: FeatureSignal was removed, Feature is now used instead
 from ..utils import str_to_enum
 
 import functools # Added for decorator
-import inspect # Added for __init_subclass__
-
 import inspect # Added for __init_subclass__
 
 # Initialize logger for the module
