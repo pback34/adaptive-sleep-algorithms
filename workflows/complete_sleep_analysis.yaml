@@ -1,0 +1,243 @@
+# Complete Sleep Analysis Workflow
+# Demonstrates end-to-end feature extraction for sleep analysis
+#
+# This workflow imports Polar sensor data (heart rate and accelerometer),
+# extracts sleep-relevant features (HRV, movement, correlations),
+# and exports the results for sleep staging algorithms.
+#
+# To run:
+# python -m sleep_analysis.cli.run_workflow \
+#   --workflow workflows/complete_sleep_analysis.yaml \
+#   --data-dir data
+
+# Global collection settings
+collection_settings:
+  # MultiIndex configuration for combined time-series exports
+  index_config: ["signal_type", "sensor_model", "body_position"]
+
+  # MultiIndex configuration for combined feature matrix
+  feature_index_config: ["sensor_model", "feature_type"]
+
+  # Global epoch settings for feature extraction
+  # Standard 30-second epochs for sleep staging
+  epoch_grid_config:
+    window_length: "30s"  # 30-second windows
+    step_size: "30s"      # Non-overlapping epochs
+
+# Import section - load sensor data
+import:
+  # Heart Rate data from Polar H10 chest strap
+  - signal_type: "heart_rate"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_H10_*_HR.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "EKG"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    base_name: "hr_h10"
+
+  # Accelerometer data from Polar H10
+  - signal_type: "accelerometer"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_H10_*_ACC.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "ACCEL"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    base_name: "accel_h10"
+
+  # Heart Rate data from Polar Sense wrist device
+  - signal_type: "heart_rate"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_Sense_*_HR.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "EKG"
+    sensor_model: "PolarSense"
+    body_position: "wrist"
+    base_name: "hr_sense"
+
+  # Accelerometer data from Polar Sense
+  - signal_type: "accelerometer"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_Sense_*_ACC.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "ACCEL"
+    sensor_model: "PolarSense"
+    body_position: "wrist"
+    base_name: "accel_sense"
+
+# Processing steps
+steps:
+  # Step 1: Generate the common epoch grid for all feature extraction
+  - type: collection
+    operation: "generate_epoch_grid"
+    parameters: {}
+
+  # Step 2: Extract HRV features from chest heart rate
+  # HRV is crucial for sleep stage classification
+  - type: multi_signal
+    operation: "compute_hrv_features"
+    inputs: ["hr_h10"]  # Use chest HR (more accurate for HRV)
+    parameters:
+      hrv_metrics: ["hr_mean", "hr_std", "hr_cv", "hr_range"]
+      use_rr_intervals: false  # Use heart rate approximation (RR not available)
+    output: "hrv_chest"
+
+  # Step 3: Extract HRV features from wrist heart rate for comparison
+  - type: multi_signal
+    operation: "compute_hrv_features"
+    inputs: ["hr_sense"]
+    parameters:
+      hrv_metrics: ["hr_mean", "hr_std", "hr_cv", "hr_range"]
+      use_rr_intervals: false
+    output: "hrv_wrist"
+
+  # Step 4: Extract movement/activity features from chest accelerometer
+  # Movement is a primary indicator of sleep/wake states
+  - type: multi_signal
+    operation: "compute_movement_features"
+    inputs: ["accel_h10"]
+    parameters:
+      movement_metrics: "all"  # All movement features
+    output: "movement_chest"
+
+  # Step 5: Extract movement features from wrist accelerometer
+  - type: multi_signal
+    operation: "compute_movement_features"
+    inputs: ["accel_sense"]
+    parameters:
+      movement_metrics: "all"
+    output: "movement_wrist"
+
+  # Step 6: Compute correlation between chest HR and movement
+  # Negative correlation often indicates sleep (HR decreases, movement decreases)
+  - type: multi_signal
+    operation: "compute_correlation_features"
+    inputs: ["hr_h10", "accel_h10"]
+    parameters:
+      signal1_column: "hr"
+      signal2_column: "x"  # Using X-axis acceleration
+      method: "pearson"
+      window_length: "60s"  # Use 60s window for more stable correlation
+    output: "hr_accel_corr_chest"
+
+  # Step 7: Compute correlation between wrist HR and movement
+  - type: multi_signal
+    operation: "compute_correlation_features"
+    inputs: ["hr_sense", "accel_sense"]
+    parameters:
+      signal1_column: "hr"
+      signal2_column: "x"
+      method: "pearson"
+      window_length: "60s"
+    output: "hr_accel_corr_wrist"
+
+  # Step 8: Extract basic statistics from all signals for completeness
+  - type: multi_signal
+    operation: "feature_statistics"
+    inputs: ["hr_h10"]
+    parameters:
+      aggregations: ["mean", "std", "min", "max"]
+    output: "hr_chest_stats"
+
+  - type: multi_signal
+    operation: "feature_statistics"
+    inputs: ["hr_sense"]
+    parameters:
+      aggregations: ["mean", "std", "min", "max"]
+    output: "hr_wrist_stats"
+
+  # Step 9: Combine all features into a single feature matrix
+  # This creates a comprehensive dataset for sleep classification
+  - type: collection
+    operation: "combine_features"
+    inputs: [
+      "hrv_chest",
+      "hrv_wrist",
+      "movement_chest",
+      "movement_wrist",
+      "hr_accel_corr_chest",
+      "hr_accel_corr_wrist",
+      "hr_chest_stats",
+      "hr_wrist_stats"
+    ]
+    parameters: {}
+
+  # Step 10: Generate summary of all signals and features
+  - type: collection
+    operation: "summarize_signals"
+    parameters:
+      print_summary: true
+
+# Export section - save results for analysis
+export:
+  # Export 1: Combined feature matrix (ready for ML algorithms)
+  - formats: ["csv", "excel"]
+    output_dir: "results/sleep_features"
+    content: ["combined_features"]
+
+  # Export 2: Individual features for detailed analysis
+  - formats: ["excel"]
+    output_dir: "results/individual_features"
+    content: [
+      "hrv_chest",
+      "hrv_wrist",
+      "movement_chest",
+      "movement_wrist",
+      "hr_accel_corr_chest",
+      "hr_accel_corr_wrist"
+    ]
+
+  # Export 3: Summary table
+  - formats: ["csv"]
+    output_dir: "results/summary"
+    content: ["summary"]
+
+  # Export 4: Raw time-series signals (for reference)
+  - formats: ["csv"]
+    output_dir: "results/raw_signals"
+    content: ["all_ts"]
+
+# Visualization section - create plots for analysis
+visualization:
+  # Plot 1: Heart rate over time from both sensors
+  - type: time_series
+    signals: ["hr_h10_merged_0", "hr_sense_merged_0"]
+    layout: vertical
+    title: "Heart Rate Comparison: Chest vs Wrist"
+    output: "results/plots/heart_rate_comparison.html"
+    backend: plotly
+    parameters:
+      width: 1200
+      height: 600
+      link_x_axes: true
+      max_points: 10000  # Downsample for performance
+
+  # Plot 2: Movement magnitude from both sensors
+  - type: time_series
+    signals: ["accel_h10_merged_0", "accel_sense_merged_0"]
+    layout: vertical
+    title: "Accelerometer Activity: Chest vs Wrist"
+    output: "results/plots/accelerometer_comparison.html"
+    backend: plotly
+    parameters:
+      width: 1200
+      height: 600
+      link_x_axes: true
+      max_points: 10000

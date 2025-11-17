@@ -20,6 +20,7 @@ class FeatureType(Enum):
     STATISTICAL = "statistical" # Changed from auto() to string
     SPECTRAL = "spectral"
     HRV = "hrv"
+    MOVEMENT = "movement" # Movement/activity features from accelerometer
     CORRELATION = "correlation"
     SLEEP_STAGE = "sleep_stage" # Added for sleep stage classification
     CATEGORICAL_MODE = "categorical_mode" # Added for sleep stage mode
