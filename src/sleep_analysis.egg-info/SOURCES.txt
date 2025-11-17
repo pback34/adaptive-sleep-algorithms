@@ -20,6 +20,13 @@ src/sleep_analysis/core/metadata.py
 src/sleep_analysis/core/metadata_handler.py
 src/sleep_analysis/core/signal_collection.py
 src/sleep_analysis/core/signal_data.py
+src/sleep_analysis/core/validation.py
+src/sleep_analysis/core/models/__init__.py
+src/sleep_analysis/core/models/alignment_state.py
+src/sleep_analysis/core/models/combination_result.py
+src/sleep_analysis/core/models/epoch_state.py
+src/sleep_analysis/core/repositories/__init__.py
+src/sleep_analysis/core/repositories/signal_repository.py
 src/sleep_analysis/export/__init__.py
 src/sleep_analysis/export/export_module.py
 src/sleep_analysis/features/feature.py
