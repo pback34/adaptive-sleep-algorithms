@@ -222,8 +222,15 @@ class WorkflowExecutor:
         # Validate input types
         if has_input:
             input_spec = step["input"]
-            if not isinstance(input_spec, (str, dict)):
-                raise TypeError(f"'input' must be a string or dictionary, got {type(input_spec).__name__}")
+            if not isinstance(input_spec, (str, dict, list)):
+                raise TypeError(f"'input' must be a string, dictionary, or list, got {type(input_spec).__name__}")
+            # If input is a list, validate each element
+            if isinstance(input_spec, list):
+                if not input_spec:
+                    raise ValueError(f"'input' list cannot be empty for operation '{operation_name}'")
+                for i, inp in enumerate(input_spec):
+                    if not isinstance(inp, (str, dict)):
+                        raise TypeError(f"'input[{i}]' must be a string or dictionary, got {type(inp).__name__}")
 
         if has_inputs:
             inputs_spec = step["inputs"]

@@ -254,6 +254,11 @@ def test_export_hdf5(sample_signal_collection, temp_output_dir):
     except ImportError:
         pytest.skip("h5py not installed, skipping HDF5 test")
 
+    try:
+        import tables
+    except ImportError:
+        pytest.skip("pytables not installed, skipping HDF5 test")
+
     # Generate and store the combined dataframe within the collection first
     sample_signal_collection.generate_alignment_grid()
     sample_signal_collection.apply_grid_alignment()
