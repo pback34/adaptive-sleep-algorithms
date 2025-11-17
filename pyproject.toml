@@ -34,8 +34,15 @@ export-extra = [
     "selenium>=4.0.0", # For PNG export via Bokeh
     # Note: PNG export with Bokeh/Selenium also requires a webdriver (e.g., geckodriver or chromedriver) installed separately.
 ]
+algorithms = [
+    "scikit-learn>=1.3.0",  # Random Forest and other ML algorithms
+    "scipy>=1.11.0",        # Advanced correlation methods (Spearman, Kendall)
+    "joblib>=1.0.0",        # Model serialization
+    "matplotlib>=3.5.0",    # Plotting utilities
+    "seaborn>=0.11.0",      # Enhanced visualizations
+]
 dev = [
-    "sleep_analysis[vis,export,export-extra]", # Include all optional dependencies
+    "sleep_analysis[vis,export,export-extra,algorithms]", # Include all optional dependencies
     "pytest>=7.0.0",
     "pytest-cov>=2.12.0",
     "black>=22.1.0",

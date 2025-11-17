@@ -1,0 +1,166 @@
+# Train Sleep Staging Model Workflow
+# This workflow demonstrates how to train a Random Forest sleep staging model
+# from labeled data and evaluate its performance.
+#
+# Prerequisites:
+# - Polar sensor data (HR and accelerometer)
+# - Ground truth sleep stage labels in a CSV file with columns:
+#   - 'timestamp': DateTime matching the sensor data
+#   - 'sleep_stage': Labels ('wake', 'light', 'deep', 'rem')
+#
+# To run:
+# python -m sleep_analysis.cli.run_workflow \
+#   --workflow workflows/train_sleep_staging_model.yaml \
+#   --data-dir data
+
+# Global collection settings
+collection_settings:
+  index_config: ["signal_type", "sensor_model", "body_position"]
+  feature_index_config: ["sensor_model", "feature_type"]
+
+  # 30-second epochs (standard for sleep staging)
+  epoch_grid_config:
+    window_length: "30s"
+    step_size: "30s"
+
+# Import section
+import:
+  # Import Polar sensor data
+  - signal_type: "heart_rate"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_H10_*_HR.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "EKG"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    base_name: "hr_h10"
+
+  - signal_type: "accelerometer"
+    importer: "MergingImporter"
+    source: "."
+    config:
+      file_pattern: "Polar_H10_*_ACC.txt"
+      time_column: "Phone timestamp"
+      sort_by: "timestamp"
+      delimiter: ";"
+    sensor_type: "ACCEL"
+    sensor_model: "PolarH10"
+    body_position: "chest"
+    base_name: "accel_h10"
+
+  # Import ground truth sleep stage labels
+  # Assumes you have a CSV file with timestamp and sleep_stage columns
+  - signal_type: "categorical"
+    importer: "GenericCSVImporter"
+    source: "sleep_labels.csv"  # Your labeled data file
+    config:
+      time_column: "timestamp"
+      value_columns: ["sleep_stage"]
+      time_format: "%Y-%m-%d %H:%M:%S"
+    sensor_type: "LABEL"
+    sensor_model: "GroundTruth"
+    body_position: "none"
+    base_name: "sleep_labels"
+
+# Processing steps
+steps:
+  # Step 1: Generate epoch grid
+  - type: collection
+    operation: "generate_epoch_grid"
+    parameters: {}
+
+  # Step 2-4: Extract features
+  - type: multi_signal
+    operation: "compute_hrv_features"
+    inputs: ["hr_h10"]
+    parameters:
+      hrv_metrics: "all"
+      use_rr_intervals: false
+    output: "hrv_features"
+
+  - type: multi_signal
+    operation: "compute_movement_features"
+    inputs: ["accel_h10"]
+    parameters:
+      movement_metrics: "all"
+    output: "movement_features"
+
+  - type: multi_signal
+    operation: "compute_correlation_features"
+    inputs: ["hr_h10", "accel_h10"]
+    parameters:
+      signal1_column: "hr"
+      signal2_column: "x"
+      method: "pearson"
+      window_length: "60s"
+    output: "hr_accel_correlation"
+
+  # Step 5: Combine features
+  - type: collection
+    operation: "combine_features"
+    inputs: [
+      "hrv_features",
+      "movement_features",
+      "hr_accel_correlation"
+    ]
+    parameters: {}
+
+  # Step 6: Align sleep labels with features
+  # Note: In practice, you would need a custom operation to join the labels
+  # with the feature matrix. For now, assume the labels are already in the
+  # combined_features DataFrame as a 'sleep_stage' column.
+
+  # Step 7: Train Random Forest model
+  - type: multi_signal
+    operation: "random_forest_sleep_staging"
+    inputs: ["combined_features"]
+    parameters:
+      mode: "train_predict"
+      labels_column: "sleep_stage"
+      n_estimators: 200  # Increase for better performance
+      max_depth: 20  # Limit depth to prevent overfitting
+      n_stages: 4  # 4-stage classification (wake, light, deep, REM)
+      validation_split: 0.2  # Use 20% for validation
+      normalize_features: true
+      class_weight: "balanced"  # Handle class imbalance
+      random_state: 42
+      save_model_path: "models/trained_rf_sleep_model"  # Save the trained model
+    output: "training_results"
+
+  # Step 8: Evaluate the trained model
+  - type: multi_signal
+    operation: "evaluate_sleep_staging"
+    inputs: ["training_results"]
+    parameters:
+      predictions_column: "predicted_stage"
+      labels_column: "sleep_stage"
+      confusion_matrix_path: "results/training_confusion_matrix.png"
+      hypnogram_path: "results/training_hypnogram.png"
+    output: "training_evaluation"
+
+  # Step 9: Generate summary
+  - type: collection
+    operation: "summarize_signals"
+    parameters:
+      print_summary: true
+
+# Export section
+export:
+  # Export predictions and probabilities
+  - formats: ["csv", "excel"]
+    output_dir: "results/training"
+    content: ["training_results"]
+
+  # Export evaluation metrics
+  - formats: ["csv"]
+    output_dir: "results/training"
+    content: ["training_evaluation"]
+
+  # Export feature matrix with labels
+  - formats: ["csv"]
+    output_dir: "results/training"
+    content: ["combined_features"]

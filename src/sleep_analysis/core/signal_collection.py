@@ -1945,6 +1945,11 @@ try:
         compute_movement_features,
         compute_correlation_features
     )
+    # Import algorithm operations
+    from ..operations.algorithm_ops import (
+        random_forest_sleep_staging,
+        evaluate_sleep_staging
+    )
     # Import the Feature class (output type for these operations)
     from ..features.feature import Feature
 
@@ -1954,10 +1959,12 @@ try:
         "compute_hrv_features": (compute_hrv_features, Feature),
         "compute_movement_features": (compute_movement_features, Feature),
         "compute_correlation_features": (compute_correlation_features, Feature),
+        "random_forest_sleep_staging": (random_forest_sleep_staging, Feature),
+        "evaluate_sleep_staging": (evaluate_sleep_staging, Feature),
     })
-    logger.debug("Registered multi-signal feature operations (statistics, sleep_stage_mode, hrv, movement, correlation).")
+    logger.debug("Registered multi-signal operations (features, algorithms).")
 except ImportError as e:
-    logger.warning(f"Could not import or register feature operations: {e}")
+    logger.warning(f"Could not import or register operations: {e}")
 
 
 # Clean up temporary variables from the global scope of the module
