@@ -473,7 +473,35 @@ class TestCorrelationFeatures:
             tz='UTC'
         )
 
-        for method in ['pearson', 'spearman', 'kendall']:
+        # Test Pearson (doesn't require scipy)
+        parameters = {
+            'signal1_column': 'hr',
+            'signal2_column': 'hr',
+            'method': 'pearson'
+        }
+
+        result = compute_correlation_features(
+            signals=[signal1, signal2],
+            epoch_grid_index=epoch_grid,
+            parameters=parameters,
+            global_window_length=pd.Timedelta('30s'),
+            global_step_size=pd.Timedelta('30s')
+        )
+
+        assert 'pearson_corr' in result.metadata.feature_names
+        data = result.get_data()
+        # Should have correlation values (not all NaN) for pearson
+        assert not data.isna().all().all()
+
+        # Test other methods only if scipy is available
+        try:
+            import scipy
+            methods_to_test = ['spearman', 'kendall']
+        except ImportError:
+            pytest.skip("scipy not installed, skipping spearman/kendall correlation tests")
+            return
+
+        for method in methods_to_test:
             parameters = {
                 'signal1_column': 'hr',
                 'signal2_column': 'hr',
@@ -521,8 +549,10 @@ class TestCorrelationFeatures:
             )
 
         # Test with 3 signals - should raise ValueError
+        # Create signal3 with proper DatetimeIndex
+        index3 = pd.date_range('2024-01-01 00:00:00', periods=3, freq='1s', tz='UTC')
         signal3 = HeartRateSignal(
-            data=pd.DataFrame({'hr': [1, 2, 3]}),
+            data=pd.DataFrame({'hr': [1, 2, 3]}, index=index3),
             metadata={'name': 'signal3', 'signal_type': 'heart_rate'}
         )
         with pytest.raises(ValueError, match="exactly 2 signals"):
