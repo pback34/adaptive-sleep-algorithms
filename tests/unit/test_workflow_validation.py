@@ -111,10 +111,10 @@ class TestWorkflowStepValidation:
         """Test validation fails with invalid input type."""
         step = {
             'operation': 'filter_lowpass',
-            'input': 123  # Should be string or dict
+            'input': 123  # Should be string, dict, or list
         }
 
-        with pytest.raises(TypeError, match="'input' must be a string or dictionary"):
+        with pytest.raises(TypeError, match="'input' must be a string, dictionary, or list"):
             executor_with_collection._validate_step(step)
 
     def test_validate_step_empty_inputs_list(self, executor_with_collection):

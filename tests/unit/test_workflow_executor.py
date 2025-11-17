@@ -571,6 +571,13 @@ class TestWorkflowExecutor:
         
     def test_feature_extraction_workflow(self, workflow_executor_with_data):
         """Test executing a workflow with feature extraction."""
+        # Set up epoch grid config in collection metadata
+        from sleep_analysis.core.metadata import EpochGridConfig
+        workflow_executor_with_data.container.metadata.epoch_grid_config = EpochGridConfig(
+            window_length="30s",
+            step_size="30s"
+        )
+
         feature_workflow_config = {
             "steps": [
                 {
