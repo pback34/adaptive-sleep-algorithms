@@ -46,10 +46,18 @@ def sample_feature():
         {"mean_hr": [70.0, 72.0, 68.0]},
         index=pd.date_range("2025-01-01", periods=3, freq="30s", tz="UTC")
     )
-    # Pass metadata as dictionary
+    # Pass metadata as dictionary with all required fields
     return Feature(
         data=data,
-        metadata={"feature_id": "test_feature_001", "sensor_type": SensorType.PPG}
+        metadata={
+            "feature_id": "test_feature_001",
+            "sensor_type": SensorType.PPG,
+            "epoch_window_length": pd.Timedelta(seconds=30),
+            "epoch_step_size": pd.Timedelta(seconds=30),
+            "feature_names": ["mean_hr"],
+            "source_signal_keys": ["hr_0"],
+            "source_signal_ids": ["test_signal_001"]
+        }
     )
 
 
@@ -106,11 +114,10 @@ class TestAddTimeSeriesSignal:
             {"hr": [75.0, 73.0, 71.0]},
             index=pd.date_range("2025-01-02", periods=3, freq="1s", tz="UTC")
         )
-        metadata = TimeSeriesMetadata(
-            signal_id="test_signal_002",
-            signal_type=SignalType.HEART_RATE
+        signal2 = HeartRateSignal(
+            data=data,
+            metadata={"signal_id": "test_signal_002", "signal_type": SignalType.HEART_RATE}
         )
-        signal2 = HeartRateSignal(data=data, metadata=metadata)
 
         with pytest.raises(ValueError, match="already exists"):
             signal_repository.add_time_series_signal("hr_0", signal2)
@@ -128,11 +135,10 @@ class TestAddTimeSeriesSignal:
             {"hr": [75.0, 73.0, 71.0]},
             index=pd.date_range("2025-01-02", periods=3, freq="1s", tz="UTC")
         )
-        metadata = TimeSeriesMetadata(
-            signal_id=original_id,  # Same ID!
-            signal_type=SignalType.HEART_RATE
+        signal2 = HeartRateSignal(
+            data=data,
+            metadata={"signal_id": original_id, "signal_type": SignalType.HEART_RATE}  # Same ID!
         )
-        signal2 = HeartRateSignal(data=data, metadata=metadata)
 
         # Add second signal - ID should be reassigned
         signal_repository.add_time_series_signal("hr_1", signal2)
@@ -144,13 +150,12 @@ class TestAddTimeSeriesSignal:
             {"hr": [70.0, 72.0, 68.0]},
             index=[0, 1, 2]  # Regular index, not DatetimeIndex
         )
-        metadata = TimeSeriesMetadata(
-            signal_id="test_signal_003",
-            signal_type=SignalType.HEART_RATE
-        )
         # HeartRateSignal validates DatetimeIndex during __init__
         with pytest.raises(ValueError, match="must have a DatetimeIndex"):
-            signal = HeartRateSignal(data=data, metadata=metadata)
+            signal = HeartRateSignal(
+                data=data,
+                metadata={"signal_id": "test_signal_003", "signal_type": SignalType.HEART_RATE}
+            )
 
 
 class TestAddFeature:
@@ -181,11 +186,18 @@ class TestAddFeature:
             {"mean_hr": [75.0, 73.0, 71.0]},
             index=pd.date_range("2025-01-02", periods=3, freq="30s", tz="UTC")
         )
-        metadata = FeatureMetadata(
-            feature_id="test_feature_002",
-            sensor_type=SensorType.PPG
+        feature2 = Feature(
+            data=data,
+            metadata={
+                "feature_id": "test_feature_002",
+                "sensor_type": SensorType.PPG,
+                "epoch_window_length": pd.Timedelta(seconds=30),
+                "epoch_step_size": pd.Timedelta(seconds=30),
+                "feature_names": ["mean_hr"],
+                "source_signal_keys": ["hr_0"],
+                "source_signal_ids": ["test_signal_002"]
+            }
         )
-        feature2 = Feature(data=data, metadata=metadata)
 
         with pytest.raises(ValueError, match="already exists"):
             signal_repository.add_feature("hrv_0", feature2)
@@ -202,11 +214,18 @@ class TestAddFeature:
             {"mean_hr": [75.0, 73.0, 71.0]},
             index=pd.date_range("2025-01-02", periods=3, freq="30s", tz="UTC")
         )
-        metadata = FeatureMetadata(
-            feature_id=original_id,  # Same ID!
-            sensor_type=SensorType.PPG
+        feature2 = Feature(
+            data=data,
+            metadata={
+                "feature_id": original_id,  # Same ID!
+                "sensor_type": SensorType.PPG,
+                "epoch_window_length": pd.Timedelta(seconds=30),
+                "epoch_step_size": pd.Timedelta(seconds=30),
+                "feature_names": ["mean_hr"],
+                "source_signal_keys": ["hr_0"],
+                "source_signal_ids": ["test_signal_002"]
+            }
         )
-        feature2 = Feature(data=data, metadata=metadata)
 
         signal_repository.add_feature("hrv_1", feature2)
         assert feature2.metadata.feature_id != original_id
@@ -232,11 +251,10 @@ class TestAddSignalWithBaseName:
                 {"hr": [float(i+70), float(i+71), float(i+72)]},
                 index=pd.date_range("2025-01-01", periods=3, freq="1s", tz="UTC")
             )
-            metadata = TimeSeriesMetadata(
-                signal_id=f"test_signal_{i:03d}",
-                signal_type=SignalType.HEART_RATE
-            )
-            signals.append(HeartRateSignal(data=data, metadata=metadata))
+            signals.append(HeartRateSignal(
+                data=data,
+                metadata={"signal_id": f"test_signal_{i:03d}", "signal_type": SignalType.HEART_RATE}
+            ))
 
         key0 = signal_repository.add_signal_with_base_name("hr", signals[0])
         key1 = signal_repository.add_signal_with_base_name("hr", signals[1])
@@ -276,11 +294,10 @@ class TestAddImportedSignals:
                 {"hr": [float(i+70), float(i+71), float(i+72)]},
                 index=pd.date_range("2025-01-01", periods=3, freq="1s", tz="UTC")
             )
-            metadata = TimeSeriesMetadata(
-                signal_id=f"import_{i:03d}",
-                signal_type=SignalType.HEART_RATE
-            )
-            signals.append(HeartRateSignal(data=data, metadata=metadata))
+            signals.append(HeartRateSignal(
+                data=data,
+                metadata={"signal_id": f"import_{i:03d}", "signal_type": SignalType.HEART_RATE}
+            ))
 
         keys = signal_repository.add_imported_signals(signals, "polar")
 
@@ -296,11 +313,10 @@ class TestAddImportedSignals:
                 {"hr": [float(i+70)]},
                 index=pd.date_range("2025-01-01", periods=1, freq="1s", tz="UTC")
             )
-            metadata = TimeSeriesMetadata(
-                signal_id=f"import_{i:03d}",
-                signal_type=SignalType.HEART_RATE
-            )
-            signals.append(HeartRateSignal(data=data, metadata=metadata))
+            signals.append(HeartRateSignal(
+                data=data,
+                metadata={"signal_id": f"import_{i:03d}", "signal_type": SignalType.HEART_RATE}
+            ))
 
         keys = signal_repository.add_imported_signals(signals, "polar", start_index=5)
         assert keys == ["polar_5", "polar_6"]
@@ -386,13 +402,12 @@ class TestValidation:
             {"hr": [70.0, 72.0, 68.0]},
             index=[0, 1, 2]  # Not a DatetimeIndex
         )
-        metadata = TimeSeriesMetadata(
-            signal_id="test",
-            signal_type=SignalType.HEART_RATE
-        )
         # Signal construction itself will fail
         with pytest.raises(ValueError, match="must have a DatetimeIndex"):
-            signal = HeartRateSignal(data=data, metadata=metadata)
+            signal = HeartRateSignal(
+                data=data,
+                metadata={"signal_id": "test", "signal_type": SignalType.HEART_RATE}
+            )
 
     def test_validate_timezone_logs_warning_for_mismatch(
         self, signal_repository, caplog, sample_time_series_signal
@@ -406,11 +421,10 @@ class TestValidation:
             {"hr": [70.0, 72.0, 68.0]},
             index=pd.date_range("2025-01-01", periods=3, freq="1s", tz="America/New_York")
         )
-        metadata = TimeSeriesMetadata(
-            signal_id="test_ny",
-            signal_type=SignalType.HEART_RATE
+        signal_ny = HeartRateSignal(
+            data=data,
+            metadata={"signal_id": "test_ny", "signal_type": SignalType.HEART_RATE}
         )
-        signal_ny = HeartRateSignal(data=data, metadata=metadata)
 
         signal_repository._validate_timezone("hr_ny", signal_ny)
         # Should log warning about timezone mismatch
