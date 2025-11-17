@@ -38,6 +38,23 @@ NN50_THRESHOLD_MS = 50
 # Higher values make detection more selective (fewer movements detected)
 ACTIVITY_THRESHOLD_MULTIPLIER = 0.5
 
+# Default epoch window length for feature extraction (used in examples/docs)
+# Standard sleep staging uses 30-second epochs
+DEFAULT_EPOCH_WINDOW = "30s"
+
+# Default aggregation methods for statistical features
+DEFAULT_AGGREGATIONS = ['mean', 'std']
+
+# Default HRV metrics for RR interval-based analysis
+DEFAULT_HRV_METRICS_RR = ['sdnn', 'rmssd', 'pnn50']
+
+# Default HRV metrics for heart rate-based approximation
+DEFAULT_HRV_METRICS_HR = ['hr_mean', 'hr_std', 'hr_cv', 'hr_range']
+
+# Default movement metrics for accelerometer analysis
+DEFAULT_MOVEMENT_METRICS = ['magnitude_mean', 'magnitude_std', 'magnitude_max',
+                           'activity_count', 'stillness_ratio', 'x_std', 'y_std', 'z_std']
+
 # Global cache for feature extraction results
 _FEATURE_CACHE: Dict[str, Feature] = {}
 _CACHE_ENABLED = True  # Global flag to enable/disable caching
@@ -652,11 +669,8 @@ def compute_feature_statistics(
              # This check should ideally not fail if generate_epoch_grid worked
              raise ValueError("Could not determine a positive epoch_step_size from global parameters.")
 
-        aggregations = parameters.get('aggregations', ['mean', 'std']) # Default aggregations
+        aggregations = parameters.get('aggregations', DEFAULT_AGGREGATIONS)
 
-    # REMOVE KeyError handling for global params
-    # except KeyError as e:
-    #     raise ValueError(f"Missing required global parameter from executor: {e}") from e
     except ValueError as e:
         raise ValueError(f"Invalid parameter format or value: {e}") from e
 
@@ -882,10 +896,6 @@ def compute_sleep_stage_mode(
     """
     if not signals:
         raise ValueError("No input signals provided for sleep stage mode calculation.")
-    # Add specific type check if desired, or rely on column check below
-    # from ..signals.eeg_sleep_stage_signal import EEGSleepStageSignal # Import if type checking
-    # if not all(isinstance(s, EEGSleepStageSignal) for s in signals):
-    #     raise TypeError("All input signals must be EEGSleepStageSignal instances.")
     if epoch_grid_index is None or epoch_grid_index.empty:
         raise ValueError("A valid epoch_grid_index must be provided.")
 
@@ -1058,6 +1068,34 @@ def compute_hrv_features(
 
     Raises:
         ValueError: If input signals are invalid or parameters are incorrect
+
+    Example (Workflow YAML):
+        ```yaml
+        # Extract HRV features from heart rate signal
+        steps:
+          - type: multi_signal
+            operation: "compute_hrv_features"
+            inputs: ["hr_h10"]
+            parameters:
+              hrv_metrics: ["hr_mean", "hr_std", "hr_cv", "hr_range"]
+              use_rr_intervals: false  # Using heart rate approximation
+            output: "hrv_features"
+        ```
+
+    Example (Python API):
+        ```python
+        # Compute HRV features using RR intervals
+        hrv_features = compute_hrv_features(
+            signals=[rr_signal],
+            epoch_grid_index=collection.epoch_grid_index,
+            parameters={
+                "hrv_metrics": "all",  # All RR-based metrics
+                "use_rr_intervals": true
+            },
+            global_window_length=pd.Timedelta("30s"),
+            global_step_size=pd.Timedelta("30s")
+        )
+        ```
     """
     # Validate inputs using centralized validation utilities
     validation.validate_not_empty(signals, "input signals for HRV feature extraction")
@@ -1076,13 +1114,13 @@ def compute_hrv_features(
     validation.validate_timedelta_positive(effective_window_length, "Effective window_length")
 
     use_rr_intervals = parameters.get('use_rr_intervals', False)
-    hrv_metrics = parameters.get('hrv_metrics', ['sdnn', 'rmssd', 'pnn50'])
+    hrv_metrics = parameters.get('hrv_metrics', DEFAULT_HRV_METRICS_RR)
 
     if hrv_metrics == 'all':
         if use_rr_intervals:
             hrv_metrics = ['sdnn', 'rmssd', 'pnn50', 'sdsd', 'rr_mean', 'rr_std']
         else:
-            hrv_metrics = ['hr_mean', 'hr_std', 'hr_cv', 'hr_range']
+            hrv_metrics = DEFAULT_HRV_METRICS_HR
 
     epoch_step_size = global_step_size
 
@@ -1249,8 +1287,7 @@ def compute_movement_features(
 
     movement_metrics = parameters.get('movement_metrics', 'all')
     if movement_metrics == 'all':
-        movement_metrics = ['magnitude_mean', 'magnitude_std', 'magnitude_max',
-                           'activity_count', 'stillness_ratio', 'x_std', 'y_std', 'z_std']
+        movement_metrics = DEFAULT_MOVEMENT_METRICS
 
     epoch_step_size = global_step_size
 
