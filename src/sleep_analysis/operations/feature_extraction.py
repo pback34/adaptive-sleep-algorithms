@@ -209,6 +209,242 @@ def _compute_basic_stats(segment: pd.DataFrame, aggregations: List[str]) -> Dict
 
     return results
 
+# --- HRV Feature Functions ---
+
+def _compute_hrv_time_domain(rr_intervals: pd.Series) -> Dict[str, float]:
+    """
+    Computes time-domain HRV features from RR intervals.
+
+    Args:
+        rr_intervals: Series of RR intervals in milliseconds
+
+    Returns:
+        Dictionary of HRV features
+    """
+    results = {}
+
+    if rr_intervals.empty or len(rr_intervals) < 2:
+        # Return NaN for all features if insufficient data
+        return {
+            'rr_mean': np.nan,
+            'rr_std': np.nan,
+            'sdnn': np.nan,
+            'rmssd': np.nan,
+            'pnn50': np.nan,
+            'sdsd': np.nan
+        }
+
+    # Basic RR statistics
+    results['rr_mean'] = rr_intervals.mean()
+    results['rr_std'] = rr_intervals.std()
+
+    # SDNN: Standard deviation of NN (normal-to-normal) intervals
+    results['sdnn'] = rr_intervals.std()
+
+    # Calculate successive differences
+    successive_diffs = np.diff(rr_intervals)
+
+    if len(successive_diffs) > 0:
+        # RMSSD: Root mean square of successive differences
+        results['rmssd'] = np.sqrt(np.mean(successive_diffs ** 2))
+
+        # SDSD: Standard deviation of successive differences
+        results['sdsd'] = np.std(successive_diffs)
+
+        # pNN50: Percentage of successive differences > 50ms
+        nn50_count = np.sum(np.abs(successive_diffs) > 50)
+        results['pnn50'] = (nn50_count / len(successive_diffs)) * 100
+    else:
+        results['rmssd'] = np.nan
+        results['sdsd'] = np.nan
+        results['pnn50'] = np.nan
+
+    return results
+
+
+def _compute_hrv_from_heart_rate(hr_data: pd.DataFrame) -> Dict[str, float]:
+    """
+    Computes HRV approximations from heart rate data.
+
+    When RR intervals are not available, approximates HRV metrics from HR.
+    Note: This is less accurate than true RR interval-based HRV.
+
+    Args:
+        hr_data: DataFrame with 'hr' column (heart rate in bpm)
+
+    Returns:
+        Dictionary of approximate HRV features
+    """
+    results = {}
+
+    if hr_data.empty or 'hr' not in hr_data.columns:
+        return {
+            'hr_mean': np.nan,
+            'hr_std': np.nan,
+            'hr_cv': np.nan,
+            'hr_range': np.nan
+        }
+
+    hr = hr_data['hr'].dropna()
+
+    if len(hr) < 2:
+        return {
+            'hr_mean': np.nan,
+            'hr_std': np.nan,
+            'hr_cv': np.nan,
+            'hr_range': np.nan
+        }
+
+    # Basic HR statistics
+    results['hr_mean'] = hr.mean()
+    results['hr_std'] = hr.std()
+
+    # Coefficient of variation
+    if results['hr_mean'] > 0:
+        results['hr_cv'] = (results['hr_std'] / results['hr_mean']) * 100
+    else:
+        results['hr_cv'] = np.nan
+
+    # Heart rate range
+    results['hr_range'] = hr.max() - hr.min()
+
+    return results
+
+
+# --- Movement/Activity Feature Functions ---
+
+def _compute_movement_features(accel_data: pd.DataFrame) -> Dict[str, float]:
+    """
+    Computes movement and activity features from accelerometer data.
+
+    Args:
+        accel_data: DataFrame with 'x', 'y', 'z' acceleration columns
+
+    Returns:
+        Dictionary of movement features
+    """
+    results = {}
+
+    required_cols = ['x', 'y', 'z']
+    if accel_data.empty or not all(col in accel_data.columns for col in required_cols):
+        # Return NaN for all features if data is missing
+        return {
+            'magnitude_mean': np.nan,
+            'magnitude_std': np.nan,
+            'magnitude_max': np.nan,
+            'activity_count': np.nan,
+            'stillness_ratio': np.nan,
+            'x_std': np.nan,
+            'y_std': np.nan,
+            'z_std': np.nan
+        }
+
+    # Drop NaN values
+    accel_clean = accel_data[required_cols].dropna()
+
+    if len(accel_clean) < 2:
+        return {
+            'magnitude_mean': np.nan,
+            'magnitude_std': np.nan,
+            'magnitude_max': np.nan,
+            'activity_count': np.nan,
+            'stillness_ratio': np.nan,
+            'x_std': np.nan,
+            'y_std': np.nan,
+            'z_std': np.nan
+        }
+
+    # Calculate acceleration magnitude: sqrt(x^2 + y^2 + z^2)
+    magnitude = np.sqrt(
+        accel_clean['x']**2 +
+        accel_clean['y']**2 +
+        accel_clean['z']**2
+    )
+
+    # Magnitude statistics
+    results['magnitude_mean'] = magnitude.mean()
+    results['magnitude_std'] = magnitude.std()
+    results['magnitude_max'] = magnitude.max()
+
+    # Activity count: number of samples above threshold (indicating movement)
+    # Threshold: mean + 0.5*std (adaptive to signal characteristics)
+    threshold = results['magnitude_mean'] + 0.5 * results['magnitude_std']
+    activity_samples = (magnitude > threshold).sum()
+    results['activity_count'] = activity_samples
+
+    # Stillness ratio: percentage of samples below threshold
+    results['stillness_ratio'] = ((len(magnitude) - activity_samples) / len(magnitude)) * 100
+
+    # Individual axis variability (important for sleep posture detection)
+    results['x_std'] = accel_clean['x'].std()
+    results['y_std'] = accel_clean['y'].std()
+    results['z_std'] = accel_clean['z'].std()
+
+    return results
+
+
+# --- Correlation Feature Functions ---
+
+def _compute_correlation_features(
+    signal1_data: pd.DataFrame,
+    signal2_data: pd.DataFrame,
+    signal1_col: str,
+    signal2_col: str,
+    method: str = 'pearson'
+) -> Dict[str, float]:
+    """
+    Computes correlation between two signal columns.
+
+    Args:
+        signal1_data: DataFrame containing first signal
+        signal2_data: DataFrame containing second signal
+        signal1_col: Column name in signal1_data to correlate
+        signal2_col: Column name in signal2_data to correlate
+        method: Correlation method ('pearson', 'spearman', 'kendall')
+
+    Returns:
+        Dictionary with correlation coefficient
+    """
+    results = {}
+
+    # Check if columns exist
+    if signal1_col not in signal1_data.columns or signal2_col not in signal2_data.columns:
+        return {f'{method}_corr': np.nan}
+
+    # Extract columns and align by index
+    s1 = signal1_data[signal1_col]
+    s2 = signal2_data[signal2_col]
+
+    # Find common indices
+    common_idx = s1.index.intersection(s2.index)
+
+    if len(common_idx) < 3:  # Need at least 3 points for meaningful correlation
+        return {f'{method}_corr': np.nan}
+
+    # Align and drop NaNs
+    s1_aligned = s1.loc[common_idx].dropna()
+    s2_aligned = s2.loc[common_idx].dropna()
+
+    # Further align after dropna
+    final_common_idx = s1_aligned.index.intersection(s2_aligned.index)
+
+    if len(final_common_idx) < 3:
+        return {f'{method}_corr': np.nan}
+
+    s1_final = s1_aligned.loc[final_common_idx]
+    s2_final = s2_aligned.loc[final_common_idx]
+
+    try:
+        # Compute correlation
+        corr_value = s1_final.corr(s2_final, method=method)
+        results[f'{method}_corr'] = corr_value
+    except Exception as e:
+        logger.warning(f"Error computing {method} correlation: {e}")
+        results[f'{method}_corr'] = np.nan
+
+    return results
+
+
 # --- Add other core feature functions here (e.g., _compute_correlation, _compute_hrv) ---
 
 
@@ -664,6 +900,532 @@ def compute_sleep_stage_mode(
         "source_signal_keys": [s.metadata.name for s in signals],
         "source_signal_ids": [s.metadata.signal_id for s in signals],
         "operations": [OperationInfo("compute_sleep_stage_mode", parameters)]
+    }
+
+    return Feature(data=feature_df, metadata=metadata_dict)
+
+
+# --- HRV Feature Extraction Wrapper ---
+
+@cache_features
+def compute_hrv_features(
+    signals: List[TimeSeriesSignal],
+    epoch_grid_index: pd.DatetimeIndex,
+    parameters: Dict[str, Any],
+    global_window_length: pd.Timedelta,
+    global_step_size: pd.Timedelta
+) -> Feature:
+    """
+    Computes Heart Rate Variability (HRV) features over epochs.
+
+    Supports both RR interval signals and heart rate signals (with approximations).
+
+    Args:
+        signals: List of TimeSeriesSignal objects (heart rate or RR interval signals)
+        epoch_grid_index: Pre-calculated DatetimeIndex defining epoch start times
+        parameters: Dictionary containing:
+            - window_length (str, optional): Duration of each epoch
+            - hrv_metrics (List[str], optional): Specific HRV metrics to compute.
+              Options: ['sdnn', 'rmssd', 'pnn50', 'sdsd', 'hr_cv'] or 'all'
+              Default: ['sdnn', 'rmssd', 'pnn50']
+            - use_rr_intervals (bool, optional): If True, expects RR interval data.
+              If False, uses heart rate. Default: False
+        global_window_length: Global window length from collection settings
+        global_step_size: Global step size from collection settings
+
+    Returns:
+        Feature object containing computed HRV features
+
+    Raises:
+        ValueError: If input signals are invalid or parameters are incorrect
+    """
+    if not signals:
+        raise ValueError("No input signals provided for HRV feature extraction.")
+    if not all(isinstance(s, TimeSeriesSignal) for s in signals):
+        raise ValueError("All input signals must be TimeSeriesSignal instances.")
+    if epoch_grid_index is None or epoch_grid_index.empty:
+        raise ValueError("A valid epoch_grid_index must be provided.")
+
+    # Parse parameters
+    window_length_str = parameters.get('window_length')
+    if window_length_str:
+        effective_window_length = pd.Timedelta(window_length_str)
+        logger.info(f"Using step-specific window_length override: {effective_window_length}")
+    else:
+        effective_window_length = global_window_length
+        logger.info(f"Using global collection window_length: {effective_window_length}")
+
+    if effective_window_length <= pd.Timedelta(0):
+        raise ValueError("Effective window_length must be positive.")
+
+    use_rr_intervals = parameters.get('use_rr_intervals', False)
+    hrv_metrics = parameters.get('hrv_metrics', ['sdnn', 'rmssd', 'pnn50'])
+
+    if hrv_metrics == 'all':
+        if use_rr_intervals:
+            hrv_metrics = ['sdnn', 'rmssd', 'pnn50', 'sdsd', 'rr_mean', 'rr_std']
+        else:
+            hrv_metrics = ['hr_mean', 'hr_std', 'hr_cv', 'hr_range']
+
+    epoch_step_size = global_step_size
+
+    logger.info(f"Computing HRV features: window={effective_window_length}, step={epoch_step_size}, metrics={hrv_metrics}")
+
+    # Handle empty epoch grid
+    if epoch_grid_index.empty:
+        logger.warning("Provided epoch_grid_index is empty. Returning empty Feature object.")
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(s.metadata.name, metric) for s in signals for metric in hrv_metrics],
+            names=['signal_key', 'feature']
+        )
+        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
+        empty_data.index.name = 'timestamp'
+
+        metadata_dict = {
+            "epoch_window_length": global_window_length,
+            "epoch_step_size": global_step_size,
+            "feature_names": hrv_metrics,
+            "feature_type": FeatureType.HRV,
+            "source_signal_keys": [s.metadata.name for s in signals],
+            "source_signal_ids": [s.metadata.signal_id for s in signals],
+            "operations": [OperationInfo("compute_hrv_features", parameters)]
+        }
+        return Feature(data=empty_data, metadata=metadata_dict)
+
+    # Feature calculation loop
+    all_epoch_results = []
+    processed_epochs = 0
+    skipped_epochs = 0
+    generated_feature_names = set()
+
+    for epoch_start in epoch_grid_index:
+        epoch_end = epoch_start + effective_window_length
+        epoch_features = {'epoch_start': epoch_start}
+        valid_epoch = True
+
+        for signal in signals:
+            signal_key = signal.metadata.name
+            try:
+                segment = signal.get_data()[epoch_start:epoch_end]
+
+                # Compute HRV features based on signal type
+                if use_rr_intervals:
+                    # Expect 'rr_interval' column
+                    if 'rr_interval' not in segment.columns:
+                        raise ValueError(f"Signal '{signal_key}' missing 'rr_interval' column")
+                    rr_data = segment['rr_interval'].dropna()
+                    hrv_results = _compute_hrv_time_domain(rr_data)
+                else:
+                    # Expect 'hr' column
+                    hrv_results = _compute_hrv_from_heart_rate(segment)
+
+                # Store results
+                for feature_name, value in hrv_results.items():
+                    if feature_name in hrv_metrics or 'all' in parameters.get('hrv_metrics', []):
+                        generated_feature_names.add(feature_name)
+                        epoch_features[(signal_key, feature_name)] = value
+
+            except Exception as e:
+                logger.warning(f"Error processing signal '{signal_key}' in epoch {epoch_start}: {e}")
+                valid_epoch = False
+                break
+
+        if valid_epoch:
+            all_epoch_results.append(epoch_features)
+            processed_epochs += 1
+        else:
+            skipped_epochs += 1
+
+    logger.info(f"HRV calculation complete. Processed epochs: {processed_epochs}, Skipped: {skipped_epochs}")
+
+    if not all_epoch_results:
+        logger.warning("No HRV features were successfully computed for any epoch.")
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(s.metadata.name, metric) for s in signals for metric in hrv_metrics],
+            names=['signal_key', 'feature']
+        )
+        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
+        empty_data.index.name = 'timestamp'
+
+        metadata_dict = {
+            "epoch_window_length": global_window_length,
+            "epoch_step_size": global_step_size,
+            "feature_names": list(generated_feature_names) if generated_feature_names else hrv_metrics,
+            "feature_type": FeatureType.HRV,
+            "source_signal_keys": [s.metadata.name for s in signals],
+            "source_signal_ids": [s.metadata.signal_id for s in signals],
+            "operations": [OperationInfo("compute_hrv_features", parameters)]
+        }
+        return Feature(data=empty_data, metadata=metadata_dict)
+
+    # Assemble DataFrame
+    feature_df = pd.DataFrame(all_epoch_results)
+    feature_df = feature_df.set_index('epoch_start')
+
+    if not feature_df.empty:
+        feature_df.columns = pd.MultiIndex.from_tuples(feature_df.columns, names=['signal_key', 'feature'])
+    else:
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(s.metadata.name, metric) for s in signals for metric in sorted(generated_feature_names)],
+            names=['signal_key', 'feature']
+        )
+        feature_df = pd.DataFrame(index=feature_df.index, columns=expected_multiindex_cols)
+
+    # Reindex to match epoch grid
+    feature_df = feature_df.reindex(epoch_grid_index)
+    feature_df.index.name = 'timestamp'
+
+    # Create metadata
+    metadata_dict = {
+        "epoch_window_length": global_window_length,
+        "epoch_step_size": global_step_size,
+        "feature_names": sorted(list(generated_feature_names)),
+        "feature_type": FeatureType.HRV,
+        "source_signal_keys": [s.metadata.name for s in signals],
+        "source_signal_ids": [s.metadata.signal_id for s in signals],
+        "operations": [OperationInfo("compute_hrv_features", parameters)]
+    }
+
+    return Feature(data=feature_df, metadata=metadata_dict)
+
+
+# --- Movement Feature Extraction Wrapper ---
+
+@cache_features
+def compute_movement_features(
+    signals: List[TimeSeriesSignal],
+    epoch_grid_index: pd.DatetimeIndex,
+    parameters: Dict[str, Any],
+    global_window_length: pd.Timedelta,
+    global_step_size: pd.Timedelta
+) -> Feature:
+    """
+    Computes movement and activity features from accelerometer data over epochs.
+
+    Args:
+        signals: List of TimeSeriesSignal objects (accelerometer signals with x, y, z)
+        epoch_grid_index: Pre-calculated DatetimeIndex defining epoch start times
+        parameters: Dictionary containing:
+            - window_length (str, optional): Duration of each epoch
+            - movement_metrics (List[str], optional): Specific metrics to compute
+              Options: ['magnitude_mean', 'magnitude_std', 'magnitude_max',
+                       'activity_count', 'stillness_ratio', 'x_std', 'y_std', 'z_std']
+              or 'all'. Default: 'all'
+        global_window_length: Global window length from collection settings
+        global_step_size: Global step size from collection settings
+
+    Returns:
+        Feature object containing computed movement features
+
+    Raises:
+        ValueError: If input signals are invalid or parameters are incorrect
+    """
+    if not signals:
+        raise ValueError("No input signals provided for movement feature extraction.")
+    if not all(isinstance(s, TimeSeriesSignal) for s in signals):
+        raise ValueError("All input signals must be TimeSeriesSignal instances.")
+    if epoch_grid_index is None or epoch_grid_index.empty:
+        raise ValueError("A valid epoch_grid_index must be provided.")
+
+    # Parse parameters
+    window_length_str = parameters.get('window_length')
+    if window_length_str:
+        effective_window_length = pd.Timedelta(window_length_str)
+        logger.info(f"Using step-specific window_length override: {effective_window_length}")
+    else:
+        effective_window_length = global_window_length
+        logger.info(f"Using global collection window_length: {effective_window_length}")
+
+    if effective_window_length <= pd.Timedelta(0):
+        raise ValueError("Effective window_length must be positive.")
+
+    movement_metrics = parameters.get('movement_metrics', 'all')
+    if movement_metrics == 'all':
+        movement_metrics = ['magnitude_mean', 'magnitude_std', 'magnitude_max',
+                           'activity_count', 'stillness_ratio', 'x_std', 'y_std', 'z_std']
+
+    epoch_step_size = global_step_size
+
+    logger.info(f"Computing movement features: window={effective_window_length}, step={epoch_step_size}, metrics={movement_metrics}")
+
+    # Handle empty epoch grid
+    if epoch_grid_index.empty:
+        logger.warning("Provided epoch_grid_index is empty. Returning empty Feature object.")
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(s.metadata.name, metric) for s in signals for metric in movement_metrics],
+            names=['signal_key', 'feature']
+        )
+        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
+        empty_data.index.name = 'timestamp'
+
+        metadata_dict = {
+            "epoch_window_length": global_window_length,
+            "epoch_step_size": global_step_size,
+            "feature_names": movement_metrics,
+            "feature_type": FeatureType.MOVEMENT,
+            "source_signal_keys": [s.metadata.name for s in signals],
+            "source_signal_ids": [s.metadata.signal_id for s in signals],
+            "operations": [OperationInfo("compute_movement_features", parameters)]
+        }
+        return Feature(data=empty_data, metadata=metadata_dict)
+
+    # Feature calculation loop
+    all_epoch_results = []
+    processed_epochs = 0
+    skipped_epochs = 0
+    generated_feature_names = set()
+
+    for epoch_start in epoch_grid_index:
+        epoch_end = epoch_start + effective_window_length
+        epoch_features = {'epoch_start': epoch_start}
+        valid_epoch = True
+
+        for signal in signals:
+            signal_key = signal.metadata.name
+            try:
+                segment = signal.get_data()[epoch_start:epoch_end]
+
+                # Compute movement features
+                movement_results = _compute_movement_features(segment)
+
+                # Store results
+                for feature_name, value in movement_results.items():
+                    if feature_name in movement_metrics:
+                        generated_feature_names.add(feature_name)
+                        epoch_features[(signal_key, feature_name)] = value
+
+            except Exception as e:
+                logger.warning(f"Error processing signal '{signal_key}' in epoch {epoch_start}: {e}")
+                valid_epoch = False
+                break
+
+        if valid_epoch:
+            all_epoch_results.append(epoch_features)
+            processed_epochs += 1
+        else:
+            skipped_epochs += 1
+
+    logger.info(f"Movement calculation complete. Processed epochs: {processed_epochs}, Skipped: {skipped_epochs}")
+
+    if not all_epoch_results:
+        logger.warning("No movement features were successfully computed for any epoch.")
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(s.metadata.name, metric) for s in signals for metric in movement_metrics],
+            names=['signal_key', 'feature']
+        )
+        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
+        empty_data.index.name = 'timestamp'
+
+        metadata_dict = {
+            "epoch_window_length": global_window_length,
+            "epoch_step_size": global_step_size,
+            "feature_names": list(generated_feature_names) if generated_feature_names else movement_metrics,
+            "feature_type": FeatureType.MOVEMENT,
+            "source_signal_keys": [s.metadata.name for s in signals],
+            "source_signal_ids": [s.metadata.signal_id for s in signals],
+            "operations": [OperationInfo("compute_movement_features", parameters)]
+        }
+        return Feature(data=empty_data, metadata=metadata_dict)
+
+    # Assemble DataFrame
+    feature_df = pd.DataFrame(all_epoch_results)
+    feature_df = feature_df.set_index('epoch_start')
+
+    if not feature_df.empty:
+        feature_df.columns = pd.MultiIndex.from_tuples(feature_df.columns, names=['signal_key', 'feature'])
+    else:
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(s.metadata.name, metric) for s in signals for metric in sorted(generated_feature_names)],
+            names=['signal_key', 'feature']
+        )
+        feature_df = pd.DataFrame(index=feature_df.index, columns=expected_multiindex_cols)
+
+    # Reindex to match epoch grid
+    feature_df = feature_df.reindex(epoch_grid_index)
+    feature_df.index.name = 'timestamp'
+
+    # Create metadata
+    metadata_dict = {
+        "epoch_window_length": global_window_length,
+        "epoch_step_size": global_step_size,
+        "feature_names": sorted(list(generated_feature_names)),
+        "feature_type": FeatureType.MOVEMENT,
+        "source_signal_keys": [s.metadata.name for s in signals],
+        "source_signal_ids": [s.metadata.signal_id for s in signals],
+        "operations": [OperationInfo("compute_movement_features", parameters)]
+    }
+
+    return Feature(data=feature_df, metadata=metadata_dict)
+
+
+# --- Correlation Feature Extraction Wrapper ---
+
+@cache_features
+def compute_correlation_features(
+    signals: List[TimeSeriesSignal],
+    epoch_grid_index: pd.DatetimeIndex,
+    parameters: Dict[str, Any],
+    global_window_length: pd.Timedelta,
+    global_step_size: pd.Timedelta
+) -> Feature:
+    """
+    Computes correlation between two signals over epochs.
+
+    Args:
+        signals: List of exactly 2 TimeSeriesSignal objects
+        epoch_grid_index: Pre-calculated DatetimeIndex defining epoch start times
+        parameters: Dictionary containing:
+            - window_length (str, optional): Duration of each epoch
+            - signal1_column (str): Column name from first signal to correlate
+            - signal2_column (str): Column name from second signal to correlate
+            - method (str, optional): Correlation method ('pearson', 'spearman', 'kendall')
+              Default: 'pearson'
+        global_window_length: Global window length from collection settings
+        global_step_size: Global step size from collection settings
+
+    Returns:
+        Feature object containing computed correlation
+
+    Raises:
+        ValueError: If number of signals != 2 or parameters are invalid
+    """
+    if len(signals) != 2:
+        raise ValueError(f"Correlation requires exactly 2 signals, got {len(signals)}")
+    if not all(isinstance(s, TimeSeriesSignal) for s in signals):
+        raise ValueError("All input signals must be TimeSeriesSignal instances.")
+    if epoch_grid_index is None or epoch_grid_index.empty:
+        raise ValueError("A valid epoch_grid_index must be provided.")
+
+    # Parse parameters
+    window_length_str = parameters.get('window_length')
+    if window_length_str:
+        effective_window_length = pd.Timedelta(window_length_str)
+        logger.info(f"Using step-specific window_length override: {effective_window_length}")
+    else:
+        effective_window_length = global_window_length
+        logger.info(f"Using global collection window_length: {effective_window_length}")
+
+    if effective_window_length <= pd.Timedelta(0):
+        raise ValueError("Effective window_length must be positive.")
+
+    signal1_column = parameters.get('signal1_column')
+    signal2_column = parameters.get('signal2_column')
+    method = parameters.get('method', 'pearson')
+
+    if not signal1_column or not signal2_column:
+        raise ValueError("Both 'signal1_column' and 'signal2_column' must be specified")
+
+    epoch_step_size = global_step_size
+
+    logger.info(f"Computing correlation: {signal1_column} vs {signal2_column}, method={method}, window={effective_window_length}")
+
+    # Handle empty epoch grid
+    if epoch_grid_index.empty:
+        logger.warning("Provided epoch_grid_index is empty. Returning empty Feature object.")
+        feature_name = f'{method}_corr'
+        signal_pair_name = f"{signals[0].metadata.name}_vs_{signals[1].metadata.name}"
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(signal_pair_name, feature_name)],
+            names=['signal_pair', 'feature']
+        )
+        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
+        empty_data.index.name = 'timestamp'
+
+        metadata_dict = {
+            "epoch_window_length": global_window_length,
+            "epoch_step_size": global_step_size,
+            "feature_names": [feature_name],
+            "feature_type": FeatureType.CORRELATION,
+            "source_signal_keys": [s.metadata.name for s in signals],
+            "source_signal_ids": [s.metadata.signal_id for s in signals],
+            "operations": [OperationInfo("compute_correlation_features", parameters)]
+        }
+        return Feature(data=empty_data, metadata=metadata_dict)
+
+    # Feature calculation loop
+    all_epoch_results = []
+    processed_epochs = 0
+    skipped_epochs = 0
+
+    signal1, signal2 = signals[0], signals[1]
+    signal_pair_name = f"{signal1.metadata.name}_vs_{signal2.metadata.name}"
+
+    for epoch_start in epoch_grid_index:
+        epoch_end = epoch_start + effective_window_length
+        epoch_features = {'epoch_start': epoch_start}
+
+        try:
+            segment1 = signal1.get_data()[epoch_start:epoch_end]
+            segment2 = signal2.get_data()[epoch_start:epoch_end]
+
+            # Compute correlation
+            corr_results = _compute_correlation_features(
+                segment1, segment2,
+                signal1_column, signal2_column,
+                method
+            )
+
+            # Store results
+            for feature_name, value in corr_results.items():
+                epoch_features[(signal_pair_name, feature_name)] = value
+
+            all_epoch_results.append(epoch_features)
+            processed_epochs += 1
+
+        except Exception as e:
+            logger.warning(f"Error in epoch {epoch_start}: {e}")
+            skipped_epochs += 1
+
+    logger.info(f"Correlation calculation complete. Processed epochs: {processed_epochs}, Skipped: {skipped_epochs}")
+
+    feature_name = f'{method}_corr'
+
+    if not all_epoch_results:
+        logger.warning("No correlation features were successfully computed for any epoch.")
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(signal_pair_name, feature_name)],
+            names=['signal_pair', 'feature']
+        )
+        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
+        empty_data.index.name = 'timestamp'
+
+        metadata_dict = {
+            "epoch_window_length": global_window_length,
+            "epoch_step_size": global_step_size,
+            "feature_names": [feature_name],
+            "feature_type": FeatureType.CORRELATION,
+            "source_signal_keys": [s.metadata.name for s in signals],
+            "source_signal_ids": [s.metadata.signal_id for s in signals],
+            "operations": [OperationInfo("compute_correlation_features", parameters)]
+        }
+        return Feature(data=empty_data, metadata=metadata_dict)
+
+    # Assemble DataFrame
+    feature_df = pd.DataFrame(all_epoch_results)
+    feature_df = feature_df.set_index('epoch_start')
+
+    if not feature_df.empty:
+        feature_df.columns = pd.MultiIndex.from_tuples(feature_df.columns, names=['signal_pair', 'feature'])
+    else:
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(signal_pair_name, feature_name)],
+            names=['signal_pair', 'feature']
+        )
+        feature_df = pd.DataFrame(index=feature_df.index, columns=expected_multiindex_cols)
+
+    # Reindex to match epoch grid
+    feature_df = feature_df.reindex(epoch_grid_index)
+    feature_df.index.name = 'timestamp'
+
+    # Create metadata
+    metadata_dict = {
+        "epoch_window_length": global_window_length,
+        "epoch_step_size": global_step_size,
+        "feature_names": [feature_name],
+        "feature_type": FeatureType.CORRELATION,
+        "source_signal_keys": [s.metadata.name for s in signals],
+        "source_signal_ids": [s.metadata.signal_id for s in signals],
+        "operations": [OperationInfo("compute_correlation_features", parameters)]
     }
 
     return Feature(data=feature_df, metadata=metadata_dict)

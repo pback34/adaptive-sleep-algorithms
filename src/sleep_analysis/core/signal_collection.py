@@ -1938,16 +1938,24 @@ for _method_name, _method_obj in inspect.getmembers(SignalCollection, predicate=
 SignalCollection.multi_signal_registry = {} # Reset registry before population
 try:
     # Import feature extraction functions
-    from ..operations.feature_extraction import compute_feature_statistics, compute_sleep_stage_mode # Added compute_sleep_stage_mode
+    from ..operations.feature_extraction import (
+        compute_feature_statistics,
+        compute_sleep_stage_mode,
+        compute_hrv_features,
+        compute_movement_features,
+        compute_correlation_features
+    )
     # Import the Feature class (output type for these operations)
     from ..features.feature import Feature
 
     SignalCollection.multi_signal_registry.update({
         "feature_statistics": (compute_feature_statistics, Feature),
-        "compute_sleep_stage_mode": (compute_sleep_stage_mode, Feature), # Register the new operation
-        # "feature_correlation": (compute_feature_correlation, Feature), # Uncomment when implemented
+        "compute_sleep_stage_mode": (compute_sleep_stage_mode, Feature),
+        "compute_hrv_features": (compute_hrv_features, Feature),
+        "compute_movement_features": (compute_movement_features, Feature),
+        "compute_correlation_features": (compute_correlation_features, Feature),
     })
-    logger.debug("Registered multi-signal feature operations.")
+    logger.debug("Registered multi-signal feature operations (statistics, sleep_stage_mode, hrv, movement, correlation).")
 except ImportError as e:
     logger.warning(f"Could not import or register feature operations: {e}")
 
