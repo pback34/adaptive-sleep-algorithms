@@ -8,7 +8,6 @@ specified in YAML/JSON format, including import, processing steps, and export.
 import os
 import importlib
 import warnings
-import os # Added os import
 import re # Added re import
 from typing import Dict, Any, List, Optional, Type, Union, Callable
 
@@ -28,7 +27,7 @@ try:
     import pytz # Optional: for validation
 except ImportError:
     tzlocal = None
-    # pytz = None # Keep commented if only used for optional validation
+    pytz = None
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
@@ -60,14 +59,25 @@ class WorkflowExecutor:
         self.target_timezone: str = "UTC" # Default target timezone
 
     def _resolve_target_timezone(self, target_tz_config: Optional[str]) -> str:
-        """Resolves the target timezone based on config, system, or fallback."""
+        """
+        Resolves the target timezone based on config, system, or fallback.
+
+        Args:
+            target_tz_config: Target timezone configuration string. Can be:
+                - None or "system"/"local": Use system timezone
+                - Explicit timezone string: Use that timezone (e.g., "America/New_York")
+
+        Returns:
+            Resolved timezone string. Falls back to "UTC" if system timezone cannot be determined.
+
+        Raises:
+            This method does not raise exceptions. If timezone detection fails,
+            it logs a warning and falls back to UTC.
+        """
         if target_tz_config is None or target_tz_config.lower() in ["system", "local"]:
             if tzlocal:
                 try:
                     system_tz = tzlocal.get_localzone_name()
-                    # Optional: Validate system_tz before returning using pytz
-                    # if pytz:
-                    #     pytz.timezone(system_tz)
                     logger.info(f"Using system local timezone: {system_tz}")
                     return system_tz
                 except Exception as e:
@@ -77,13 +87,6 @@ class WorkflowExecutor:
                 logger.warning("tzlocal library not found. Cannot detect system timezone. Falling back to UTC.")
                 return "UTC"
         else:
-            # Optional: Validate the provided timezone string using pytz
-            # if pytz:
-            #     try:
-            #         pytz.timezone(target_tz_config)
-            #     except pytz.UnknownTimeZoneError:
-            #         logger.error(f"Invalid target_timezone specified: '{target_tz_config}'")
-            #         raise ValueError(f"Invalid target_timezone specified: '{target_tz_config}'")
             logger.info(f"Using specified target timezone: {target_tz_config}")
             return target_tz_config
 

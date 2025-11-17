@@ -19,8 +19,24 @@ from ..signals.time_series_signal import TimeSeriesSignal
 # Import Feature and FeatureMetadata from their correct locations
 from ..features.feature import Feature
 from ..core.metadata import FeatureMetadata, OperationInfo, FeatureType # Import FeatureType
+from ..core import validation  # Import validation utilities
 
 logger = logging.getLogger(__name__)
+
+# --- Constants ---
+
+# Length of cache key hash (first N characters of MD5 hexdigest)
+# Used to create a compact yet unique identifier for cached features
+CACHE_HASH_LENGTH = 16
+
+# NN50 threshold in milliseconds for HRV features
+# NN50 is the number of pairs of successive RR intervals that differ by more than 50ms
+NN50_THRESHOLD_MS = 50
+
+# Activity threshold multiplier for movement detection
+# Threshold = mean + (multiplier * std_dev) of acceleration magnitude
+# Higher values make detection more selective (fewer movements detected)
+ACTIVITY_THRESHOLD_MULTIPLIER = 0.5
 
 # Global cache for feature extraction results
 _FEATURE_CACHE: Dict[str, Feature] = {}
@@ -133,7 +149,7 @@ def cache_features(func: Callable) -> Callable:
         # Using hash of index values for efficiency
         epoch_grid_hash = hashlib.md5(
             str(epoch_grid_index.values).encode()
-        ).hexdigest()[:16]  # Use first 16 chars
+        ).hexdigest()[:CACHE_HASH_LENGTH]
 
         # Compute cache key
         cache_key = _compute_cache_key(
@@ -160,6 +176,74 @@ def cache_features(func: Callable) -> Callable:
         return result
 
     return wrapper
+
+
+def _handle_empty_feature_data(
+    signals: List[TimeSeriesSignal],
+    feature_names: List[str],
+    feature_type: FeatureType,
+    operation_name: str,
+    parameters: Dict[str, Any],
+    global_window_length: str,
+    global_step_size: str,
+    column_index_name: str = 'signal_key'
+) -> Feature:
+    """
+    Create an empty Feature object for when epoch_grid_index is empty.
+
+    This utility function centralizes the empty DataFrame handling pattern
+    that is duplicated across multiple feature extraction operations.
+
+    Args:
+        signals: List of input TimeSeriesSignal objects.
+        feature_names: List of feature names to create columns for.
+        feature_type: Type of feature being extracted (e.g., FeatureType.HRV).
+        operation_name: Name of the operation (for metadata).
+        parameters: Operation parameters (for metadata).
+        global_window_length: Global window length setting.
+        global_step_size: Global step size setting.
+        column_index_name: Name for the first level of MultiIndex columns
+                          (default 'signal_key', can be 'signal_pair' for correlation).
+
+    Returns:
+        Empty Feature object with appropriate metadata and column structure.
+    """
+    logger.warning(f"Empty epoch_grid_index in {operation_name}. Returning empty Feature object.")
+
+    # Create expected MultiIndex columns
+    if column_index_name == 'signal_pair':
+        # Special case for correlation features
+        signal_pair_name = f"{signals[0].metadata.name}_vs_{signals[1].metadata.name}"
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(signal_pair_name, feature) for feature in feature_names],
+            names=[column_index_name, 'feature']
+        )
+    else:
+        # Standard case for most features
+        expected_multiindex_cols = pd.MultiIndex.from_tuples(
+            [(s.metadata.name, feature) for s in signals for feature in feature_names],
+            names=[column_index_name, 'feature']
+        )
+
+    # Create empty DataFrame with proper structure
+    empty_data = pd.DataFrame(
+        index=pd.DatetimeIndex([]),
+        columns=expected_multiindex_cols
+    )
+    empty_data.index.name = 'timestamp'
+
+    # Create metadata dictionary
+    metadata_dict = {
+        "epoch_window_length": global_window_length,
+        "epoch_step_size": global_step_size,
+        "feature_names": feature_names,
+        "feature_type": feature_type,
+        "source_signal_keys": [s.metadata.name for s in signals],
+        "source_signal_ids": [s.metadata.signal_id for s in signals],
+        "operations": [OperationInfo(operation_name, parameters)]
+    }
+
+    return Feature(data=empty_data, metadata=metadata_dict)
 
 
 # --- Core Feature Calculation Functions (Operating on single epoch data) ---
@@ -251,8 +335,8 @@ def _compute_hrv_time_domain(rr_intervals: pd.Series) -> Dict[str, float]:
         # SDSD: Standard deviation of successive differences
         results['sdsd'] = np.std(successive_diffs)
 
-        # pNN50: Percentage of successive differences > 50ms
-        nn50_count = np.sum(np.abs(successive_diffs) > 50)
+        # pNN50: Percentage of successive differences > NN50_THRESHOLD_MS
+        nn50_count = np.sum(np.abs(successive_diffs) > NN50_THRESHOLD_MS)
         results['pnn50'] = (nn50_count / len(successive_diffs)) * 100
     else:
         results['rmssd'] = np.nan
@@ -367,8 +451,8 @@ def _compute_movement_features(accel_data: pd.DataFrame) -> Dict[str, float]:
     results['magnitude_max'] = magnitude.max()
 
     # Activity count: number of samples above threshold (indicating movement)
-    # Threshold: mean + 0.5*std (adaptive to signal characteristics)
-    threshold = results['magnitude_mean'] + 0.5 * results['magnitude_std']
+    # Threshold: mean + ACTIVITY_THRESHOLD_MULTIPLIER*std (adaptive to signal characteristics)
+    threshold = results['magnitude_mean'] + ACTIVITY_THRESHOLD_MULTIPLIER * results['magnitude_std']
     activity_samples = (magnitude > threshold).sum()
     results['activity_count'] = activity_samples
 
@@ -484,6 +568,52 @@ def compute_feature_statistics(
         ValueError: If input signals are invalid, epoch_grid_index is missing/empty,
                     or required parameters are missing/invalid.
         RuntimeError: If feature calculation fails.
+
+    Example (Workflow YAML):
+        ```yaml
+        # Extract basic statistics from heart rate signal
+        steps:
+          - type: collection
+            operation: "generate_epoch_grid"
+            parameters: {}
+
+          - type: multi_signal
+            operation: "feature_statistics"
+            inputs: ["hr"]  # Base name matches hr_0, hr_1, etc.
+            parameters:
+              aggregations: ["mean", "std", "min", "max"]
+            output: "hr_stats"
+        ```
+
+    Example (Python API):
+        ```python
+        from sleep_analysis.core.signal_collection import SignalCollection
+        from sleep_analysis.operations.feature_extraction import compute_feature_statistics
+        import pandas as pd
+
+        # Assuming collection has signals and epoch grid
+        collection = SignalCollection()
+        # ... import signals ...
+        collection.generate_epoch_grid()
+
+        # Get signals
+        hr_signals = [collection.get_signal("hr_0")]
+
+        # Compute features
+        features = compute_feature_statistics(
+            signals=hr_signals,
+            epoch_grid_index=collection.epoch_grid_index,
+            parameters={
+                "aggregations": ["mean", "std", "min", "max"]
+            },
+            global_window_length=pd.Timedelta("30s"),
+            global_step_size=pd.Timedelta("30s")
+        )
+
+        # Access feature data
+        print(features.data.head())
+        # Output: DataFrame with columns like hr_mean, hr_std, hr_min, hr_max
+        ```
     """
     if not signals:
         raise ValueError("No input signals provided for feature statistics.")
@@ -777,25 +907,15 @@ def compute_sleep_stage_mode(
 
     # --- Handle Empty Epoch Grid ---
     if epoch_grid_index.empty:
-        logger.warning("Provided epoch_grid_index is empty. Returning empty Feature object.")
-        # Create expected MultiIndex columns for the empty DataFrame
-        expected_multiindex_cols = pd.MultiIndex.from_tuples(
-            [(s.metadata.name, 'sleep_stage_mode') for s in signals],
-            names=['signal_key', 'feature']
+        return _handle_empty_feature_data(
+            signals=signals,
+            feature_names=['sleep_stage_mode'],
+            feature_type=FeatureType.CATEGORICAL_MODE,
+            operation_name="compute_sleep_stage_mode",
+            parameters=parameters,
+            global_window_length=global_window_length,
+            global_step_size=global_step_size
         )
-        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
-        empty_data.index.name = 'timestamp'
-
-        metadata_dict = {
-            "epoch_window_length": global_window_length,
-            "epoch_step_size": global_step_size,
-            "feature_names": ['sleep_stage_mode'],
-            "feature_type": FeatureType.CATEGORICAL_MODE, # Use new type
-            "source_signal_keys": [s.metadata.name for s in signals],
-            "source_signal_ids": [s.metadata.signal_id for s in signals],
-            "operations": [OperationInfo("compute_sleep_stage_mode", parameters)]
-        }
-        return Feature(data=empty_data, metadata=metadata_dict)
 
     # --- Feature Calculation Loop ---
     all_epoch_results = []
@@ -939,12 +1059,10 @@ def compute_hrv_features(
     Raises:
         ValueError: If input signals are invalid or parameters are incorrect
     """
-    if not signals:
-        raise ValueError("No input signals provided for HRV feature extraction.")
-    if not all(isinstance(s, TimeSeriesSignal) for s in signals):
-        raise ValueError("All input signals must be TimeSeriesSignal instances.")
-    if epoch_grid_index is None or epoch_grid_index.empty:
-        raise ValueError("A valid epoch_grid_index must be provided.")
+    # Validate inputs using centralized validation utilities
+    validation.validate_not_empty(signals, "input signals for HRV feature extraction")
+    validation.validate_all_types(signals, TimeSeriesSignal, "input signals")
+    validation.validate_not_empty(epoch_grid_index, "epoch_grid_index")
 
     # Parse parameters
     window_length_str = parameters.get('window_length')
@@ -955,8 +1073,7 @@ def compute_hrv_features(
         effective_window_length = global_window_length
         logger.info(f"Using global collection window_length: {effective_window_length}")
 
-    if effective_window_length <= pd.Timedelta(0):
-        raise ValueError("Effective window_length must be positive.")
+    validation.validate_timedelta_positive(effective_window_length, "Effective window_length")
 
     use_rr_intervals = parameters.get('use_rr_intervals', False)
     hrv_metrics = parameters.get('hrv_metrics', ['sdnn', 'rmssd', 'pnn50'])
@@ -973,24 +1090,15 @@ def compute_hrv_features(
 
     # Handle empty epoch grid
     if epoch_grid_index.empty:
-        logger.warning("Provided epoch_grid_index is empty. Returning empty Feature object.")
-        expected_multiindex_cols = pd.MultiIndex.from_tuples(
-            [(s.metadata.name, metric) for s in signals for metric in hrv_metrics],
-            names=['signal_key', 'feature']
+        return _handle_empty_feature_data(
+            signals=signals,
+            feature_names=hrv_metrics,
+            feature_type=FeatureType.HRV,
+            operation_name="compute_hrv_features",
+            parameters=parameters,
+            global_window_length=global_window_length,
+            global_step_size=global_step_size
         )
-        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
-        empty_data.index.name = 'timestamp'
-
-        metadata_dict = {
-            "epoch_window_length": global_window_length,
-            "epoch_step_size": global_step_size,
-            "feature_names": hrv_metrics,
-            "feature_type": FeatureType.HRV,
-            "source_signal_keys": [s.metadata.name for s in signals],
-            "source_signal_ids": [s.metadata.signal_id for s in signals],
-            "operations": [OperationInfo("compute_hrv_features", parameters)]
-        }
-        return Feature(data=empty_data, metadata=metadata_dict)
 
     # Feature calculation loop
     all_epoch_results = []
@@ -1150,24 +1258,15 @@ def compute_movement_features(
 
     # Handle empty epoch grid
     if epoch_grid_index.empty:
-        logger.warning("Provided epoch_grid_index is empty. Returning empty Feature object.")
-        expected_multiindex_cols = pd.MultiIndex.from_tuples(
-            [(s.metadata.name, metric) for s in signals for metric in movement_metrics],
-            names=['signal_key', 'feature']
+        return _handle_empty_feature_data(
+            signals=signals,
+            feature_names=movement_metrics,
+            feature_type=FeatureType.MOVEMENT,
+            operation_name="compute_movement_features",
+            parameters=parameters,
+            global_window_length=global_window_length,
+            global_step_size=global_step_size
         )
-        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
-        empty_data.index.name = 'timestamp'
-
-        metadata_dict = {
-            "epoch_window_length": global_window_length,
-            "epoch_step_size": global_step_size,
-            "feature_names": movement_metrics,
-            "feature_type": FeatureType.MOVEMENT,
-            "source_signal_keys": [s.metadata.name for s in signals],
-            "source_signal_ids": [s.metadata.signal_id for s in signals],
-            "operations": [OperationInfo("compute_movement_features", parameters)]
-        }
-        return Feature(data=empty_data, metadata=metadata_dict)
 
     # Feature calculation loop
     all_epoch_results = []
@@ -1321,26 +1420,17 @@ def compute_correlation_features(
 
     # Handle empty epoch grid
     if epoch_grid_index.empty:
-        logger.warning("Provided epoch_grid_index is empty. Returning empty Feature object.")
         feature_name = f'{method}_corr'
-        signal_pair_name = f"{signals[0].metadata.name}_vs_{signals[1].metadata.name}"
-        expected_multiindex_cols = pd.MultiIndex.from_tuples(
-            [(signal_pair_name, feature_name)],
-            names=['signal_pair', 'feature']
+        return _handle_empty_feature_data(
+            signals=signals,
+            feature_names=[feature_name],
+            feature_type=FeatureType.CORRELATION,
+            operation_name="compute_correlation_features",
+            parameters=parameters,
+            global_window_length=global_window_length,
+            global_step_size=global_step_size,
+            column_index_name='signal_pair'
         )
-        empty_data = pd.DataFrame(index=pd.DatetimeIndex([]), columns=expected_multiindex_cols)
-        empty_data.index.name = 'timestamp'
-
-        metadata_dict = {
-            "epoch_window_length": global_window_length,
-            "epoch_step_size": global_step_size,
-            "feature_names": [feature_name],
-            "feature_type": FeatureType.CORRELATION,
-            "source_signal_keys": [s.metadata.name for s in signals],
-            "source_signal_ids": [s.metadata.signal_id for s in signals],
-            "operations": [OperationInfo("compute_correlation_features", parameters)]
-        }
-        return Feature(data=empty_data, metadata=metadata_dict)
 
     # Feature calculation loop
     all_epoch_results = []
