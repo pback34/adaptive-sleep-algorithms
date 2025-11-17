@@ -574,6 +574,10 @@ class TestWorkflowExecutor:
         feature_workflow_config = {
             "steps": [
                 {
+                    "type": "collection",
+                    "operation": "generate_epoch_grid"
+                },
+                {
                     "operation": "feature_mean",
                     "input": "ppg_0",
                     "output": "ppg_features",
