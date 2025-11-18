@@ -29,15 +29,28 @@ def _detect_test_environment() -> bool:
         True if running under pytest or unittest, False otherwise
     """
     import sys
+
+    # Check environment variable first (most reliable)
+    if os.environ.get('PYTEST_CURRENT_TEST'):
+        print(f"[PARALLEL] Test environment detected via PYTEST_CURRENT_TEST")
+        return True
+
     # Check for pytest
     if 'pytest' in sys.modules:
+        print(f"[PARALLEL] Test environment detected via pytest in sys.modules")
         return True
+
     # Check for unittest
     if 'unittest' in sys.modules:
+        print(f"[PARALLEL] Test environment detected via unittest in sys.modules")
         return True
-    # Check for PYTEST environment variable
-    if os.environ.get('PYTEST_CURRENT_TEST'):
+
+    # Check if running under pytest by inspecting argv
+    if any('pytest' in arg for arg in sys.argv):
+        print(f"[PARALLEL] Test environment detected via pytest in sys.argv")
         return True
+
+    print(f"[PARALLEL] No test environment detected")
     return False
 
 
@@ -71,10 +84,21 @@ class ParallelConfig:
             # Use more threads for I/O-bound tasks (2-4x CPU count)
             self.max_workers_io = min(32, cpu_count * 4)
 
+        print(f"[PARALLEL] ParallelConfig initializing: enabled={self.enabled}, workers_cpu={self.max_workers_cpu}, workers_io={self.max_workers_io}")
+
+        # Check for explicit disable via environment variable
+        if os.environ.get('DISABLE_PARALLEL') == '1':
+            print(f"[PARALLEL] DISABLE_PARALLEL=1 detected - forcing parallel processing off")
+            self.enabled = False
+
         # Auto-disable in test environments to prevent hanging
         if _detect_test_environment() and self.enabled:
+            print(f"[PARALLEL] Test environment detected - disabling parallel processing")
             logger.debug("Test environment detected - disabling parallel processing by default")
             self.enabled = False
+            print(f"[PARALLEL] Parallel processing now disabled: enabled={self.enabled}")
+        else:
+            print(f"[PARALLEL] Parallel processing status: enabled={self.enabled}")
 
 
 # Global configuration instance
