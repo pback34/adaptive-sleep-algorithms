@@ -101,8 +101,19 @@ classDiagram
         +_combined_feature_matrix: DataFrame
         +_alignment_params_calculated: bool
         +_epoch_grid_calculated: bool
+        +_repository: SignalRepository
+        +_query_service: SignalQueryService
+        +_metadata_manager: MetadataManager
+        +_alignment_grid_service: AlignmentGridService
+        +_epoch_grid_service: EpochGridService
+        +_alignment_executor: AlignmentExecutor
+        +_combination_service: SignalCombinationService
+        +_operation_executor: OperationExecutor
+        +_import_service: DataImportService
+        +_summary_reporter: SignalSummaryReporter
         +add_time_series_signal(key, signal)
         +add_feature(key, feature)
+        +add_signal_with_base_name(base_name, signal): str
         +get_time_series_signal(key): TimeSeriesSignal
         +get_feature(key): Feature
         +get_signal(key): Union[TimeSeriesSignal, Feature]
@@ -116,6 +127,8 @@ classDiagram
         +align_and_combine_signals()
         +combine_features(inputs: List[str], feature_index_config: List[str])
         +summarize_signals(): DataFrame
+        +import_signals_from_source(importer_instance, source, spec): List[TimeSeriesSignal]
+        +add_imported_signals(signals, base_name, start_index): List[str]
     }
     
     class CollectionMetadata {
@@ -142,7 +155,103 @@ classDiagram
         +set_name(metadata, name, key)
         +record_operation(metadata, operation_name, parameters)
     }
-    
+
+    %% Repository Layer
+    class SignalRepository {
+        +time_series_signals: Dict[str, TimeSeriesSignal]
+        +features: Dict[str, Feature]
+        +metadata_handler: MetadataHandler
+        +collection_timezone: str
+        +add_time_series_signal(key, signal)
+        +add_feature(key, feature)
+        +add_signal_with_base_name(base_name, signal): str
+        +get_time_series_signal(key): TimeSeriesSignal
+        +get_feature(key): Feature
+        +get_by_key(key): Union[TimeSeriesSignal, Feature]
+    }
+
+    %% Service Classes
+    class SignalQueryService {
+        +repository: SignalRepository
+        +get_signals(input_spec, signal_type, feature_type, criteria, base_name): List
+        +_process_enum_criteria(criteria_dict): Dict
+        +_matches_criteria(signal, criteria): bool
+    }
+
+    class MetadataManager {
+        +metadata_handler: MetadataHandler
+        +update_time_series_metadata(signal, metadata_spec)
+        +update_feature_metadata(feature, metadata_spec)
+        +validate_time_series_metadata_spec(index_fields)
+    }
+
+    class AlignmentGridService {
+        +repository: SignalRepository
+        +generate_alignment_grid(target_sample_rate): AlignmentGridState
+        +get_target_sample_rate(user_specified): float
+        +get_reference_time(target_period): pd.Timestamp
+    }
+
+    class EpochGridService {
+        +repository: SignalRepository
+        +collection_metadata: CollectionMetadata
+        +generate_epoch_grid(start_time, end_time): EpochGridState
+    }
+
+    class AlignmentExecutor {
+        +repository: SignalRepository
+        +alignment_grid_service: AlignmentGridService
+        +apply_grid_alignment(method, signals_to_align): int
+    }
+
+    class SignalCombinationService {
+        +metadata: CollectionMetadata
+        +alignment_state: AlignmentGridState
+        +epoch_state: EpochGridState
+        +combine_aligned_signals(time_series_signals): CombinationResult
+        +combine_features(features, inputs, feature_index_config): CombinationResult
+    }
+
+    class OperationExecutor {
+        +collection_op_registry: Dict
+        +multi_signal_registry: Dict
+        +epoch_state: EpochGridState
+        +apply_collection_operation(operation_name, collection_instance, **parameters): Any
+        +apply_multi_signal_operation(operation_name, input_signal_keys, parameters): Union[TimeSeriesSignal, Feature]
+    }
+
+    class DataImportService {
+        +add_time_series_signal: Callable
+        +import_signals_from_source(importer_instance, source, spec): List[TimeSeriesSignal]
+        +add_imported_signals(signals, base_name, start_index): List[str]
+    }
+
+    class SignalSummaryReporter {
+        +summarize_signals(time_series_signals, features, fields_to_include, print_summary): DataFrame
+        +get_summary_dataframe(): DataFrame
+    }
+
+    %% State Models
+    class AlignmentGridState {
+        +target_rate: float
+        +reference_time: pd.Timestamp
+        +grid_index: DatetimeIndex
+        +merge_tolerance: pd.Timedelta
+        +is_calculated: bool
+    }
+
+    class EpochGridState {
+        +epoch_grid_index: DatetimeIndex
+        +window_length: pd.Timedelta
+        +step_size: pd.Timedelta
+        +is_calculated: bool
+    }
+
+    class CombinationResult {
+        +dataframe: DataFrame
+        +params: Dict[str, Any]
+    }
+
     %% Workflow Execution
     class WorkflowExecutor {
         +container: SignalCollection
@@ -171,28 +280,78 @@ classDiagram
         +create_time_series_plot(signal: TimeSeriesSignal, **kwargs): Any
         +create_hypnogram_plot(signal: EEGSleepStageSignal, **kwargs): Any
     }
-    
-    %% Relationships
+
+    %% Algorithms
+    class SleepStagingAlgorithm {
+        <<abstract>>
+        +name: str
+        +version: str
+        +fit(features, labels)
+        +predict(features): Feature
+        +evaluate(features, labels): Dict
+    }
+
+    class RandomForestSleepStaging {
+        +model: RandomForestClassifier
+        +feature_columns: List[str]
+        +fit(features, labels)
+        +predict(features): Feature
+        +save(path)
+        +load(path)
+    }
+
+    %% Relationships - Inheritance
     SignalData <|-- TimeSeriesSignal
     TimeSeriesSignal <|-- HeartRateSignal
     TimeSeriesSignal <|-- AccelerometerSignal
     TimeSeriesSignal <|-- EEGSleepStageSignal
-    
+    SleepStagingAlgorithm <|-- RandomForestSleepStaging
+
+    %% Relationships - Composition
     TimeSeriesSignal "1" *-- "1" TimeSeriesMetadata : has
     Feature "1" *-- "1" FeatureMetadata : has
-    
-    SignalCollection "1" *-- "0..*" TimeSeriesSignal : contains
-    SignalCollection "1" *-- "0..*" Feature : contains
     SignalCollection "1" *-- "1" CollectionMetadata : has
     SignalCollection "1" *-- "1" MetadataHandler : uses
-    
+    SignalRepository "1" *-- "0..*" TimeSeriesSignal : stores
+    SignalRepository "1" *-- "0..*" Feature : stores
+
     OperationInfo --* TimeSeriesMetadata : included in operations list
     OperationInfo --* FeatureMetadata : included in operations list
-    
+
+    %% Relationships - SignalCollection uses Services
+    SignalCollection "1" o-- "1" SignalRepository : uses
+    SignalCollection "1" o-- "1" SignalQueryService : uses
+    SignalCollection "1" o-- "1" MetadataManager : uses
+    SignalCollection "1" o-- "1" AlignmentGridService : uses
+    SignalCollection "1" o-- "1" EpochGridService : uses
+    SignalCollection "1" o-- "1" AlignmentExecutor : uses
+    SignalCollection "1" o-- "1" SignalCombinationService : uses
+    SignalCollection "1" o-- "1" OperationExecutor : uses
+    SignalCollection "1" o-- "1" DataImportService : uses
+    SignalCollection "1" o-- "1" SignalSummaryReporter : uses
+
+    %% Relationships - Services use Repository and State
+    SignalQueryService --> SignalRepository : queries
+    AlignmentGridService --> SignalRepository : accesses
+    EpochGridService --> SignalRepository : accesses
+    AlignmentExecutor --> SignalRepository : modifies
+    AlignmentExecutor --> AlignmentGridService : uses
+    SignalCombinationService --> AlignmentGridState : uses
+    SignalCombinationService --> EpochGridState : uses
+    OperationExecutor --> EpochGridState : uses
+    MetadataManager --> MetadataHandler : uses
+
+    %% Relationships - Services produce State Models
+    AlignmentGridService ..> AlignmentGridState : creates
+    EpochGridService ..> EpochGridState : creates
+    SignalCombinationService ..> CombinationResult : creates
+
+    %% Relationships - Other
     WorkflowExecutor "1" *-- "1" SignalCollection : uses
     SignalCollection ..> FeatureExtraction : uses
     Feature ..> TimeSeriesSignal : derived from
-    
     VisualizerBase ..> TimeSeriesSignal : visualizes
     VisualizerBase ..> Feature : visualizes
     VisualizerBase ..> SignalCollection : visualizes
+    RandomForestSleepStaging ..> Feature : processes
+    RandomForestSleepStaging ..> Feature : produces

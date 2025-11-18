@@ -1,5 +1,3 @@
-I'll add those new rules to the coding guidelines document. Here's the updated version:
-
 # Coding Guidelines
 
 This document outlines the rules for implementing the sleep analysis framework in `src/sleep_analysis/`. All code must adhere to these guidelines to ensure consistency with `docs/requirements/requirements.md`.

@@ -2,12 +2,32 @@
 
 ### 3.1 Project Structure
 The framework is organized into the following modules:
-- **`core/`**: Base classes for the framework.
-  - `SignalData`: Base class for all signals.
-  - `SignalCollection`: Container for all signals (imported, intermediate, derived).
-  - `WorkflowExecutor`: Executes workflows by processing signals.
+- **`core/`**: Base classes and services for the framework.
+  - `signal_data.py`: Base class for all signals.
+  - `signal_collection.py`: Container for all signals (imported, intermediate, derived).
+  - `metadata.py`: Metadata classes (`TimeSeriesMetadata`, `FeatureMetadata`, `CollectionMetadata`, `OperationInfo`).
+  - `metadata_handler.py`: Centralized metadata management.
+  - **`repositories/`**: Data storage and retrieval.
+    - `signal_repository.py`: Repository for managing time-series signals and features.
+  - **`services/`**: Business logic and processing.
+    - `signal_query_service.py`: Query and filter signals by metadata.
+    - `metadata_manager.py`: Metadata propagation and updates.
+    - `alignment_grid_service.py`: Alignment grid generation.
+    - `epoch_grid_service.py`: Epoch grid generation.
+    - `alignment_executor.py`: Signal alignment operations.
+    - `signal_combination_service.py`: Combine signals into dataframes.
+    - `operation_executor.py`: Execute operations on signals.
+    - `data_import_service.py`: Handle signal imports.
+    - `signal_summary_reporter.py`: Generate summary reports.
+  - **`models/`**: Data structures for state management.
+    - `alignment_state.py`: Alignment grid state.
+    - `epoch_state.py`: Epoch grid state.
+    - `combination_result.py`: Combined dataframe results.
+- **`workflows/`**: Workflow execution.
+  - `workflow_executor.py`: Executes workflows by processing signals.
 - **`signal_types.py`**: Enum definitions for signal types.
   - `SignalType`: Enum for different types of signals (e.g., PPG, ACCELEROMETER, HEART_RATE, FEATURES).
+  - `SensorType`, `SensorModel`, `BodyPosition`, `Unit`: Additional enum types.
 - **`cli/`**: Command-line interface for the framework.
   - `run_workflow.py`: Script for executing workflows with CLI arguments.
   
@@ -37,7 +57,12 @@ The enum values (e.g., "PPG") are used in the user interface and workflow files,
   - `TimeSeriesSignal`: Generic time-series signal.
   - `PPGSignal`: Signal specific to photoplethysmography (PPG).
   - `AccelerometerSignal`: Signal for accelerometer data.
-  - `FeatureSignal`: Signal for epoch-based extracted features.
+  - `HeartRateSignal`: Signal for heart rate data.
+  - `MagnitudeSignal`: Signal for magnitude calculations.
+  - `AngleSignal`: Signal for angle calculations.
+  - `EEGSleepStageSignal`: Signal for sleep stage annotations.
+- **`features/`**: Feature extraction and management.
+  - `feature.py`: Feature class for epoch-based features (replaces FeatureSignal).
 - **`importers/`**: Classes for importing signal data.
   - `SignalImporter`: Abstract base class for all importers.
   - `CSVImporterBase`: Abstract class for CSV format importers.
@@ -55,6 +80,40 @@ The enum values (e.g., "PPG") are used in the user interface and workflow files,
   - `align_data`: Aligns signals by timestamps.
 
 This structure separates concerns, making it easy to extend or modify individual components while maintaining clear organization of functionality.
+
+### 3.1.2 Repository Pattern and Service Architecture
+
+The framework implements a repository pattern with service-based architecture to achieve clear separation of concerns and improved maintainability.
+
+**Repository Layer (`core/repositories/`)**:
+- `SignalRepository`: Manages data storage and retrieval for both time-series signals and features
+  - Provides dictionaries for storing signals/features by key
+  - Handles metadata management through MetadataHandler
+  - Ensures timezone consistency across signals
+  - Auto-generates keys with numeric suffixes for duplicate base names
+
+**Service Layer (`core/services/`)**:
+- `SignalQueryService`: Filters and queries signals by metadata criteria
+- `MetadataManager`: Propagates metadata across features from source signals
+- `AlignmentGridService`: Generates alignment grids for signal synchronization
+- `EpochGridService`: Generates epoch grids for feature extraction
+- `AlignmentExecutor`: Aligns signals to common time grid
+- `SignalCombinationService`: Combines signals into dataframes with multi-index support
+- `OperationExecutor`: Executes collection and multi-signal operations
+- `DataImportService`: Handles signal import workflow
+- `SignalSummaryReporter`: Generates summary statistics and reports
+
+**Model Layer (`core/models/`)**:
+- `AlignmentGridState`: Encapsulates alignment grid parameters
+- `EpochGridState`: Encapsulates epoch grid parameters
+- `CombinationResult`: Encapsulates combined dataframe results
+
+This architecture provides several benefits:
+- **Separation of Concerns**: Each service has a single, well-defined responsibility
+- **Testability**: Services can be tested independently with dependency injection
+- **Maintainability**: Changes to one service don't affect others
+- **Reusability**: Services can be composed in different ways
+- **State Management**: Models encapsulate complex state clearly
 
 ### 3.2 Dependencies
 - **Internal**:

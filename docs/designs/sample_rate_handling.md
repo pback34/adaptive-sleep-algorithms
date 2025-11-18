@@ -2,10 +2,18 @@
 
 **Version:** 1.0
 **Date:** 2025-03-31
+**Status:** ✅ IMPLEMENTED
 
 ## 1. Overview
 
-This document outlines the design for implementing a robust and automated mechanism to calculate and store the sampling rate (`sample_rate`) in the `SignalMetadata` for all `TimeSeriesSignal` instances and their subclasses within the `sleep_analysis` framework. The goal is to ensure the `sample_rate` metadata field accurately reflects the signal's data at key points in its lifecycle, minimizing code duplication and relying on a centralized calculation logic.
+This document outlines the design for implementing a robust and automated mechanism to calculate and store the sampling rate (`sample_rate`) in the `TimeSeriesMetadata` for all `TimeSeriesSignal` instances and their subclasses within the `sleep_analysis` framework. The goal is to ensure the `sample_rate` metadata field accurately reflects the signal's data at key points in its lifecycle, minimizing code duplication and relying on a centralized calculation logic.
+
+**Implementation Status:**
+- `TimeSeriesSignal.get_sampling_rate()` implemented - calculates rate from timestamp differences
+- `TimeSeriesSignal._update_sample_rate_metadata()` implemented - formats and stores rate in metadata
+- Automatic metadata updates in `__init__` and `apply_operation`
+- Importers refactored to not manually set sample_rate (handled automatically)
+- Format: "X.XXXXHz", "Variable" (high variability), or "Unknown" (insufficient data)
 
 ## 2. Goals
 

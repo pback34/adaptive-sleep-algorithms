@@ -10,6 +10,28 @@ flowchart TD
             operation_info[OperationInfo]
         end
         metadata_handler[MetadataHandler]
+
+        subgraph Repositories ["Repository Layer"]
+            signal_repository[SignalRepository]
+        end
+
+        subgraph Services ["Service Layer"]
+            signal_query_service[SignalQueryService]
+            metadata_manager[MetadataManager]
+            alignment_grid_service[AlignmentGridService]
+            epoch_grid_service[EpochGridService]
+            alignment_executor[AlignmentExecutor]
+            signal_combination_service[SignalCombinationService]
+            operation_executor[OperationExecutor]
+            data_import_service[DataImportService]
+            signal_summary_reporter[SignalSummaryReporter]
+        end
+
+        subgraph Models ["State Models"]
+            alignment_state[AlignmentGridState]
+            epoch_state[EpochGridState]
+            combination_result[CombinationResult]
+        end
     end
 
     subgraph Signal_Types ["Signal Types"]
@@ -88,6 +110,13 @@ flowchart TD
         run_workflow[run_workflow.py]
     end
 
+    subgraph Algorithms ["ML Algorithms"]
+        direction TB
+        algorithm_base[SleepStagingAlgorithm]
+        random_forest[RandomForestSleepStaging]
+        evaluation[Evaluation Module]
+    end
+
     subgraph Utils ["Utilities"]
         direction TB
         logging[Logging]
@@ -116,6 +145,9 @@ flowchart TD
     compute_stats --> statistical_features
     compute_stage_mode --> categorical_mode
 
+    %% Algorithm inheritance
+    algorithm_base --> random_forest
+
     %% Visualization methods
     vis_base --> Plotting_Functions
 
@@ -127,9 +159,20 @@ flowchart TD
     Workflows --> Operations
     Workflows --> Export
     Workflows --> Visualization
+    Workflows --> Algorithms
 
     Importers --> Core
     Importers --> Signals
+
+    %% SignalCollection uses Services and Repository
+    signal_collection --> Repositories
+    signal_collection --> Services
+    signal_collection --> Models
+
+    %% Services use Repositories and Models
+    Services --> Repositories
+    Services --> Models
+    Services --> Metadata
 
     %% Collection uses operations
     Core --> Signals
@@ -151,6 +194,11 @@ flowchart TD
     %% Operations produce Features
     Operations --> Features
 
+    %% Algorithms use Operations and Features
+    Algorithms --> Operations
+    Algorithms --> Features
+    Algorithms --> Core
+
     %% Export uses Collection/Metadata
     Export --> Core
 
@@ -166,6 +214,7 @@ flowchart TD
     Signal_Types -.-> Features
     Signal_Types -.-> Importers
     Signal_Types -.-> Operations
+    Signal_Types -.-> Algorithms
 
     Utils -.-> Core
     Utils -.-> Importers
@@ -173,3 +222,4 @@ flowchart TD
     Utils -.-> Export
     Utils -.-> Operations
     Utils -.-> Visualization
+    Utils -.-> Algorithms
