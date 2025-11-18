@@ -27,6 +27,10 @@ src/sleep_analysis/core/models/combination_result.py
 src/sleep_analysis/core/models/epoch_state.py
 src/sleep_analysis/core/repositories/__init__.py
 src/sleep_analysis/core/repositories/signal_repository.py
+src/sleep_analysis/core/services/__init__.py
+src/sleep_analysis/core/services/alignment_grid_service.py
+src/sleep_analysis/core/services/metadata_manager.py
+src/sleep_analysis/core/services/signal_query_service.py
 src/sleep_analysis/export/__init__.py
 src/sleep_analysis/export/export_module.py
 src/sleep_analysis/features/feature.py
