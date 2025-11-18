@@ -18,7 +18,8 @@ from io import StringIO
 import sys
 
 from src.sleep_analysis.core.services import SignalSummaryReporter
-from src.sleep_analysis.signals.time_series_signal import TimeSeriesSignal
+from src.sleep_analysis.signals.heart_rate_signal import HeartRateSignal
+from src.sleep_analysis.signals.ppg_signal import PPGSignal
 from src.sleep_analysis.features.feature import Feature
 from src.sleep_analysis.signal_types import SignalType
 
@@ -43,15 +44,15 @@ class TestSummarizeSignals:
         # Create time-series signals
         index = pd.date_range('2024-01-01', periods=100, freq='1s', tz=timezone.utc)
         hr_data = pd.DataFrame({'hr': [70] * 100}, index=index)
-        hr_signal = TimeSeriesSignal(
+        hr_signal = HeartRateSignal(
             hr_data,
             metadata={'name': 'hr_0', 'signal_type': SignalType.HR}
         )
 
-        spo2_data = pd.DataFrame({'spo2': [98] * 100}, index=index)
-        spo2_signal = TimeSeriesSignal(
-            spo2_data,
-            metadata={'name': 'spo2_0', 'signal_type': SignalType.SPO2}
+        ppg_data = pd.DataFrame({'value': [98] * 100}, index=index)
+        ppg_signal = PPGSignal(
+            ppg_data,
+            metadata={'name': 'ppg_0', 'signal_type': SignalType.PPG}
         )
 
         # Create feature
@@ -62,7 +63,7 @@ class TestSummarizeSignals:
             metadata={'name': 'hr_features'}
         )
 
-        time_series = {'hr_0': hr_signal, 'spo2_0': spo2_signal}
+        time_series = {'hr_0': hr_signal, 'ppg_0': ppg_signal}
         features = {'hr_features': hr_feature}
 
         return time_series, features
@@ -81,7 +82,7 @@ class TestSummarizeSignals:
         assert isinstance(summary, pd.DataFrame)
         assert len(summary) == 3  # 2 signals + 1 feature
         assert 'hr_0' in summary.index
-        assert 'spo2_0' in summary.index
+        assert 'ppg_0' in summary.index
         assert 'hr_features' in summary.index
 
     def test_summarize_signals_with_item_type_column(self, setup_signals):
@@ -231,7 +232,7 @@ class TestGetSummaryMethods:
         reporter = SignalSummaryReporter()
 
         index = pd.date_range('2024-01-01', periods=10, freq='1s', tz=timezone.utc)
-        signal = TimeSeriesSignal(
+        signal = HeartRateSignal(
             pd.DataFrame({'hr': [70] * 10}, index=index),
             metadata={'name': 'hr_0'}
         )
@@ -255,7 +256,7 @@ class TestGetSummaryMethods:
         reporter = SignalSummaryReporter()
 
         index = pd.date_range('2024-01-01', periods=10, freq='1s', tz=timezone.utc)
-        signal = TimeSeriesSignal(
+        signal = HeartRateSignal(
             pd.DataFrame({'hr': [70] * 10}, index=index),
             metadata={'name': 'hr_0'}
         )

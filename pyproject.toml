@@ -42,7 +42,22 @@ algorithms = [
     "seaborn>=0.11.0",      # Enhanced visualizations
 ]
 dev = [
-    "sleep_analysis[vis,export,export-extra,algorithms]", # Include all optional dependencies
+    # Visualization dependencies
+    "bokeh>=3.0.0",
+    "plotly>=5.0.0",
+    # Export dependencies
+    "h5py>=3.0.0",
+    # Export-extra dependencies
+    "cairosvg>=2.5.0",
+    "svgwrite>=1.4.0",
+    "selenium>=4.0.0",
+    # Algorithm dependencies
+    "scikit-learn>=1.3.0",
+    "scipy>=1.11.0",
+    "joblib>=1.0.0",
+    "matplotlib>=3.5.0",
+    "seaborn>=0.11.0",
+    # Dev tools
     "pytest>=7.0.0",
     "pytest-cov>=2.12.0",
     "black>=22.1.0",

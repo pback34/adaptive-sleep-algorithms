@@ -11,6 +11,7 @@ class SignalType(Enum):
     PPG = "PPG"
     ACCELEROMETER = "Accelerometer"
     HEART_RATE = "Heart Rate"
+    HR = "Heart Rate"  # Alias for HEART_RATE
     EEG_SLEEP_STAGE = "EEG Sleep Stage"
     MAGNITUDE = "Magnitude"
     ANGLE = "Angle"

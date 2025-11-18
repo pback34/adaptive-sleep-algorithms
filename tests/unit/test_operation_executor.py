@@ -19,6 +19,7 @@ from unittest.mock import Mock, MagicMock
 from src.sleep_analysis.core.services import OperationExecutor
 from src.sleep_analysis.core.models import EpochGridState
 from src.sleep_analysis.signals.time_series_signal import TimeSeriesSignal
+from src.sleep_analysis.signals.heart_rate_signal import HeartRateSignal
 from src.sleep_analysis.features.feature import Feature
 from src.sleep_analysis.signal_types import SignalType
 
@@ -157,11 +158,11 @@ class TestApplyMultiSignalOperation:
 
         # Create mock signals
         grid_index = pd.date_range('2024-01-01', periods=100, freq='1s', tz=timezone.utc)
-        signal1 = TimeSeriesSignal(
+        signal1 = HeartRateSignal(
             pd.DataFrame({'hr': [70] * 100}, index=grid_index),
             metadata={'name': 'hr_0', 'signal_type': SignalType.HR}
         )
-        signal2 = TimeSeriesSignal(
+        signal2 = HeartRateSignal(
             pd.DataFrame({'hr': [75] * 100}, index=grid_index),
             metadata={'name': 'hr_1', 'signal_type': SignalType.HR}
         )
@@ -187,8 +188,8 @@ class TestApplyMultiSignalOperation:
         # Create a mock operation that returns TimeSeriesSignal
         def mock_operation(signals, **params):
             grid_index = signals[0].get_data().index
-            result_data = pd.DataFrame({'combined': [1] * len(grid_index)}, index=grid_index)
-            return TimeSeriesSignal(result_data, metadata={'name': 'combined'})
+            result_data = pd.DataFrame({'hr': [70] * len(grid_index)}, index=grid_index)
+            return HeartRateSignal(result_data, metadata={'name': 'combined'})
 
         registry = {'combine_signals': (mock_operation, TimeSeriesSignal)}
 
@@ -318,15 +319,15 @@ class TestApplyAndStoreOperation:
     def test_apply_and_store_operation_success(self):
         """Test successful operation application and storage."""
         grid_index = pd.date_range('2024-01-01', periods=50, freq='1s', tz=timezone.utc)
-        signal = TimeSeriesSignal(
+        signal = HeartRateSignal(
             pd.DataFrame({'hr': [70] * 50}, index=grid_index),
             metadata={'name': 'hr_0'}
         )
 
         # Mock the apply_operation method to return a new signal
         def mock_apply_op(op_name, **params):
-            result_data = pd.DataFrame({'hr_filtered': [70] * 50}, index=grid_index)
-            return TimeSeriesSignal(result_data, metadata={'name': 'hr_filtered'})
+            result_data = pd.DataFrame({'hr': [70] * 50}, index=grid_index)
+            return HeartRateSignal(result_data, metadata={'name': 'hr_filtered'})
 
         signal.apply_operation = mock_apply_op
 
@@ -394,11 +395,11 @@ class TestApplyOperationToSignals:
     def setup_batch_operations(self):
         """Setup for batch operation tests."""
         grid_index = pd.date_range('2024-01-01', periods=50, freq='1s', tz=timezone.utc)
-        signal1 = TimeSeriesSignal(
+        signal1 = HeartRateSignal(
             pd.DataFrame({'hr': [70] * 50}, index=grid_index),
             metadata={'name': 'hr_0'}
         )
-        signal2 = TimeSeriesSignal(
+        signal2 = HeartRateSignal(
             pd.DataFrame({'hr': [75] * 50}, index=grid_index),
             metadata={'name': 'hr_1'}
         )
@@ -449,8 +450,8 @@ class TestApplyOperationToSignals:
         # Mock apply_operation to return new signals
         def make_mock_apply(name):
             def mock_apply(op_name, **params):
-                result_data = pd.DataFrame({f'{name}_norm': [1.0] * 50}, index=grid_index)
-                return TimeSeriesSignal(result_data, metadata={'name': f'{name}_norm'})
+                result_data = pd.DataFrame({'hr': [70.0] * 50}, index=grid_index)
+                return HeartRateSignal(result_data, metadata={'name': f'{name}_norm'})
             return mock_apply
 
         signals['hr_0'].apply_operation = make_mock_apply('hr_0')
@@ -523,7 +524,7 @@ class TestPropagateFeatureMetadata:
     def test_propagate_metadata_single_source(self):
         """Test metadata propagation from single source signal."""
         grid_index = pd.date_range('2024-01-01', periods=50, freq='1s', tz=timezone.utc)
-        signal = TimeSeriesSignal(
+        signal = HeartRateSignal(
             pd.DataFrame({'hr': [70] * 50}, index=grid_index),
             metadata={'name': 'hr_0', 'signal_type': SignalType.HR}
         )
@@ -552,11 +553,11 @@ class TestPropagateFeatureMetadata:
     def test_propagate_metadata_multiple_sources_common_value(self):
         """Test metadata propagation with multiple sources having common value."""
         grid_index = pd.date_range('2024-01-01', periods=50, freq='1s', tz=timezone.utc)
-        signal1 = TimeSeriesSignal(
+        signal1 = HeartRateSignal(
             pd.DataFrame({'hr': [70] * 50}, index=grid_index),
             metadata={'name': 'hr_0', 'signal_type': SignalType.HR}
         )
-        signal2 = TimeSeriesSignal(
+        signal2 = HeartRateSignal(
             pd.DataFrame({'hr': [75] * 50}, index=grid_index),
             metadata={'name': 'hr_1', 'signal_type': SignalType.HR}
         )

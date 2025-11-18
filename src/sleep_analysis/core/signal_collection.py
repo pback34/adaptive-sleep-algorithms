@@ -160,9 +160,9 @@ class SignalCollection:
         # Initialize service classes (Phase 5 refactoring)
         self._query_service = SignalQueryService(repository=self._repository)
         self._metadata_manager = MetadataManager(metadata_handler=self.metadata_handler)
-        self._alignment_grid_service = AlignmentGridService()
-        self._epoch_grid_service = EpochGridService()
-        self._alignment_executor = AlignmentExecutor()
+        self._alignment_grid_service = AlignmentGridService(repository=self._repository)
+        self._epoch_grid_service = EpochGridService(repository=self._repository, collection_metadata=self.metadata)
+        self._alignment_executor = AlignmentExecutor(repository=self._repository, alignment_grid_service=self._alignment_grid_service)
         # Combination service needs metadata and state objects (states initialized during operations)
         self._combination_service = None  # Will be created when needed with current state
         # Operation executor needs callbacks and registries
