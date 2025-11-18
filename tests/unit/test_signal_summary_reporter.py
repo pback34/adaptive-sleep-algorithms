@@ -60,7 +60,14 @@ class TestSummarizeSignals:
         feat_data = pd.DataFrame({'mean': [70.0] * 10}, index=feat_index)
         hr_feature = Feature(
             feat_data,
-            metadata={'name': 'hr_features'}
+            metadata={
+                'name': 'hr_features',
+                'epoch_window_length': pd.Timedelta('10s'),
+                'epoch_step_size': pd.Timedelta('10s'),
+                'feature_names': ['mean'],
+                'source_signal_keys': ['hr_0'],
+                'source_signal_ids': ['hr_0_id']
+            }
         )
 
         time_series = {'hr_0': hr_signal, 'ppg_0': ppg_signal}
@@ -310,7 +317,8 @@ class TestFormatSummaryCell:
 
         result = reporter._format_summary_cell(SignalType.HR, 'signal_type')
 
-        assert result == 'HR'
+        # HR is an alias to HEART_RATE in the enum, so .name returns 'HEART_RATE'
+        assert result == 'HEART_RATE'
 
     def test_format_timestamp(self):
         """Test formatting of Timestamp values."""

@@ -256,6 +256,11 @@ class SignalSummaryReporter:
             )
             return "<ERROR: Unexpected Series/DataFrame>"
 
+        # Handle specific column formatting - check BEFORE general type handling
+        # data_shape should display as a tuple, not as "<tuple len=2>"
+        if col_name == 'data_shape' and isinstance(x, tuple):
+            return str(x)
+
         # Handle lists, tuples, dicts
         if isinstance(x, (list, tuple, dict)):
             try:
@@ -286,10 +291,6 @@ class SignalSummaryReporter:
         elif isinstance(x, pd.Timedelta):
             if pd.isna(x):
                 return 'NaT'
-            return str(x)
-
-        # Handle specific column formatting
-        elif col_name == 'data_shape' and isinstance(x, tuple):
             return str(x)
 
         # Handle None/NaN

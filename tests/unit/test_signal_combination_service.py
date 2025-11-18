@@ -181,7 +181,7 @@ class TestCombineAlignedSignals:
         metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         service = SignalCombinationService(metadata=metadata)
 
-        with pytest.raises(RuntimeError, match="alignment grid must be calculated"):
+        with pytest.raises(RuntimeError, match="Alignment grid must be calculated"):
             service.combine_aligned_signals({})
 
     def test_combine_signals_with_invalid_alignment_state(self):
@@ -199,7 +199,7 @@ class TestCombineAlignedSignals:
             alignment_state=alignment_state
         )
 
-        with pytest.raises(RuntimeError, match="alignment grid must be calculated"):
+        with pytest.raises(RuntimeError, match="Alignment grid must be calculated"):
             service.combine_aligned_signals({})
 
     def test_combine_signals_with_empty_grid_index(self):
@@ -218,7 +218,8 @@ class TestCombineAlignedSignals:
             alignment_state=alignment_state
         )
 
-        with pytest.raises(RuntimeError, match="grid_index is invalid"):
+        # Empty grid_index makes state invalid, so expect "Alignment grid must be calculated"
+        with pytest.raises(RuntimeError, match="Alignment grid must be calculated"):
             service.combine_aligned_signals({})
 
     def test_combine_signals_with_error_in_signal_data(self, setup_combination):
@@ -227,7 +228,11 @@ class TestCombineAlignedSignals:
 
         # Create a mock signal that raises an error
         class ErrorSignal:
-            metadata = TimeSeriesMetadata(name='error_signal', signal_type=SignalType.HR)
+            metadata = TimeSeriesMetadata(
+                signal_id='error_id',
+                name='error_signal',
+                signal_type=SignalType.HR
+            )
 
             def get_data(self):
                 raise ValueError("Test error")
@@ -305,7 +310,14 @@ class TestCombineFeatures:
         )
         hr_feature = Feature(
             hr_feature_data,
-            metadata={'name': 'hr_features'}
+            metadata={
+                'name': 'hr_features',
+                'epoch_window_length': pd.Timedelta('10s'),
+                'epoch_step_size': pd.Timedelta('10s'),
+                'feature_names': ['mean', 'std'],
+                'source_signal_keys': ['hr_0'],
+                'source_signal_ids': ['hr_0_id']
+            }
         )
 
         accel_feature_data = pd.DataFrame(
@@ -318,7 +330,14 @@ class TestCombineFeatures:
         )
         accel_feature = Feature(
             accel_feature_data,
-            metadata={'name': 'accel_features'}
+            metadata={
+                'name': 'accel_features',
+                'epoch_window_length': pd.Timedelta('10s'),
+                'epoch_step_size': pd.Timedelta('10s'),
+                'feature_names': ['max', 'min'],
+                'source_signal_keys': ['accel_0'],
+                'source_signal_ids': ['accel_0_id']
+            }
         )
 
         features = {
@@ -370,8 +389,28 @@ class TestCombineFeatures:
 
         # Add features with numbered suffixes
         hr_feat_data = pd.DataFrame({'mean': [1.0] * 20}, index=epoch_index)
-        features['hr_0'] = Feature(hr_feat_data, metadata={'name': 'hr_0'})
-        features['hr_1'] = Feature(hr_feat_data.copy(), metadata={'name': 'hr_1'})
+        features['hr_0'] = Feature(
+            hr_feat_data,
+            metadata={
+                'name': 'hr_0',
+                'epoch_window_length': pd.Timedelta('10s'),
+                'epoch_step_size': pd.Timedelta('10s'),
+                'feature_names': ['mean'],
+                'source_signal_keys': ['hr_0'],
+                'source_signal_ids': ['hr_0_id']
+            }
+        )
+        features['hr_1'] = Feature(
+            hr_feat_data.copy(),
+            metadata={
+                'name': 'hr_1',
+                'epoch_window_length': pd.Timedelta('10s'),
+                'epoch_step_size': pd.Timedelta('10s'),
+                'feature_names': ['mean'],
+                'source_signal_keys': ['hr_1'],
+                'source_signal_ids': ['hr_1_id']
+            }
+        )
 
         result = service.combine_features(features, inputs=['hr'])
 
@@ -424,23 +463,42 @@ class TestCombineFeatures:
         # Create feature with wrong index
         wrong_index = pd.date_range('2024-02-01', periods=20, freq='10s', tz=timezone.utc)
         wrong_data = pd.DataFrame({'mean': [1.0] * 20}, index=wrong_index)
-        wrong_feature = Feature(wrong_data, metadata={'name': 'wrong_feature'})
+        wrong_feature = Feature(
+            wrong_data,
+            metadata={
+                'name': 'wrong_feature',
+                'epoch_window_length': pd.Timedelta('10s'),
+                'epoch_step_size': pd.Timedelta('10s'),
+                'feature_names': ['mean'],
+                'source_signal_keys': ['wrong_0'],
+                'source_signal_ids': ['wrong_0_id']
+            }
+        )
         features['wrong_feature'] = wrong_feature
 
         with pytest.raises(ValueError, match="index does not match epoch_grid_index"):
             service.combine_features(features, inputs=['wrong_feature'])
 
     def test_combine_features_not_datetime_index(self, setup_feature_combination):
-        """Test that non-DatetimeIndex feature raises TypeError."""
+        """Test that non-DatetimeIndex feature raises ValueError at Feature init."""
         service, features, _ = setup_feature_combination
 
-        # Create feature with wrong index type
+        # Creating feature with wrong index type should fail at initialization
         wrong_data = pd.DataFrame({'mean': [1.0] * 20}, index=range(20))
-        wrong_feature = Feature(wrong_data, metadata={'name': 'wrong_feature'})
-        features['wrong_feature'] = wrong_feature
 
-        with pytest.raises(TypeError, match="does not have a DatetimeIndex"):
-            service.combine_features(features, inputs=['wrong_feature'])
+        # This should raise ValueError about DatetimeIndex during Feature initialization
+        with pytest.raises(ValueError, match="DatetimeIndex"):
+            wrong_feature = Feature(
+                wrong_data,
+                metadata={
+                    'name': 'wrong_feature',
+                    'epoch_window_length': pd.Timedelta('10s'),
+                    'epoch_step_size': pd.Timedelta('10s'),
+                    'feature_names': ['mean'],
+                    'source_signal_keys': ['wrong_0'],
+                    'source_signal_ids': ['wrong_0_id']
+                }
+            )
 
     def test_combine_features_custom_index_config(self, setup_feature_combination):
         """Test combining features with custom feature_index_config."""
