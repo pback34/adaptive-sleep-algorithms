@@ -24,6 +24,14 @@ from sleep_analysis.utils.thread_safety import (
 )
 
 
+@pytest.fixture(autouse=True)
+def enable_parallel_for_tests():
+    """Enable parallel processing for these specific tests."""
+    enable_parallel_processing()
+    yield
+    # The session-level fixture will handle final cleanup
+
+
 class TestParallelConfig:
     """Test ParallelConfig functionality."""
 
