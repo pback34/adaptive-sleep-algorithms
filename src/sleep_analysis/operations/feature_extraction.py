@@ -20,6 +20,8 @@ from ..signals.time_series_signal import TimeSeriesSignal
 from ..features.feature import Feature
 from ..core.metadata import FeatureMetadata, OperationInfo, FeatureType # Import FeatureType
 from ..core import validation  # Import validation utilities
+from ..utils.thread_safety import ThreadSafeCache  # Thread-safe caching for parallel processing
+from ..utils.parallel import parallel_map, batch_items, get_parallel_config  # Parallel processing utilities
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +57,8 @@ DEFAULT_HRV_METRICS_HR = ['hr_mean', 'hr_std', 'hr_cv', 'hr_range']
 DEFAULT_MOVEMENT_METRICS = ['magnitude_mean', 'magnitude_std', 'magnitude_max',
                            'activity_count', 'stillness_ratio', 'x_std', 'y_std', 'z_std']
 
-# Global cache for feature extraction results
-_FEATURE_CACHE: Dict[str, Feature] = {}
+# Thread-safe global cache for feature extraction results
+_FEATURE_CACHE = ThreadSafeCache()
 _CACHE_ENABLED = True  # Global flag to enable/disable caching
 
 
@@ -75,7 +77,7 @@ def enable_feature_cache(enabled: bool = True):
 def clear_feature_cache():
     """Clear all cached feature extraction results."""
     global _FEATURE_CACHE
-    cache_size = len(_FEATURE_CACHE)
+    cache_size = _FEATURE_CACHE.size()
     _FEATURE_CACHE.clear()
     logger.info(f"Cleared feature cache ({cache_size} entries removed)")
 
@@ -87,10 +89,14 @@ def get_cache_stats() -> Dict[str, Any]:
     Returns:
         Dictionary containing cache statistics.
     """
+    stats = _FEATURE_CACHE.get_stats()
     return {
         "enabled": _CACHE_ENABLED,
-        "size": len(_FEATURE_CACHE),
-        "keys": list(_FEATURE_CACHE.keys())
+        "size": _FEATURE_CACHE.size(),
+        "hit_rate": _FEATURE_CACHE.get_hit_rate(),
+        "hits": stats['hits'],
+        "misses": stats['misses'],
+        "sets": stats['sets']
     }
 
 
@@ -176,21 +182,22 @@ def cache_features(func: Callable) -> Callable:
             epoch_grid_hash=epoch_grid_hash
         )
 
-        # Check if result is in cache
-        if cache_key in _FEATURE_CACHE:
+        # Use thread-safe get_or_compute for atomic cache check/set
+        def compute_feature():
+            logger.debug(f"Cache miss for {func.__name__} (key: {cache_key[:8]}...)")
+            result = func(signals, epoch_grid_index, parameters,
+                         global_window_length, global_step_size)
+            logger.debug(f"Cached result for {func.__name__} (cache size: {_FEATURE_CACHE.size()})")
+            return result
+
+        # Thread-safe cache lookup or computation
+        cached_value = _FEATURE_CACHE.get(cache_key)
+        if cached_value is not None:
             logger.debug(f"Cache hit for {func.__name__} (key: {cache_key[:8]}...)")
-            return _FEATURE_CACHE[cache_key]
+            return cached_value
 
-        # Cache miss - compute the result
-        logger.debug(f"Cache miss for {func.__name__} (key: {cache_key[:8]}...)")
-        result = func(signals, epoch_grid_index, parameters,
-                     global_window_length, global_step_size)
-
-        # Store in cache
-        _FEATURE_CACHE[cache_key] = result
-        logger.debug(f"Cached result for {func.__name__} (cache size: {len(_FEATURE_CACHE)})")
-
-        return result
+        # Use get_or_compute to handle race conditions
+        return _FEATURE_CACHE.get_or_compute(cache_key, compute_feature)
 
     return wrapper
 
@@ -549,6 +556,61 @@ def _compute_correlation_features(
 # --- Add other core feature functions here (e.g., _compute_correlation, _compute_hrv) ---
 
 
+# --- Parallel Processing Helpers ---
+
+def _process_epoch_batch(batch_data):
+    """
+    Process a batch of epochs for parallel execution.
+
+    Args:
+        batch_data: Tuple of (epoch_starts, signal_data_list, signal_keys, effective_window_length, aggregations)
+
+    Returns:
+        List of epoch feature dictionaries
+    """
+    epoch_starts, signal_data_list, signal_keys, effective_window_length, aggregations = batch_data
+
+    batch_results = []
+    for epoch_start in epoch_starts:
+        epoch_end = epoch_start + effective_window_length
+        epoch_features = {'epoch_start': epoch_start}
+
+        try:
+            # Get data segments for this epoch from all input signals
+            segments_with_keys = []
+            valid_epoch = True
+
+            for signal_key, signal_data in zip(signal_keys, signal_data_list):
+                try:
+                    segment = signal_data[epoch_start:epoch_end]
+                    segments_with_keys.append((signal_key, segment))
+                except Exception as slice_err:
+                    logger.warning(f"Error slicing data for signal '{signal_key}' in epoch {epoch_start}: {slice_err}")
+                    valid_epoch = False
+                    break
+
+            if not valid_epoch:
+                continue
+
+            # Compute features for this epoch
+            combined_epoch_stats = {}
+            for signal_key, segment in segments_with_keys:
+                basic_aggregations = [agg for agg in aggregations if agg in ['mean', 'std', 'min', 'max', 'median', 'var']]
+                if basic_aggregations:
+                    stats = _compute_basic_stats(segment, basic_aggregations)
+                    for simple_feature_name, value in stats.items():
+                        combined_epoch_stats[(signal_key, simple_feature_name)] = value
+
+            epoch_features.update(combined_epoch_stats)
+            batch_results.append(epoch_features)
+
+        except Exception as e:
+            logger.debug(f"Skipping epoch {epoch_start} in batch due to error: {e}")
+            continue
+
+    return batch_results
+
+
 # --- Main Wrapper Function (Registered in SignalCollection) ---
 
 @cache_features
@@ -716,71 +778,100 @@ def compute_feature_statistics(
          return Feature(data=empty_data, metadata=metadata_dict)
 
 
-    # --- Feature Calculation Loop ---
+    # --- Feature Calculation Loop (with parallel processing support) ---
     all_epoch_results = []
     processed_epochs = 0
     skipped_epochs = 0
     generated_feature_names = set() # Store the simple feature names generated
 
-    # Iterate directly over the provided epoch grid index
-    for epoch_start in epoch_grid_index:
-        epoch_end = epoch_start + effective_window_length # Use effective window length
-        epoch_features = {'epoch_start': epoch_start} # Use epoch_start from grid for index
+    # Check if parallel processing is enabled and we have enough epochs to benefit
+    parallel_config = get_parallel_config()
+    use_parallel = (
+        parallel_config.enabled and
+        len(epoch_grid_index) >= 20  # Only parallelize for sufficient epochs
+    )
 
-        # Get data segments for this epoch from all input signals
-        # Store segments along with their original signal key for context
-        segments_with_keys = []
-        try:
-            segments_with_keys = []
-            valid_epoch = True
-            for signal in signals:
-                try:
-                    # Slice data for the current epoch [start, end)
-                    # Ensure slicing handles potential timezone differences if necessary
-                    # Assuming signal data index is compatible with epoch_start/epoch_end timezone
-                    segment = signal.get_data()[epoch_start:epoch_end]
-                    segments_with_keys.append((signal.metadata.name, segment)) # Store key and segment
-                except Exception as slice_err:
-                     logger.warning(f"Error slicing data for signal '{signal.metadata.name}' in epoch {epoch_start}: {slice_err}. Skipping epoch.")
-                     valid_epoch = False
-                     break # Stop processing this epoch if any signal fails slicing
+    if use_parallel:
+        # Prepare data for parallel processing
+        signal_data_list = [signal.get_data() for signal in signals]
+        signal_keys = [signal.metadata.name for signal in signals]
 
-            if not valid_epoch:
-                 skipped_epochs += 1
-                 continue
+        # Split epochs into batches for parallel processing
+        # Use larger batches to reduce overhead
+        batch_size = max(10, len(epoch_grid_index) // (parallel_config.max_workers_cpu * 2))
+        epoch_batches = batch_items(list(epoch_grid_index), batch_size)
 
-            # --- Compute features for this epoch ---
-            # Process each signal segment individually (if epoch is valid)
-            combined_epoch_stats = {}
-            for signal_key, segment in segments_with_keys:
-                 # Pass only the relevant aggregations for basic stats
-                 basic_aggregations = [agg for agg in aggregations if agg in ['mean', 'std', 'min', 'max', 'median', 'var']]
-                 if basic_aggregations:
-                      # _compute_basic_stats returns simple names like 'X_mean', 'Y_std'
-                      stats = _compute_basic_stats(segment, basic_aggregations)
-                      # Store results keyed by (signal_key, feature_name) temporarily
-                      for simple_feature_name, value in stats.items():
-                           # Add the simple name to our set of generated features
-                           generated_feature_names.add(simple_feature_name)
-                           # Use a tuple key for the dictionary to avoid collisions
-                           combined_epoch_stats[(signal_key, simple_feature_name)] = value
+        logger.info(
+            f"Processing {len(epoch_grid_index)} epochs in parallel "
+            f"({len(epoch_batches)} batches, {parallel_config.max_workers_cpu} workers)"
+        )
 
-                 # --- Add calls to other core feature functions here if needed ---
-                 # Example: if 'hrv' in aggregations and signal_type == SignalType.HEART_RATE:
-                 #      hrv_features = _compute_hrv(segment, parameters.get('hrv_params', {}))
-                 #      for simple_hrv_name, value in hrv_features.items():
-                 #           generated_feature_names.add(simple_hrv_name)
-                 #           combined_epoch_stats[(signal_key, simple_hrv_name)] = value
+        # Create batch data for each batch
+        batch_data_list = [
+            (batch, signal_data_list, signal_keys, effective_window_length, aggregations)
+            for batch in epoch_batches
+        ]
 
-            epoch_features.update(combined_epoch_stats)
-            all_epoch_results.append(epoch_features)
-            processed_epochs += 1
+        # Process batches in parallel using processes (CPU-bound)
+        batch_results = parallel_map(
+            _process_epoch_batch,
+            batch_data_list,
+            use_processes=True,
+            desc="Computing features"
+        )
 
-        except Exception as e:
-            logger.warning(f"Skipping epoch {epoch_start} due to error: {e}", exc_info=False) # Log less verbosely for skipped epochs
-            # Optionally append NaNs for skipped epochs? For now, we just skip.
-            skipped_epochs += 1
-            continue
+        # Flatten results and collect feature names
+        for batch_result in batch_results:
+            for epoch_features in batch_result:
+                # Extract feature names from tuple keys
+                for key in epoch_features.keys():
+                    if isinstance(key, tuple) and len(key) == 2:
+                        generated_feature_names.add(key[1])
+                all_epoch_results.append(epoch_features)
+                processed_epochs += 1
+
+        skipped_epochs = len(epoch_grid_index) - processed_epochs
+
+    else:
+        # Sequential processing (original logic)
+        for epoch_start in epoch_grid_index:
+            epoch_end = epoch_start + effective_window_length
+            epoch_features = {'epoch_start': epoch_start}
+
+            try:
+                segments_with_keys = []
+                valid_epoch = True
+                for signal in signals:
+                    try:
+                        segment = signal.get_data()[epoch_start:epoch_end]
+                        segments_with_keys.append((signal.metadata.name, segment))
+                    except Exception as slice_err:
+                         logger.warning(f"Error slicing data for signal '{signal.metadata.name}' in epoch {epoch_start}: {slice_err}. Skipping epoch.")
+                         valid_epoch = False
+                         break
+
+                if not valid_epoch:
+                     skipped_epochs += 1
+                     continue
+
+                # Compute features for this epoch
+                combined_epoch_stats = {}
+                for signal_key, segment in segments_with_keys:
+                     basic_aggregations = [agg for agg in aggregations if agg in ['mean', 'std', 'min', 'max', 'median', 'var']]
+                     if basic_aggregations:
+                          stats = _compute_basic_stats(segment, basic_aggregations)
+                          for simple_feature_name, value in stats.items():
+                               generated_feature_names.add(simple_feature_name)
+                               combined_epoch_stats[(signal_key, simple_feature_name)] = value
+
+                epoch_features.update(combined_epoch_stats)
+                all_epoch_results.append(epoch_features)
+                processed_epochs += 1
+
+            except Exception as e:
+                logger.warning(f"Skipping epoch {epoch_start} due to error: {e}", exc_info=False)
+                skipped_epochs += 1
+                continue
 
     logger.info(f"Feature calculation complete. Processed epochs: {processed_epochs}, Skipped epochs: {skipped_epochs}")
 

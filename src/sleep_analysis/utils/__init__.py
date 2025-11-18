@@ -1,6 +1,24 @@
 """Utility functions for signal processing."""
 
 from .logging import setup_logging, get_logger, log_operation, OperationLogger
+from .parallel import (
+    ParallelConfig,
+    ParallelExecutor,
+    parallel_map,
+    batch_items,
+    chunk_for_workers,
+    get_parallel_config,
+    set_parallel_config,
+    enable_parallel_processing,
+    disable_parallel_processing
+)
+from .thread_safety import (
+    RWLock,
+    ThreadSafeCache,
+    synchronized,
+    AtomicCounter
+)
+
 import pandas as pd
 import logging
 from typing import Dict, Type, Any, Optional

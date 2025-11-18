@@ -9,9 +9,11 @@ import logging
 import time
 import warnings
 from typing import Optional, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..repositories.signal_repository import SignalRepository
 from .alignment_grid_service import AlignmentGridService
+from ...utils.parallel import get_parallel_config
 
 logger = logging.getLogger(__name__)
 
@@ -119,35 +121,66 @@ class AlignmentExecutor:
         skipped_count = 0
         error_signals = []
 
-        for key in target_keys:
+        # Helper function for aligning a single signal
+        def align_signal(key):
+            """Align a single signal to the grid."""
             try:
-                # Get signal from repository
                 signal = self.repository.get_time_series_signal(key)
 
                 current_data = signal.get_data()
                 if current_data is None or current_data.empty:
                     logger.warning(f"Skipping alignment for TimeSeriesSignal '{key}': data is None or empty.")
-                    skipped_count += 1
-                    continue
+                    return 'skipped', key
 
-                logger.debug(f"Calling apply_operation('reindex_to_grid') for TimeSeriesSignal '{key}'...")
+                logger.debug(f"Applying reindex_to_grid for TimeSeriesSignal '{key}'...")
                 signal.apply_operation(
                     'reindex_to_grid',
                     inplace=True,
                     grid_index=state.grid_index,
                     method=method
                 )
-                logger.debug(f"Successfully applied 'reindex_to_grid' operation to TimeSeriesSignal '{key}'.")
-                processed_count += 1
+                logger.debug(f"Successfully aligned TimeSeriesSignal '{key}'.")
+                return 'success', key
 
             except KeyError:
                 logger.warning(f"TimeSeriesSignal key '{key}' specified for alignment not found.")
-                skipped_count += 1
+                return 'skipped', key
 
             except Exception as e:
-                logger.error(f"Failed to apply 'reindex_to_grid' operation to TimeSeriesSignal '{key}': {e}", exc_info=True)
+                logger.error(f"Failed to align TimeSeriesSignal '{key}': {e}", exc_info=True)
                 warnings.warn(f"Failed to apply grid alignment to TimeSeriesSignal '{key}': {e}")
-                error_signals.append(key)
+                return 'error', key
+
+        # Check if parallel processing should be used
+        parallel_config = get_parallel_config()
+        use_parallel = parallel_config.enabled and len(target_keys) >= 3
+
+        if use_parallel:
+            logger.info(f"Aligning {len(target_keys)} signals in parallel with {parallel_config.max_workers_io} threads")
+
+            with ThreadPoolExecutor(max_workers=parallel_config.max_workers_io) as executor:
+                # Submit all alignment tasks
+                future_to_key = {executor.submit(align_signal, key): key for key in target_keys}
+
+                # Process results as they complete
+                for future in as_completed(future_to_key):
+                    status, key = future.result()
+                    if status == 'success':
+                        processed_count += 1
+                    elif status == 'skipped':
+                        skipped_count += 1
+                    elif status == 'error':
+                        error_signals.append(key)
+        else:
+            # Sequential processing
+            for key in target_keys:
+                status, returned_key = align_signal(key)
+                if status == 'success':
+                    processed_count += 1
+                elif status == 'skipped':
+                    skipped_count += 1
+                elif status == 'error':
+                    error_signals.append(returned_key)
 
         elapsed = time.time() - start_time
         logger.info(f"Grid alignment application finished in {elapsed:.2f} seconds. "
