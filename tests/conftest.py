@@ -6,26 +6,6 @@ from datetime import datetime
 from sleep_analysis.signal_types import SignalType, SensorType, SensorModel, BodyPosition, Unit
 
 
-@pytest.fixture(scope="session", autouse=True)
-def disable_parallel_processing():
-    """
-    Automatically disable parallel processing for all tests.
-
-    Parallel processing with ProcessPoolExecutor can cause issues in pytest:
-    - Worker processes can fork the entire test suite
-    - Causes deadlocks and hanging tests
-    - Interferes with test collection
-
-    This fixture disables parallel processing globally for the test session.
-    """
-    from sleep_analysis.utils.parallel import disable_parallel_processing
-    disable_parallel_processing()
-    yield
-    # Re-enable after tests if needed
-    from sleep_analysis.utils.parallel import enable_parallel_processing
-    enable_parallel_processing()
-
-
 @pytest.fixture
 def sample_metadata():
     """Fixture for sample metadata dictionary."""

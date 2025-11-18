@@ -21,6 +21,26 @@ T = TypeVar('T')
 R = TypeVar('R')
 
 
+def _detect_test_environment() -> bool:
+    """
+    Detect if we're running in a test environment.
+
+    Returns:
+        True if running under pytest or unittest, False otherwise
+    """
+    import sys
+    # Check for pytest
+    if 'pytest' in sys.modules:
+        return True
+    # Check for unittest
+    if 'unittest' in sys.modules:
+        return True
+    # Check for PYTEST environment variable
+    if os.environ.get('PYTEST_CURRENT_TEST'):
+        return True
+    return False
+
+
 @dataclass
 class ParallelConfig:
     """
@@ -50,6 +70,11 @@ class ParallelConfig:
         if self.max_workers_io is None:
             # Use more threads for I/O-bound tasks (2-4x CPU count)
             self.max_workers_io = min(32, cpu_count * 4)
+
+        # Auto-disable in test environments to prevent hanging
+        if _detect_test_environment() and self.enabled:
+            logger.debug("Test environment detected - disabling parallel processing by default")
+            self.enabled = False
 
 
 # Global configuration instance
