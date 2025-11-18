@@ -17,7 +17,7 @@ from unittest.mock import Mock, MagicMock, patch
 from datetime import timezone
 
 from src.sleep_analysis.core.services import DataImportService
-from src.sleep_analysis.signals.time_series_signal import TimeSeriesSignal
+from src.sleep_analysis.signals.heart_rate_signal import HeartRateSignal
 
 
 class TestDataImportServiceInitialization:
@@ -39,7 +39,7 @@ class TestImportSignalsFromSource:
         """Create a mock time-series signal."""
         index = pd.date_range('2024-01-01', periods=10, freq='1s', tz=timezone.utc)
         data = pd.DataFrame({'hr': [70] * 10}, index=index)
-        return TimeSeriesSignal(data, metadata={'name': 'test_signal'})
+        return HeartRateSignal(data, metadata={'name': 'test_signal'})
 
     @pytest.fixture
     def mock_importer(self, mock_signal):
@@ -61,7 +61,7 @@ class TestImportSignalsFromSource:
             signals = service.import_signals_from_source(mock_importer, tmp_path, spec)
 
             assert len(signals) == 1
-            assert isinstance(signals[0], TimeSeriesSignal)
+            assert isinstance(signals[0], HeartRateSignal)
             mock_importer.import_signal.assert_called_once_with(tmp_path, 'hr')
         finally:
             os.unlink(tmp_path)
@@ -208,8 +208,8 @@ class TestAddImportedSignals:
         index = pd.date_range('2024-01-01', periods=10, freq='1s', tz=timezone.utc)
         signals = []
         for i in range(3):
-            data = pd.DataFrame({f'signal{i}': [i] * 10}, index=index)
-            signal = TimeSeriesSignal(data, metadata={'name': f'signal{i}'})
+            data = pd.DataFrame({'hr': [70 + i] * 10}, index=index)
+            signal = HeartRateSignal(data, metadata={'name': f'signal{i}'})
             signals.append(signal)
         return signals
 

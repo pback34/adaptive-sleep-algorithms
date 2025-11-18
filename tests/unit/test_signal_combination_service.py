@@ -25,7 +25,8 @@ from src.sleep_analysis.core.models import (
     EpochGridState,
     CombinationResult
 )
-from src.sleep_analysis.signals.time_series_signal import TimeSeriesSignal
+from src.sleep_analysis.signals.heart_rate_signal import HeartRateSignal
+from src.sleep_analysis.signals.ppg_signal import PPGSignal
 from src.sleep_analysis.features.feature import Feature
 from src.sleep_analysis.signal_types import SignalType
 
@@ -35,7 +36,7 @@ class TestSignalCombinationServiceInitialization:
 
     def test_initialization_with_all_params(self):
         """Test initialization with all parameters."""
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         grid_index = pd.date_range('2024-01-01', periods=100, freq='1s', tz=timezone.utc)
         alignment_state = AlignmentGridState(
             target_rate=1.0,
@@ -64,7 +65,7 @@ class TestSignalCombinationServiceInitialization:
 
     def test_initialization_minimal(self):
         """Test initialization with minimal parameters."""
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         service = SignalCombinationService(metadata=metadata)
 
         assert service.metadata == metadata
@@ -91,7 +92,7 @@ class TestCombineAlignedSignals:
         )
 
         # Create metadata
-        metadata = CollectionMetadata(subject_id="test", index_config=['name', 'signal_type'])
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test", index_config=['name', 'signal_type'])
 
         # Create service
         service = SignalCombinationService(
@@ -104,23 +105,23 @@ class TestCombineAlignedSignals:
             {'hr': np.random.randint(60, 100, 100)},
             index=grid_index
         )
-        hr_signal = TimeSeriesSignal(
+        hr_signal = HeartRateSignal(
             hr_data,
             metadata={'name': 'hr_0', 'signal_type': SignalType.HR}
         )
 
-        spo2_data = pd.DataFrame(
-            {'spo2': np.random.randint(95, 100, 100)},
+        ppg_data = pd.DataFrame(
+            {'value': np.random.randint(95, 100, 100)},
             index=grid_index
         )
-        spo2_signal = TimeSeriesSignal(
-            spo2_data,
-            metadata={'name': 'spo2_0', 'signal_type': SignalType.SPO2}
+        ppg_signal = PPGSignal(
+            ppg_data,
+            metadata={'name': 'ppg_0', 'signal_type': SignalType.PPG}
         )
 
         signals = {
             'hr_0': hr_signal,
-            'spo2_0': spo2_signal
+            'ppg_0': ppg_signal
         }
 
         return service, signals, grid_index
@@ -162,8 +163,8 @@ class TestCombineAlignedSignals:
         service, signals, grid_index = setup_combination
 
         # Add a temporary signal
-        temp_data = pd.DataFrame({'temp': [1] * 100}, index=grid_index)
-        temp_signal = TimeSeriesSignal(
+        temp_data = pd.DataFrame({'hr': [70] * 100}, index=grid_index)
+        temp_signal = HeartRateSignal(
             temp_data,
             metadata={'name': 'temp_0', 'signal_type': SignalType.HR, 'temporary': True}
         )
@@ -177,15 +178,15 @@ class TestCombineAlignedSignals:
 
     def test_combine_signals_without_alignment_state(self):
         """Test that combination fails without alignment state."""
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         service = SignalCombinationService(metadata=metadata)
 
-        with pytest.raises(RuntimeError, match="alignment grid must be calculated"):
+        with pytest.raises(RuntimeError, match="Alignment grid must be calculated"):
             service.combine_aligned_signals({})
 
     def test_combine_signals_with_invalid_alignment_state(self):
         """Test that combination fails with invalid alignment state."""
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         alignment_state = AlignmentGridState(
             target_rate=1.0,
             reference_time=pd.Timestamp('2024-01-01', tz=timezone.utc),
@@ -198,12 +199,12 @@ class TestCombineAlignedSignals:
             alignment_state=alignment_state
         )
 
-        with pytest.raises(RuntimeError, match="alignment grid must be calculated"):
+        with pytest.raises(RuntimeError, match="Alignment grid must be calculated"):
             service.combine_aligned_signals({})
 
     def test_combine_signals_with_empty_grid_index(self):
         """Test that combination fails with empty grid index."""
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         empty_index = pd.DatetimeIndex([], tz=timezone.utc)
         alignment_state = AlignmentGridState(
             target_rate=1.0,
@@ -217,7 +218,8 @@ class TestCombineAlignedSignals:
             alignment_state=alignment_state
         )
 
-        with pytest.raises(RuntimeError, match="grid_index is invalid"):
+        # Empty grid_index makes state invalid, so expect "Alignment grid must be calculated"
+        with pytest.raises(RuntimeError, match="Alignment grid must be calculated"):
             service.combine_aligned_signals({})
 
     def test_combine_signals_with_error_in_signal_data(self, setup_combination):
@@ -226,7 +228,11 @@ class TestCombineAlignedSignals:
 
         # Create a mock signal that raises an error
         class ErrorSignal:
-            metadata = TimeSeriesMetadata(name='error_signal', signal_type=SignalType.HR)
+            metadata = TimeSeriesMetadata(
+                signal_id='error_id',
+                name='error_signal',
+                signal_type=SignalType.HR
+            )
 
             def get_data(self):
                 raise ValueError("Test error")
@@ -248,14 +254,14 @@ class TestCombineAlignedSignals:
         )
 
         # No index_config
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         service = SignalCombinationService(
             metadata=metadata,
             alignment_state=alignment_state
         )
 
         hr_data = pd.DataFrame({'hr': [70] * 50}, index=grid_index)
-        hr_signal = TimeSeriesSignal(hr_data, metadata={'name': 'hr_0'})
+        hr_signal = HeartRateSignal(hr_data, metadata={'name': 'hr_0'})
 
         result = service.combine_aligned_signals({'hr_0': hr_signal})
 
@@ -282,6 +288,7 @@ class TestCombineFeatures:
 
         # Create metadata
         metadata = CollectionMetadata(
+            collection_id="test_coll",
             subject_id="test",
             feature_index_config=['name', 'feature_type']
         )
@@ -303,7 +310,14 @@ class TestCombineFeatures:
         )
         hr_feature = Feature(
             hr_feature_data,
-            metadata={'name': 'hr_features'}
+            metadata={
+                'name': 'hr_features',
+                'epoch_window_length': pd.Timedelta('10s'),
+                'epoch_step_size': pd.Timedelta('10s'),
+                'feature_names': ['mean', 'std'],
+                'source_signal_keys': ['hr_0'],
+                'source_signal_ids': ['hr_0_id']
+            }
         )
 
         accel_feature_data = pd.DataFrame(
@@ -316,7 +330,14 @@ class TestCombineFeatures:
         )
         accel_feature = Feature(
             accel_feature_data,
-            metadata={'name': 'accel_features'}
+            metadata={
+                'name': 'accel_features',
+                'epoch_window_length': pd.Timedelta('10s'),
+                'epoch_step_size': pd.Timedelta('10s'),
+                'feature_names': ['max', 'min'],
+                'source_signal_keys': ['accel_0'],
+                'source_signal_ids': ['accel_0_id']
+            }
         )
 
         features = {
@@ -368,8 +389,28 @@ class TestCombineFeatures:
 
         # Add features with numbered suffixes
         hr_feat_data = pd.DataFrame({'mean': [1.0] * 20}, index=epoch_index)
-        features['hr_0'] = Feature(hr_feat_data, metadata={'name': 'hr_0'})
-        features['hr_1'] = Feature(hr_feat_data.copy(), metadata={'name': 'hr_1'})
+        features['hr_0'] = Feature(
+            hr_feat_data,
+            metadata={
+                'name': 'hr_0',
+                'epoch_window_length': pd.Timedelta('10s'),
+                'epoch_step_size': pd.Timedelta('10s'),
+                'feature_names': ['mean'],
+                'source_signal_keys': ['hr_0'],
+                'source_signal_ids': ['hr_0_id']
+            }
+        )
+        features['hr_1'] = Feature(
+            hr_feat_data.copy(),
+            metadata={
+                'name': 'hr_1',
+                'epoch_window_length': pd.Timedelta('10s'),
+                'epoch_step_size': pd.Timedelta('10s'),
+                'feature_names': ['mean'],
+                'source_signal_keys': ['hr_1'],
+                'source_signal_ids': ['hr_1_id']
+            }
+        )
 
         result = service.combine_features(features, inputs=['hr'])
 
@@ -392,7 +433,7 @@ class TestCombineFeatures:
 
     def test_combine_features_without_epoch_state(self):
         """Test that combination fails without epoch state."""
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         service = SignalCombinationService(metadata=metadata)
 
         with pytest.raises(RuntimeError, match="epoch grid must be calculated"):
@@ -400,7 +441,7 @@ class TestCombineFeatures:
 
     def test_combine_features_with_invalid_epoch_state(self):
         """Test that combination fails with invalid epoch state."""
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         epoch_state = EpochGridState(
             epoch_grid_index=None,
             window_length=pd.Timedelta('10s'),
@@ -422,23 +463,42 @@ class TestCombineFeatures:
         # Create feature with wrong index
         wrong_index = pd.date_range('2024-02-01', periods=20, freq='10s', tz=timezone.utc)
         wrong_data = pd.DataFrame({'mean': [1.0] * 20}, index=wrong_index)
-        wrong_feature = Feature(wrong_data, metadata={'name': 'wrong_feature'})
+        wrong_feature = Feature(
+            wrong_data,
+            metadata={
+                'name': 'wrong_feature',
+                'epoch_window_length': pd.Timedelta('10s'),
+                'epoch_step_size': pd.Timedelta('10s'),
+                'feature_names': ['mean'],
+                'source_signal_keys': ['wrong_0'],
+                'source_signal_ids': ['wrong_0_id']
+            }
+        )
         features['wrong_feature'] = wrong_feature
 
         with pytest.raises(ValueError, match="index does not match epoch_grid_index"):
             service.combine_features(features, inputs=['wrong_feature'])
 
     def test_combine_features_not_datetime_index(self, setup_feature_combination):
-        """Test that non-DatetimeIndex feature raises TypeError."""
+        """Test that non-DatetimeIndex feature raises ValueError at Feature init."""
         service, features, _ = setup_feature_combination
 
-        # Create feature with wrong index type
+        # Creating feature with wrong index type should fail at initialization
         wrong_data = pd.DataFrame({'mean': [1.0] * 20}, index=range(20))
-        wrong_feature = Feature(wrong_data, metadata={'name': 'wrong_feature'})
-        features['wrong_feature'] = wrong_feature
 
-        with pytest.raises(TypeError, match="does not have a DatetimeIndex"):
-            service.combine_features(features, inputs=['wrong_feature'])
+        # This should raise ValueError about DatetimeIndex during Feature initialization
+        with pytest.raises(ValueError, match="DatetimeIndex"):
+            wrong_feature = Feature(
+                wrong_data,
+                metadata={
+                    'name': 'wrong_feature',
+                    'epoch_window_length': pd.Timedelta('10s'),
+                    'epoch_step_size': pd.Timedelta('10s'),
+                    'feature_names': ['mean'],
+                    'source_signal_keys': ['wrong_0'],
+                    'source_signal_ids': ['wrong_0_id']
+                }
+            )
 
     def test_combine_features_custom_index_config(self, setup_feature_combination):
         """Test combining features with custom feature_index_config."""
@@ -460,7 +520,7 @@ class TestPerformConcatenation:
     def test_concatenation_empty_dfs(self):
         """Test concatenation with empty dataframes dict."""
         grid_index = pd.date_range('2024-01-01', periods=10, freq='1s', tz=timezone.utc)
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         service = SignalCombinationService(metadata=metadata)
 
         result = service._perform_concatenation(
@@ -476,7 +536,7 @@ class TestPerformConcatenation:
     def test_concatenation_time_series_simple(self):
         """Test concatenation of time-series without index_config."""
         grid_index = pd.date_range('2024-01-01', periods=10, freq='1s', tz=timezone.utc)
-        metadata = CollectionMetadata(subject_id="test")  # No index_config
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")  # No index_config
         service = SignalCombinationService(metadata=metadata)
 
         df1 = pd.DataFrame({'value': [1] * 10}, index=grid_index)
@@ -494,7 +554,7 @@ class TestPerformConcatenation:
     def test_concatenation_removes_all_nan_rows(self):
         """Test that concatenation removes rows with all NaN values."""
         grid_index = pd.date_range('2024-01-01', periods=10, freq='1s', tz=timezone.utc)
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         service = SignalCombinationService(metadata=metadata)
 
         # Create dataframes with some all-NaN rows
@@ -525,7 +585,7 @@ class TestGetAlignmentParams:
             merge_tolerance=pd.Timedelta('0.5s'),
             is_calculated=True
         )
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         service = SignalCombinationService(
             metadata=metadata,
             alignment_state=alignment_state
@@ -541,7 +601,7 @@ class TestGetAlignmentParams:
 
     def test_get_alignment_params_without_state(self):
         """Test getting alignment params when no alignment state exists."""
-        metadata = CollectionMetadata(subject_id="test")
+        metadata = CollectionMetadata(collection_id="test_coll", subject_id="test")
         service = SignalCombinationService(metadata=metadata)
 
         params = service._get_alignment_params("test_method")

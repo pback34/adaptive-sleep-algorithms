@@ -160,9 +160,9 @@ class SignalCollection:
         # Initialize service classes (Phase 5 refactoring)
         self._query_service = SignalQueryService(repository=self._repository)
         self._metadata_manager = MetadataManager(metadata_handler=self.metadata_handler)
-        self._alignment_grid_service = AlignmentGridService()
-        self._epoch_grid_service = EpochGridService()
-        self._alignment_executor = AlignmentExecutor()
+        self._alignment_grid_service = AlignmentGridService(repository=self._repository)
+        self._epoch_grid_service = EpochGridService(repository=self._repository, collection_metadata=self.metadata)
+        self._alignment_executor = AlignmentExecutor(repository=self._repository, alignment_grid_service=self._alignment_grid_service)
         # Combination service needs metadata and state objects (states initialized during operations)
         self._combination_service = None  # Will be created when needed with current state
         # Operation executor needs callbacks and registries
@@ -536,10 +536,7 @@ class SignalCollection:
         self._alignment_params_calculated = False # Reset flag
 
         alignment_state = self._alignment_grid_service.generate_alignment_grid(
-            signals=self.time_series_signals,
-            collection_timezone=self.metadata.timezone,
-            user_specified_rate=target_sample_rate,
-            merge_tolerance=None
+            target_sample_rate=target_sample_rate
         )
 
         # Unpack state into collection attributes
@@ -579,8 +576,6 @@ class SignalCollection:
         self._epoch_grid_calculated = False # Reset flag
 
         epoch_state = self._epoch_grid_service.generate_epoch_grid(
-            signals=self.time_series_signals,
-            collection_metadata=self.metadata,
             start_time=start_time,
             end_time=end_time
         )
@@ -682,8 +677,6 @@ class SignalCollection:
         start_time = time.time()
 
         processed_count = self._alignment_executor.apply_grid_alignment(
-            alignment_state=alignment_state,
-            signals=self.time_series_signals,
             method=method,
             signals_to_align=signals_to_align
         )
