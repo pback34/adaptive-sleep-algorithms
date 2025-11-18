@@ -1,19 +1,20 @@
-# Handoff Notes: SignalCollection Refactoring - Phase 1
+# Handoff Notes: SignalCollection Refactoring - Phase 2
 
-**Last Updated**: 2025-11-17
-**Session**: SignalCollection God Object Refactoring - Phase 1
-**Branch**: `claude/refactor-implementation-phase-one-01QycboqXh6FYeHVRenWxdaq`
+**Last Updated**: 2025-11-18
+**Session**: SignalCollection God Object Refactoring - Phase 2
+**Branch**: `claude/phase-2-continue-01MMkoy2izdRybtG44LhZYng`
 
 ---
 
 ## 🎯 Executive Summary
 
-This session marks the beginning of a **major refactoring effort** to address the #1 critical issue in the codebase: the SignalCollection God Object anti-pattern.
+This session continues a **major refactoring effort** to address the #1 critical issue in the codebase: the SignalCollection God Object anti-pattern.
 
 **Problem**: SignalCollection is 1,971 lines with 41 methods handling 8+ distinct responsibilities
 **Solution**: Break into 13 focused service classes following SOLID principles
 **Timeline**: 6-8 weeks total across 5 phases
 **Phase 1 Status**: ✅ **COMPLETED** - Foundation classes implemented
+**Phase 2 Status**: ✅ **COMPLETED** - Query & Metadata services implemented
 
 ---
 
@@ -127,7 +128,7 @@ Created 34 tests covering all repository functionality:
 
 ## 📁 Files Created
 
-### New Source Files
+### Phase 1 Files
 ```
 src/sleep_analysis/core/models/
 ├── __init__.py (12 lines)
@@ -138,15 +139,24 @@ src/sleep_analysis/core/models/
 src/sleep_analysis/core/repositories/
 ├── __init__.py (5 lines)
 └── signal_repository.py (450 lines)
-```
 
-### New Test Files
-```
 tests/unit/
 └── test_signal_repository.py (418 lines)
 ```
 
-**Total New Code**: ~1,085 lines (source + tests)
+### Phase 2 Files
+```
+src/sleep_analysis/core/services/
+├── __init__.py (6 lines)
+├── signal_query_service.py (270 lines)
+└── metadata_manager.py (280 lines)
+
+tests/unit/
+├── test_signal_query_service.py (365 lines)
+└── test_metadata_manager.py (335 lines)
+```
+
+**Total New Code**: ~2,435 lines (source + tests)
 
 ---
 
@@ -197,12 +207,13 @@ Comprehensive 114KB analysis across 4 documents (2,348+ lines):
 - [ ] Fix remaining test fixtures (~30 min)
 - [ ] Verify all SignalRepository tests pass
 
-### Phase 2: Query & Metadata Services (Week 2)
-- [ ] Implement SignalQueryService with filtering logic
-- [ ] Write comprehensive tests for SignalQueryService
-- [ ] Implement MetadataManager for metadata operations
-- [ ] Write comprehensive tests for MetadataManager
-- [ ] Integration tests for repository + query + metadata
+### Phase 2: Query & Metadata Services ✅ COMPLETED (2025-11-18)
+- [x] Implement SignalQueryService with filtering logic
+- [x] Write comprehensive tests for SignalQueryService (38 tests)
+- [x] Implement MetadataManager for metadata operations
+- [x] Write comprehensive tests for MetadataManager (28 tests)
+- [x] Fix SignalRepository test fixtures (34 tests passing)
+- [x] All 100 Phase 1+2 tests passing
 
 ### Phase 3: Grid Services (Weeks 3-4)
 - [ ] Implement AlignmentGridService with grid calculations
@@ -230,31 +241,85 @@ Comprehensive 114KB analysis across 4 documents (2,348+ lines):
 
 ---
 
-## 🔄 Next Steps (Phase 2)
+## ✅ Phase 2 Completed (2025-11-18)
+
+### What Was Implemented
+
+#### 1. SignalQueryService (~270 lines + 38 tests)
+**Location**: `src/sleep_analysis/core/services/signal_query_service.py`
+
+Extracted all signal querying and filtering logic from SignalCollection:
+- **`get_signals()`** - Flexible retrieval supporting exact keys, base names, lists, dictionaries
+- **`_process_enum_criteria()`** - Converts string enum values to Enum objects
+- **`_matches_criteria()`** - Metadata field matching with nested field support
+
+**Features**:
+- Base name pattern matching (e.g., "ppg_0", "ppg_1" from "ppg")
+- Signal type and feature type filtering
+- Complex metadata criteria matching
+- Automatic deduplication
+- Full test coverage (38 tests - 100% passing)
+
+#### 2. MetadataManager (~280 lines + 28 tests)
+**Location**: `src/sleep_analysis/core/services/metadata_manager.py`
+
+Centralized metadata management operations:
+- **`update_time_series_metadata()`** - Updates signal metadata with enum conversion
+- **`update_feature_metadata()`** - Updates feature metadata with timedelta parsing
+- **`validate_time_series_metadata_spec()`** - Validates field names
+- **`validate_feature_metadata_spec()`** - Validates feature fields
+- **`get_valid_time_series_fields()`** - Returns valid field names
+- **`get_valid_feature_fields()`** - Returns valid feature field names
+
+**Features**:
+- Automatic enum field conversion from strings
+- Timedelta parsing from strings (e.g., "30s" → `pd.Timedelta(seconds=30)`)
+- Sensor info dictionary updates
+- Field validation
+- Comprehensive error handling
+- Full test coverage (28 tests - 100% passing)
+
+#### 3. Test Suite Improvements
+- Fixed SignalRepository test fixtures (all 34 tests passing)
+- Created 38 comprehensive tests for SignalQueryService
+- Created 28 comprehensive tests for MetadataManager
+- **Total: 100 tests (100% passing)**
+
+**Time Spent**: Within estimated 8-12 hours
+
+---
+
+## 🔄 Next Steps (Phase 3)
 
 ### Immediate Tasks (Next Session)
 
-1. **Fix Test Fixtures** (~30 minutes)
-   - Update all signal creations to pass metadata as dict instead of object
-   - Run full test suite to verify SignalRepository works correctly
-   - Target: 34/34 tests passing
+Phase 3 will implement Grid Services for signal alignment and epoch calculations.
 
-2. **Implement SignalQueryService** (~2-3 hours)
-   - Extract `get_signals()`, `_process_enum_criteria()`, `_matches_criteria()` from SignalCollection
-   - Implement complex filtering and querying logic
-   - Add comprehensive tests (estimate 15-20 tests)
-
-3. **Implement MetadataManager** (~2-3 hours)
-   - Extract `update_time_series_metadata()`, `update_feature_metadata()`, etc.
-   - Centralize metadata update logic
+#### 1. **AlignmentGridService** (~2-3 hours)
+   - Extract alignment grid calculation logic from SignalCollection
+   - Implement `calculate_alignment_grid()` method
    - Add comprehensive tests (estimate 10-15 tests)
+   - Integration with AlignmentGridState
 
-4. **Integration Testing** (~1 hour)
-   - Test repository + query service together
-   - Test repository + metadata manager together
-   - Ensure services work cohesively
+#### 2. **EpochGridService** (~1-2 hours)
+   - Extract epoch grid calculation logic
+   - Implement `calculate_epoch_grid()` method
+   - Add comprehensive tests (estimate 8-10 tests)
+   - Integration with EpochGridState
 
-**Estimated Time for Phase 2**: 8-12 hours total
+#### 3. **AlignmentExecutor** (~2-3 hours)
+   - Extract signal alignment execution logic
+   - Implement `apply_alignment()` method
+   - Handle signal resampling and interpolation
+   - Add comprehensive tests (estimate 10-12 tests)
+
+#### 4. **Integration Testing** (~1-2 hours)
+   - Test grid services with repository
+   - Test complete alignment workflow
+   - Ensure backward compatibility
+
+**Estimated Time for Phase 3**: 10-14 hours total
+**Target Completion**: Week 3-4 of refactoring timeline
 
 ---
 
@@ -264,12 +329,12 @@ Comprehensive 114KB analysis across 4 documents (2,348+ lines):
 
 | Phase | Status | Completion | Lines | Tests |
 |-------|--------|------------|-------|-------|
-| **Phase 1: Foundation** | ✅ Done | 95% | 667 | 34 |
-| **Phase 2: Query & Metadata** | ⏸️ Pending | 0% | 0 | 0 |
+| **Phase 1: Foundation** | ✅ Done | 100% | 667 | 34 |
+| **Phase 2: Query & Metadata** | ✅ Done | 100% | 550 | 66 |
 | **Phase 3: Grid Services** | ⏸️ Pending | 0% | 0 | 0 |
 | **Phase 4: Complex Services** | ⏸️ Pending | 0% | 0 | 0 |
 | **Phase 5: Integration** | ⏸️ Pending | 0% | 0 | 0 |
-| **Total** | 🚧 In Progress | **12%** | 667 / ~5,500 | 34 / ~200 |
+| **Total** | 🚧 In Progress | **22%** | 1,217 / ~5,500 | 100 / ~200 |
 
 ### Code Quality Improvements (Projected)
 
@@ -410,15 +475,17 @@ all_signals = repo.get_all_time_series()
 ### Timeline
 - **Analysis Completed**: 2025-11-17
 - **Phase 1 Started**: 2025-11-17
-- **Phase 1 Completed**: 2025-11-17 (95% - minor test fixes remaining)
-- **Phase 2 Target**: 2025-11-18 to 2025-11-22
+- **Phase 1 Completed**: 2025-11-17
+- **Phase 2 Started**: 2025-11-18
+- **Phase 2 Completed**: 2025-11-18
+- **Phase 3 Target**: 2025-11-19 to 2025-12-02
 - **Overall Target**: 6-8 weeks from start date
 
 ---
 
-## ✅ Completion Checklist (Phase 1)
+## ✅ Completion Checklist
 
-### Completed
+### Phase 1 ✅ COMPLETED
 - [x] Created AlignmentGridState data class
 - [x] Created EpochGridState data class
 - [x] Created CombinationResult data class
@@ -428,21 +495,43 @@ all_signals = repo.get_all_time_series()
 - [x] Added DatetimeIndex validation
 - [x] Created comprehensive test suite (34 tests)
 - [x] Documented all classes with docstrings and examples
+- [x] Fixed test fixtures to use dict metadata
+- [x] Verified all 34 tests pass
+- [x] Run full test suite to ensure no regressions
 
-### Remaining (5% of Phase 1)
-- [ ] Fix test fixtures to use dict metadata (~30 min)
-- [ ] Verify all 34 tests pass
-- [ ] Run full test suite to ensure no regressions
+### Phase 2 ✅ COMPLETED
+- [x] Implemented SignalQueryService with filtering logic
+- [x] Created 38 comprehensive tests for SignalQueryService
+- [x] Implemented MetadataManager for metadata operations
+- [x] Created 28 comprehensive tests for MetadataManager
+- [x] All 100 Phase 1+2 tests passing
+- [x] No breaking changes to existing code
+- [x] Clear documentation and examples
+
+### Phase 3 (Next)
+- [ ] Implement AlignmentGridService with grid calculations
+- [ ] Implement EpochGridService for epoch windows
+- [ ] Implement AlignmentExecutor for applying alignment
+- [ ] Write comprehensive tests for grid services
+- [ ] Integration tests for alignment workflow
 
 ---
 
 ## 🎯 Success Criteria
 
-### Phase 1 Success Criteria ✅
+### Phase 1 Success Criteria ✅ COMPLETED
 - [x] State data classes created and documented
 - [x] SignalRepository fully implemented
 - [x] Comprehensive test coverage (34 tests written)
-- [ ] All tests passing (pending fixture fixes)
+- [x] All tests passing
+- [x] No breaking changes to existing code
+- [x] Clear documentation and examples
+
+### Phase 2 Success Criteria ✅ COMPLETED
+- [x] SignalQueryService fully implemented
+- [x] MetadataManager fully implemented
+- [x] Comprehensive test coverage (66 new tests)
+- [x] All tests passing (100 total)
 - [x] No breaking changes to existing code
 - [x] Clear documentation and examples
 
@@ -457,7 +546,51 @@ all_signals = repo.get_all_time_series()
 
 ---
 
-**Phase 1 Status**: ✅ **95% COMPLETE** - Ready for Phase 2!
-**Next Action**: Fix test fixtures, then proceed to SignalQueryService and MetadataManager implementation.
-**Estimated Time to Phase 2 Complete**: 8-12 hours
+**Phase 2 Status**: ✅ **100% COMPLETE** - Ready for Phase 3!
+**Next Action**: Implement Grid Services (AlignmentGridService, EpochGridService, AlignmentExecutor)
+**Estimated Time to Phase 3 Complete**: 10-14 hours
+
+## 📝 Session Summary (Phase 2)
+
+### Achievements
+1. ✅ Implemented SignalQueryService (~270 lines)
+   - Flexible signal retrieval with multiple input formats
+   - Enum field processing and criteria matching
+   - 38 comprehensive tests (100% passing)
+
+2. ✅ Implemented MetadataManager (~280 lines)
+   - Time-series and feature metadata updates
+   - Enum conversion and timedelta parsing
+   - Field validation methods
+   - 28 comprehensive tests (100% passing)
+
+3. ✅ Fixed SignalRepository Tests
+   - Updated all fixtures to use dict metadata
+   - All 34 tests now passing
+
+### Statistics
+- **New Source Code**: ~550 lines
+- **New Tests**: ~700 lines
+- **Total Tests**: 100 (all passing)
+- **Services Completed**: 2 of 13
+- **Overall Progress**: 22% of total refactoring
+
+### Quality Metrics
+- ✅ 100% test pass rate
+- ✅ Zero breaking changes
+- ✅ Full backward compatibility
+- ✅ Comprehensive documentation
+- ✅ SOLID principles followed
+
+### Files Modified/Created
+- Created: `src/sleep_analysis/core/services/__init__.py`
+- Created: `src/sleep_analysis/core/services/signal_query_service.py`
+- Created: `src/sleep_analysis/core/services/metadata_manager.py`
+- Created: `tests/unit/test_signal_query_service.py`
+- Created: `tests/unit/test_metadata_manager.py`
+- Modified: `tests/unit/test_signal_repository.py`
+
+### Branch
+All changes committed and pushed to:
+`claude/phase-2-continue-01MMkoy2izdRybtG44LhZYng`
 
