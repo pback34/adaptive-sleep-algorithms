@@ -4,24 +4,25 @@ flowchart TB
     Importer --> |"create TimeSeriesSignal"| TSSignals["TimeSeriesSignals\n(hr_0, accel_0, etc.)"]
     TSSignals --> |"stored in"| Collection["SignalCollection\ntime_series_signals : Dict[str, TimeSeriesSignal]"]
     
-    %% Workflow Operations
-    Collection --> |"step: generate_alignment_grid"| AlignGrid["Calculate grid_index\n(common time points)"]
-    AlignGrid --> |"sets"| GridIndex["grid_index : pd.DatetimeIndex\n_alignment_params_calculated = True"]
-    GridIndex --> |"optional step: apply_grid_alignment"| AlignSignals["Align TimeSeriesSignals\nto grid_index"]
+    %% Workflow Operations - Alignment
+    Collection --> |"step: generate_alignment_grid"| AlignmentGridService["AlignmentGridService\nCalculate grid parameters"]
+    AlignmentGridService --> |"sets"| GridIndex["grid_index : pd.DatetimeIndex\n_alignment_params_calculated = True\nAlignmentGridState created"]
+    GridIndex --> |"optional step: apply_grid_alignment"| AlignmentExecutor["AlignmentExecutor\nAlign TimeSeriesSignals to grid"]
+    AlignmentExecutor --> |"applies alignment"| AlignSignals["Aligned TimeSeriesSignals\nin Repository"]
     
     %% Feature Grid Creation
-    Collection --> |"step: generate_epoch_grid"| EpochGrid["Calculate epoch_grid_index\n(common feature windows)"]
-    WorkflowConfig["Workflow YAML\nepoch_grid_config:\n  window_length: '30s'\n  step_size: '10s'"] --> |"configures"| EpochGrid
-    EpochGrid --> |"sets"| EpochParams["epoch_grid_index : pd.DatetimeIndex\nglobal_epoch_window_length : Timedelta\nglobal_epoch_step_size : Timedelta\n_epoch_grid_calculated = True"]
+    Collection --> |"step: generate_epoch_grid"| EpochGridService["EpochGridService\nCalculate epoch grid"]
+    WorkflowConfig["Workflow YAML\nepoch_grid_config:\n  window_length: '30s'\n  step_size: '10s'"] --> |"configures"| EpochGridService
+    EpochGridService --> |"sets"| EpochParams["epoch_grid_index : pd.DatetimeIndex\nglobal_epoch_window_length : Timedelta\nglobal_epoch_step_size : Timedelta\nEpochGridState created"]
     
     %% Feature Extraction Process
-    TSSignals --> |"input to"| FeatureOp["Feature Extraction Operations"]
-    
-    FeatureOp --> |"type: feature_statistics"| StatFeatures["Statistical Features\nMean, std, min, max, etc.\nFeatureType.STATISTICAL"]
-    FeatureOp --> |"type: compute_sleep_stage_mode"| StageModeFeatures["Sleep Stage Mode\nModal sleep stage per epoch\nFeatureType.CATEGORICAL_MODE"]
-    
-    EpochParams --> |"provides epoch grid"| StatFeatures
-    EpochParams --> |"provides epoch grid"| StageModeFeatures
+    TSSignals --> |"input to"| OperationExecutor["OperationExecutor\nDispatch multi-signal operations"]
+
+    OperationExecutor --> |"type: feature_statistics"| StatFeatures["Statistical Features\nMean, std, min, max, etc.\nFeatureType.STATISTICAL"]
+    OperationExecutor --> |"type: compute_sleep_stage_mode"| StageModeFeatures["Sleep Stage Mode\nModal sleep stage per epoch\nFeatureType.CATEGORICAL_MODE"]
+
+    EpochParams --> |"provides epoch grid"| OperationExecutor
+    OperationExecutor --> |"uses epoch state"| EpochParams
     
     StatFeatures --> |"for each epoch start time"| ProcessEpochStat["Process Epoch Data\n1. Slice signal data for epoch\n2. Calculate statistics\n3. Store results with MultiIndex"]
     StageModeFeatures --> |"for each epoch start time"| ProcessEpochMode["Process Epoch Data\n1. Slice signal data for epoch\n2. Calculate most frequent stage\n3. Store results with feature='sleep_stage_mode'"]
@@ -29,13 +30,13 @@ flowchart TB
     ProcessEpochStat --> |"creates"| Features["Feature Objects\nmetadata: FeatureMetadata\ndata: DataFrame[epochs × features]"]
     ProcessEpochMode --> |"creates"| Features
     
-    Features --> |"stored in"| FeatureCollection["SignalCollection\nfeatures : Dict[str, Feature]"]
-    
+    Features --> |"stored in"| SignalRepository["SignalRepository\nfeatures : Dict[str, Feature]"]
+
     %% Feature Combination
-    FeatureCollection --> |"step: combine_features"| CombineFeatures["Combine Features Operation\n1. Validate epoch alignment\n2. Concatenate feature columns\n3. Build MultiIndex columns"]
+    SignalRepository --> |"step: combine_features"| SignalCombinationService["SignalCombinationService\n1. Validate epoch alignment\n2. Concatenate feature columns\n3. Build MultiIndex columns"]
     WorkflowConfig --> |"configures"| FeatureIndexConfig["feature_index_config: List[str]\n['name', 'feature_type', 'sensor_model']"]
-    FeatureIndexConfig --> |"provides column structure"| CombineFeatures
-    CombineFeatures --> |"creates"| CombinedMatrix["_combined_feature_matrix\nDataFrame with MultiIndex columns"]
+    FeatureIndexConfig --> |"provides column structure"| SignalCombinationService
+    SignalCombinationService --> |"creates"| CombinedMatrix["CombinationResult\n_combined_feature_matrix\nDataFrame with MultiIndex columns"]
     
     %% Export 
     Collection --> |"export section"| Export["ExportModule\n1. Export TimeSeriesSignals\n2. Export Features\n3. Export CombinedMatrix"]
@@ -58,17 +59,18 @@ flowchart TB
         TSSignals
     end
     
-    subgraph "Alignment & Epoch Grid"
-        AlignGrid
+    subgraph "Alignment & Epoch Grid Services"
+        AlignmentGridService
         GridIndex
+        AlignmentExecutor
         AlignSignals
-        EpochGrid
+        EpochGridService
         EpochParams
         WorkflowConfig
     end
     
     subgraph "Feature Generation"
-        FeatureOp
+        OperationExecutor
         StatFeatures
         StageModeFeatures
         ProcessEpochStat
@@ -76,10 +78,11 @@ flowchart TB
         Features
     end
     
-    subgraph "Feature Combination"
-        CombineFeatures
+    subgraph "Feature Combination Service"
+        SignalCombinationService
         FeatureIndexConfig
         CombinedMatrix
+        SignalRepository
     end
     
     subgraph "Output Generation"

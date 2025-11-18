@@ -83,30 +83,47 @@
   The framework shall support executing operations via configuration objects (e.g., dictionaries or data classes) that declaratively specify "what" to do, rather than imperatively coding "how" it should be done, enhancing maintainability and flexibility.
 
 ### 2.1.6 Metadata and Operation Management
-- **FR33: Pure Function Enforcement for Operations**  
+- **FR33: Pure Function Enforcement for Operations**
   The framework shall ensure that operations implemented as pure functions (no side effects outside their scope) append their metadata to `metadata.operations` without modifying external state, reinforcing declarative design and testability.
+  **Status: IMPLEMENTED** - Operations record their execution in OperationInfo structures appended to metadata.operations.
 
-- **FR34: Centralized Metadata Management**  
+- **FR34: Centralized Metadata Management**
   The framework shall provide a centralized mechanism (e.g., `MetadataHandler`) for managing metadata across all signals, ensuring consistent initialization, updates, and defaults for both standalone signals and those within collections.
+  **Status: IMPLEMENTED** - MetadataHandler provides separate methods for TimeSeriesMetadata and FeatureMetadata initialization and updates.
 
-- **FR35: Default Metadata Assignment**  
+- **FR35: Default Metadata Assignment**
   The framework shall automatically assign default values to metadata fields (e.g., `name` set to `signal_<signal_id>` for standalone signals or to the collection `key` for signals in a collection), unless overridden by the user.
+  **Status: IMPLEMENTED** - MetadataHandler.set_name() implements fallback strategy: key > name > auto-generated from ID.
 
-- **FR36: Declarative Metadata Configuration**  
+- **FR36: Declarative Metadata Configuration**
   The framework shall allow users to configure metadata declaratively, such as through configuration files or dictionaries, to specify custom defaults or overrides for metadata fields.
+  **Status: IMPLEMENTED** - Workflow YAML supports collection_settings section for index_config, feature_index_config, and epoch_grid_config.
+
+### 2.1.7 Metadata Structure Updates
+- **FR37: Dual Metadata Classes**
+  The framework implements separate metadata classes for time-series signals (`TimeSeriesMetadata`) and feature sets (`FeatureMetadata`), each optimized for their specific use case while sharing common fields where appropriate.
+  **Status: IMPLEMENTED** - TimeSeriesMetadata and FeatureMetadata defined in core/metadata.py.
+
+- **FR38: Feature Metadata Enhancements**
+  FeatureMetadata shall include feature-specific fields including `epoch_window_length`, `epoch_step_size`, `feature_names`, `source_signal_keys`, `source_signal_ids`, and `feature_type` enum.
+  **Status: IMPLEMENTED** - All feature-specific fields are defined in FeatureMetadata class.
 
 ## 2.2 Non-Functional Requirements
-- **NFR1: Usability**  
+- **NFR1: Usability**
   Provide an intuitive API for users in scripts, notebooks, or workflows.
+  **Status: IMPLEMENTED** - CLI with argparse, declarative YAML workflows, programmatic Python API.
 
-- **NFR2: Performance**  
+- **NFR2: Performance**
   Ensure efficient memory usage and processing speed for large datasets.
+  **Status: IMPLEMENTED** - Lazy loading, temporary signal data clearing, efficient pandas operations.
 
-- **NFR3: Scalability**  
+- **NFR3: Scalability**
   Handle multiple signals and complex workflows.
+  **Status: IMPLEMENTED** - Repository pattern, service-based architecture, batch operations.
 
-- **NFR4: Maintainability**  
+- **NFR4: Maintainability**
   Use a modular design for easy updates, debugging, and extension.
+  **Status: IMPLEMENTED** - Clear separation of concerns with services, repositories, and models.
 
 - **NFR5: Merging Process Time Complexity**  
   The merging process shall complete with a time complexity of O(n), where n is the total number of data points across all files.

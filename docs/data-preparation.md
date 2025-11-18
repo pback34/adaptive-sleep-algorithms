@@ -705,6 +705,6 @@ sleep-analysis -w my_workflow.yaml -d data -o results
 
 ---
 
-**Last Updated**: 2025-11-17
+**Last Updated**: 2025-11-18
 
 **Next Steps**: See [Quick Start Guide](quick-start.md) for workflow examples and [Troubleshooting Guide](troubleshooting.md) for common issues.

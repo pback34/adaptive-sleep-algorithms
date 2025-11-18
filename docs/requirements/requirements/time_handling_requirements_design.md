@@ -10,31 +10,47 @@ This document defines the requirements and design for timestamp and timezone man
 
 These goals will support reliable signal import, processing, and export by standardizing timestamp representations and timezone adjustments.
 
+**Implementation Status: COMPLETED**
+- Timezone handling implemented in WorkflowExecutor (`_resolve_target_timezone()`)
+- Default input timezone and target timezone configuration supported in workflow YAML
+- System timezone detection with tzlocal library
+- Timezone propagated to CollectionMetadata and validated during signal import
+
 ---
 
 ## 2. Functional Requirements
 
 ### 2.1 Timestamp Conversion to Pandas Timestamp/DatetimeIndex
 - **FR1**: All signal importers **shall** convert any input timestamp representation (e.g., strings, integers, or custom formats) into a native Pandas `Timestamp` or `DatetimeIndex` type.
-- **FR2**: The resulting `DatetimeIndex` **shall** be set as the index of the signal’s DataFrame to standardize data access and manipulation.
+  **Status: IMPLEMENTED** - TimeSeriesSignal requires DatetimeIndex as index.
+- **FR2**: The resulting `DatetimeIndex` **shall** be set as the index of the signal's DataFrame to standardize data access and manipulation.
+  **Status: IMPLEMENTED** - All importers set DatetimeIndex during import.
 
 ### 2.2 Default Input Timezone and Overrides
 - **FR3**: The framework **shall** support a `default_input_timezone` field in the workflow YAML, which defines the assumed timezone for all imported signals unless overridden.
+  **Status: IMPLEMENTED** - WorkflowExecutor.default_input_timezone set from YAML config.
 - **FR4**: Individual signal importers **shall** allow an optional `origin_timezone` field in their configuration within the workflow YAML to override the `default_input_timezone` for that specific importer.
+  **Status: IMPLEMENTED** - Import configs support origin_timezone override.
 
 ### 2.3 Centralized Timezone Adjustment
 - **FR5**: Timezone adjustment logic **shall** be centralized in a single utility function or a method within a base importer class, ensuring it is reusable across all importers and eliminating code duplication.
+  **Status: IMPLEMENTED** - Timezone handling centralized in WorkflowExecutor._resolve_target_timezone().
 - **FR6**: This centralized function or method **shall**:
   - Localize naive timestamps (those without timezone information) to the specified `origin_timezone`.
   - Convert all timestamps (naive or timezone-aware) to the designated `target_timezone`.
+  **Status: IMPLEMENTED** - Pandas tz_localize and tz_convert used consistently.
 
 ### 2.4 Target Timezone for Exported Signals
 - **FR7**: The framework **shall** include a `target_timezone` field in the workflow YAML, specifying the timezone to which all signal timestamps are standardized and exported.
+  **Status: IMPLEMENTED** - target_timezone supported in workflow YAML.
 - **FR8**: All exported signals **shall** have their timestamps adjusted to the `target_timezone` prior to export.
+  **Status: IMPLEMENTED** - CollectionMetadata.timezone propagated to all signals and exports.
 
 ### 2.5 Default and Special Values for Target Timezone
-- **FR9**: If the `target_timezone` key is *not present* in the workflow YAML configuration, the framework **shall** default to using the operating system’s detected local timezone as the target timezone for standardization and export.
-- **FR10**: The `target_timezone` field **shall** support special string values (e.g., `'system'` or `'local'`) to explicitly indicate that the operating system’s detected local timezone should be used.
+- **FR9**: If the `target_timezone` key is *not present* in the workflow YAML configuration, the framework **shall** default to using the operating system's detected local timezone as the target timezone for standardization and export.
+  **Status: IMPLEMENTED** - Falls back to system timezone via tzlocal when not specified.
+- **FR10**: The `target_timezone` field **shall** support special string values (e.g., `'system'` or `'local'`) to explicitly indicate that the operating system's detected local timezone should be used.
+  **Status: IMPLEMENTED** - WorkflowExecutor recognizes "system" and "local" keywords.
 
 ---
 

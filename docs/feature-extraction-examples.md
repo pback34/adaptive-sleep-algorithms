@@ -80,7 +80,8 @@ features = compute_feature_statistics(
 
 # Access feature data
 print(features.data.head())
-# Output columns: hr_mean, hr_std, hr_min, hr_max, hr_median
+# Output: MultiIndex columns with format (signal_key, feature_name)
+# e.g., ('hr_0', 'mean'), ('hr_0', 'std'), ('hr_0', 'min'), etc.
 
 # Get specific epoch statistics
 epoch_start = features.data.index[0]
@@ -159,10 +160,12 @@ features = compute_sleep_stage_mode(
 
 # Access results
 print(features.data.head())
-# Output: Most frequent stage per epoch (e.g., 'N2', 'REM', 'N3', 'Wake')
+# Output: MultiIndex DataFrame with modal sleep stage per epoch
 
-# Count stage occurrences
-stage_counts = features.data['sleep_stage_mode'].value_counts()
+# Access stage column (assuming single signal input 'sleep_stages_0')
+# MultiIndex format: (signal_key, feature_name)
+stage_mode_col = ('sleep_stages_0', 'sleep_stage_mode')
+stage_counts = features.data[stage_mode_col].value_counts()
 print("Sleep stage distribution:")
 print(stage_counts)
 ```
@@ -320,7 +323,8 @@ movement_features = compute_movement_features(
 
 # Access movement metrics
 print(movement_features.data.columns)
-# Output includes: magnitude_mean, magnitude_std, activity_count, stillness_ratio, etc.
+# Output: MultiIndex with format (signal_key, feature_name)
+# e.g., ('accel_chest_0', 'magnitude_mean'), ('accel_chest_0', 'stillness_ratio'), etc.
 
 # Detect sleep periods (low activity)
 stillness = movement_features.data[('accel_chest_0', 'stillness_ratio')]
@@ -397,10 +401,12 @@ corr_features = compute_correlation_features(
 
 # Access correlation values
 print(corr_features.data.head())
-# Output: Correlation coefficient per epoch (-1 to 1)
+# Output: MultiIndex DataFrame with correlation coefficient per epoch (-1 to 1)
 
 # Analyze correlation patterns
-corr_values = corr_features.data[('hr_0_vs_accel_0', 'pearson_corr')]
+# MultiIndex format: (combined_signal_key, feature_name)
+corr_col = (corr_features.metadata.source_signal_keys[0], 'pearson_corr')
+corr_values = corr_features.data[corr_col]
 
 print(f"Average correlation: {corr_values.mean():.3f}")
 print(f"High correlation epochs: {(corr_values.abs() > 0.7).sum()}")
@@ -591,7 +597,7 @@ Look for:
 
 ---
 
-**Last Updated**: 2025-11-17
+**Last Updated**: 2025-11-18
 
 **See Also**:
 - [Quick Start Guide](quick-start.md) - Getting started
